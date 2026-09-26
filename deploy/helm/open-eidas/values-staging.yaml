@@ -67,6 +67,11 @@ ca:
   # une nouvelle cérémonie (tokens/état effacés) en tient compte.
   rootCommonName: "Open eIDAS STAGING Root CA - NE PAS UTILISER EN PRODUCTION"
   issuingCommonName: "Open eIDAS STAGING Issuing CA - NE PAS UTILISER EN PRODUCTION"
+  # Démonstration publique : l'approbation automatique (désactivée par défaut
+  # depuis le constat R-2) y reste activée explicitement, sous l'identité
+  # technique ci-bootstrap tracée au journal d'audit.
+  autoApprove:
+    enabled: true
 
 ocsp:
   # Gravée dans l'extension AIA (champ "ocsp") du certificat TSU.

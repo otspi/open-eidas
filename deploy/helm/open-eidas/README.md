@@ -15,9 +15,16 @@ est dans [docs/CONFORMITE-ETSI.md](../../../docs/CONFORMITE-ETSI.md) ; les
 
 ## Installation
 
+Démonstration, qui s'amorce seule (approbation RA automatique, voir plus bas) :
+
 ```bash
-helm install open-eidas deploy/helm/open-eidas --namespace open-eidas --create-namespace
+helm install open-eidas deploy/helm/open-eidas --namespace open-eidas --create-namespace \
+    --set ca.autoApprove.enabled=true
 ```
+
+Sans `ca.autoApprove.enabled=true` (valeur par défaut), la TSU et le répondeur
+OCSP attendent qu'un opérateur nommé approuve leur demande (voir « Approbation
+RA »).
 
 L'amorçage complet (cérémonie de clé, publication de la première CRL,
 enrôlement puis approbation de la TSU et du répondeur OCSP) prend 1 à 2
@@ -100,9 +107,13 @@ démarrer si la clé d'un token ne correspond plus au certificat enregistré.
 
 ## Approbation RA — écart assumé
 
-Le conteneur `ra-autoapprove` approuve les demandes d'enrôlement sous
-l'identité `ca.autoApprove.operator` (`ci-bootstrap` par défaut), afin que la
-démonstration et la CI s'amorcent sans opérateur humain.
+**Désactivée par défaut** (constat R-2 de l'audit du 2026-09-25). Activée
+(`ca.autoApprove.enabled: true`), le conteneur `ra-autoapprove` approuve les
+demandes d'enrôlement sous l'identité `ca.autoApprove.operator`
+(`ci-bootstrap` par défaut), afin que la démonstration et la CI s'amorcent sans
+opérateur humain. `/healthz` de la CA le déclare
+(`"approbation_automatique": true`), et le chart refuse le rendu si
+`production: true` est posé en même temps.
 
 Ce n'est **pas** un contournement du point d'approbation : aucun chemin du
 code ne mène à l'émission sans décision identifiée (voir `internal/raflow`),
@@ -113,12 +124,11 @@ aucun token PKCS#11 : approuver, c'est décider, pas signer.
 Un déploiement destiné à la qualification pose :
 
 ```yaml
-ca:
-  autoApprove:
-    enabled: false
+production: true
 ```
 
-et approuve à la main, sous une identité nominative :
+(qui garantit que l'approbation automatique reste désactivée) et approuve à la
+main, sous une identité nominative :
 
 ```bash
 kubectl -n open-eidas exec deploy/open-eidas-ca -c ca -- ca-server ra list PENDING
@@ -200,7 +210,8 @@ Voir `values.yaml` pour la liste complète. Les plus utiles :
 | `tsa.gateway.enabled` / `tsa.gateway.name` / `tsa.gateway.namespace` / `tsa.gateway.host` | Exposition HTTP(S) du service via une `HTTPRoute` Gateway API |
 | `tsa.pin` / `ocsp.pin` / `auditReplica.password` | Valeurs explicites plutôt que générées aléatoirement |
 | `ca.publicURL` / `ca.gateway.enabled` / `ca.gateway.host` | Adresse publique gravée dans les points CRL et AIA des certificats émis — à fixer si les certificats seront vérifiés par des tiers hors du cluster |
-| `ca.autoApprove.enabled` / `ca.autoApprove.operator` | Approbation RA automatique (voir ci-dessus) |
+| `production` | Déploiement de qualification ou de production : refuse le rendu si un raccourci de démonstration reste actif (`ca.autoApprove.enabled`) |
+| `ca.autoApprove.enabled` / `ca.autoApprove.operator` | Approbation RA automatique, désactivée par défaut (voir ci-dessus) |
 | `ca.keyBits`, `ca.rootCommonName`, `ca.issuingCommonName` | Paramètres de la cérémonie de clé — sans effet une fois la hiérarchie créée |
 | `ca.crl.validity` / `ca.crl.refresh` | Fenêtre de validité des CRL et fréquence de republication |
 | `ca.audit.retention` | Durée de conservation du journal (ETSI EN 319 401 §7.10) ; le service refuse de démarrer en deçà d'un an |
@@ -221,6 +232,7 @@ for image in openeidas-ca openeidas-tsa openeidas-ocsp-responder; do
 done
 helm install open-eidas deploy/helm/open-eidas -n open-eidas --create-namespace \
     --set ca.image.repository=openeidas-ca --set ca.image.tag=dev \
+    --set ca.autoApprove.enabled=true \
     --set tsa.image.repository=openeidas-tsa --set tsa.image.tag=dev \
     --set ocsp.image.repository=openeidas-ocsp-responder --set ocsp.image.tag=dev
 ```

@@ -119,7 +119,8 @@ accès en lecture au certificat.
    son profil.
 5. Un opérateur RA approuve (`ca-server ra approve <transaction> <opérateur>`).
    En démonstration et en CI, cette approbation est automatisée sous une
-   identité technique — écart assumé, tracé comme tel au journal (voir
+   identité technique — écart assumé, tracé comme tel au journal et déclaré
+   par `/healthz` ; désactivée par défaut dans le chart Helm (voir
    [CA.md](CA.md)).
 6. À sa scrutation suivante, chaque service reçoit son certificat et sa chaîne,
    écrits sur son volume d'état. Le certificat est relu et re-contrôlé côté CA

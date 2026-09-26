@@ -71,6 +71,11 @@ pub struct Config {
     pub internal_tls_key_file: String,
     /// Fréquence du contrôle du registre contre le journal (docs/WEBUI.md §21).
     pub registry_check_interval: Duration,
+    /// Déclaré par le déploiement (chart Helm, `ca.autoApprove.enabled`) : les
+    /// demandes sont approuvées par un conteneur technique, pas par un
+    /// opérateur nommé. Affiché par `/healthz` (constat R-2), sans effet sur
+    /// le comportement de ce service.
+    pub ra_auto_approve: bool,
 }
 
 /// Stockage objet compatible S3, auto-hébergé (MinIO, Garage, Ceph… jamais
@@ -118,6 +123,14 @@ fn env_str(key: &str, fallback: &str) -> String {
         .ok()
         .filter(|v| !v.is_empty())
         .unwrap_or_else(|| fallback.to_string())
+}
+
+fn env_bool(key: &str) -> Result<bool, String> {
+    match std::env::var(key).unwrap_or_default().as_str() {
+        "" | "false" | "0" => Ok(false),
+        "true" | "1" => Ok(true),
+        other => Err(format!("{key}={other:?} : attendu true ou false")),
+    }
 }
 
 fn env_u64(key: &str, fallback: u64) -> Result<u64, String> {
@@ -303,6 +316,7 @@ impl Config {
                 "OPENEIDAS_REGISTRY_CHECK_INTERVAL",
                 Duration::from_secs(60),
             )?,
+            ra_auto_approve: env_bool("OPENEIDAS_RA_AUTO_APPROVE")?,
         })
     }
 }

@@ -367,6 +367,15 @@ jobs:
         run: helm lint deploy/helm/open-eidas
       - name: helm template (rendu complet)
         run: helm template open-eidas deploy/helm/open-eidas > /dev/null
+      - name: helm template refuse l'approbation automatique en production
+        # Constat R-2 : le rendu doit échouer, pas seulement le documenter.
+        run: |
+          if helm template open-eidas deploy/helm/open-eidas \
+              --set production=true --set ca.autoApprove.enabled=true > /dev/null 2>&1; then
+            echo "le chart accepte ca.autoApprove.enabled avec production=true" >&2
+            exit 1
+          fi
+          helm template open-eidas deploy/helm/open-eidas --set production=true > /dev/null
 
   helm-kind-smoke-test:
     name: Amorçage complet + démonstration (Helm sur kind)
@@ -438,6 +447,7 @@ jobs:
             --namespace open-eidas --create-namespace \
             --set ca.image.repository=openeidas-ca \
             --set ca.image.tag=ci \
+            --set ca.autoApprove.enabled=true \
             --set tsa.image.repository=openeidas-tsa \
             --set tsa.image.tag=ci \
             --set tsa.time.policy=monitor \

@@ -87,6 +87,9 @@ spec:
           resources:
             {{- toYaml .Values.ca.resources | nindent 12 }}
         {{- if .Values.ca.autoApprove.enabled }}
+        {{- if .Values.production }}
+        {{- fail "ca.autoApprove.enabled est interdit quand production: true : un déploiement de production approuve chaque demande sous une identité nominative (ETSI EN 319 411-1 GEN-6.5.5-04, constat R-2)" }}
+        {{- end }}
         # ÉCART ASSUMÉ — approbation automatique des demandes d'enrôlement.
         #
         # Le point d'approbation RA est réellement actif : aucun chemin du

@@ -138,7 +138,8 @@ La même pile est packagée en chart Helm, pour un déploiement piloté par
 ArgoCD ou un `helm install` direct :
 
 ```bash
-helm install open-eidas deploy/helm/open-eidas --namespace open-eidas --create-namespace
+helm install open-eidas deploy/helm/open-eidas --namespace open-eidas --create-namespace \
+    --set ca.autoApprove.enabled=true   # démonstration : approbation RA automatique
 ```
 
 Voir [deploy/helm/open-eidas/README.md](deploy/helm/open-eidas/README.md) et

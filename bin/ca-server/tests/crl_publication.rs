@@ -217,3 +217,32 @@ async fn healthz_degrades_while_the_registry_is_blocked() {
     let (status, _) = get(&server, "/healthz").await;
     assert_eq!(status, axum::http::StatusCode::OK);
 }
+
+/// Constat R-2 : `/healthz` dit si les demandes sont approuvées par un
+/// conteneur technique, sans en dégrader le statut (mode de démonstration
+/// assumé, pas une panne).
+#[tokio::test]
+async fn healthz_declares_automatic_approval() {
+    let (_shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+    let server = build_server(time::Duration::hours(24)).await;
+    server
+        .start_crl_publication(std::time::Duration::from_secs(3600), shutdown_rx.clone())
+        .await
+        .unwrap();
+    let (status, body) = get(&server, "/healthz").await;
+    assert_eq!(status, axum::http::StatusCode::OK);
+    assert_eq!(body["approbation_automatique"], serde_json::json!(false));
+
+    let server = Arc::new(
+        Arc::into_inner(build_server(time::Duration::hours(24)).await)
+            .unwrap()
+            .with_ra_auto_approve(true),
+    );
+    server
+        .start_crl_publication(std::time::Duration::from_secs(3600), shutdown_rx)
+        .await
+        .unwrap();
+    let (status, body) = get(&server, "/healthz").await;
+    assert_eq!(status, axum::http::StatusCode::OK, "{body}");
+    assert_eq!(body["approbation_automatique"], serde_json::json!(true));
+}
