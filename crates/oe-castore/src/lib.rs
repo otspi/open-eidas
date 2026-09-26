@@ -112,10 +112,26 @@ pub struct Authority {
     pub token_label: String,
     pub key_label: String,
     pub created_at: OffsetDateTime,
+    /// Constat C-1 de l'audit du 2026-09-25 : une autorité (l'émettrice,
+    /// jamais la racine elle-même) peut être révoquée — portée par l'ARL de
+    /// la racine, jamais la CRL de l'émettrice.
+    pub revoked_at: Option<OffsetDateTime>,
+    pub revocation_reason: i32,
 }
 
 #[derive(Debug, Clone)]
 pub struct Crl {
+    pub number: i64,
+    pub der: Vec<u8>,
+    pub this_update: OffsetDateTime,
+    pub next_update: OffsetDateTime,
+}
+
+/// Constat C-1 : l'ARL (Authority Revocation List) de la racine, même forme
+/// que [`Crl`] mais un flux distinct — elle porte les certificats
+/// d'autorité révoqués, pas les certificats d'entité finale.
+#[derive(Debug, Clone)]
+pub struct Arl {
     pub number: i64,
     pub der: Vec<u8>,
     pub this_update: OffsetDateTime,
@@ -138,6 +154,22 @@ pub enum StoreError {
 pub trait Store: Send + Sync {
     async fn save_authority(&self, a: Authority) -> Result<(), StoreError>;
     async fn authority(&self, name: &str) -> Result<Authority, StoreError>;
+    /// Constat C-1 de l'audit du 2026-09-25 : révoque une autorité (jamais
+    /// la racine elle-même, qui n'a pas d'émetteur à qui le signaler) —
+    /// portée par l'ARL de la racine, jamais la CRL de l'émettrice.
+    /// Idempotent : une seconde révocation garde la première date et le
+    /// premier motif, à l'identique de [`Store::revoke`].
+    async fn revoke_authority(
+        &self,
+        name: &str,
+        at: OffsetDateTime,
+        reason: i32,
+    ) -> Result<(), StoreError>;
+    /// Les autorités révoquées à porter dans l'ARL. Sans limite de durée,
+    /// à la différence de [`Store::revoked`] : une autorité compromise le
+    /// reste pour l'histoire, `CSS-6.3.9-12` n'impose qu'une republication
+    /// au moins annuelle, jamais une purge.
+    async fn revoked_authorities(&self) -> Result<Vec<Authority>, StoreError>;
 
     async fn reserve_serial(&self, serial: &Serial, profile: &str) -> Result<(), StoreError>;
     async fn save_certificate(&self, c: Certificate) -> Result<(), StoreError>;
@@ -174,6 +206,13 @@ pub trait Store: Send + Sync {
     async fn next_crl_number(&self) -> Result<i64, StoreError>;
     async fn save_crl(&self, c: Crl) -> Result<(), StoreError>;
     async fn latest_crl(&self) -> Result<Crl, StoreError>;
+
+    /// Constat C-1 : même trio que pour la CRL, mais pour l'ARL de la
+    /// racine — un flux distinct, jamais mélangé à celui des certificats
+    /// d'entité finale.
+    async fn next_arl_number(&self) -> Result<i64, StoreError>;
+    async fn save_arl(&self, a: Arl) -> Result<(), StoreError>;
+    async fn latest_arl(&self) -> Result<Arl, StoreError>;
 }
 
 /// Implémentation en mémoire de [`Store`], destinée aux tests unitaires du
@@ -194,6 +233,8 @@ struct MemoryState {
     by_fingerprint: BTreeMap<String, String>,
     crls: Vec<Crl>,
     next_crl: i64,
+    arls: Vec<Arl>,
+    next_arl: i64,
 }
 
 impl Memory {
@@ -204,12 +245,15 @@ impl Memory {
 
 #[async_trait::async_trait]
 impl Store for Memory {
-    async fn save_authority(&self, a: Authority) -> Result<(), StoreError> {
-        self.inner
-            .lock()
-            .unwrap()
-            .authorities
-            .insert(a.name.clone(), a);
+    async fn save_authority(&self, mut a: Authority) -> Result<(), StoreError> {
+        let mut state = self.inner.lock().unwrap();
+        // Comme `Postgres` : réenregistrer une autorité n'efface jamais sa
+        // révocation (seule `revoke_authority` y touche).
+        if let Some(previous) = state.authorities.get(&a.name) {
+            a.revoked_at = previous.revoked_at;
+            a.revocation_reason = previous.revocation_reason;
+        }
+        state.authorities.insert(a.name.clone(), a);
         Ok(())
     }
 
@@ -221,6 +265,38 @@ impl Store for Memory {
             .get(name)
             .cloned()
             .ok_or(StoreError::NotFound)
+    }
+
+    async fn revoke_authority(
+        &self,
+        name: &str,
+        at: OffsetDateTime,
+        reason: i32,
+    ) -> Result<(), StoreError> {
+        let mut state = self.inner.lock().unwrap();
+        let authority = state
+            .authorities
+            .get_mut(name)
+            .ok_or(StoreError::NotFound)?;
+        if authority.revoked_at.is_some() {
+            // Première révocation faisant foi.
+            return Ok(());
+        }
+        authority.revoked_at = Some(at);
+        authority.revocation_reason = reason;
+        Ok(())
+    }
+
+    async fn revoked_authorities(&self) -> Result<Vec<Authority>, StoreError> {
+        let state = self.inner.lock().unwrap();
+        let mut out: Vec<Authority> = state
+            .authorities
+            .values()
+            .filter(|a| a.revoked_at.is_some())
+            .cloned()
+            .collect();
+        out.sort_by(|a, b| a.name.cmp(&b.name));
+        Ok(out)
     }
 
     async fn reserve_serial(&self, serial: &Serial, profile: &str) -> Result<(), StoreError> {
@@ -413,6 +489,27 @@ impl Store for Memory {
             .crls
             .iter()
             .max_by_key(|c| c.number)
+            .cloned()
+            .ok_or(StoreError::NotFound)
+    }
+
+    async fn next_arl_number(&self) -> Result<i64, StoreError> {
+        let mut state = self.inner.lock().unwrap();
+        state.next_arl += 1;
+        Ok(state.next_arl)
+    }
+
+    async fn save_arl(&self, a: Arl) -> Result<(), StoreError> {
+        self.inner.lock().unwrap().arls.push(a);
+        Ok(())
+    }
+
+    async fn latest_arl(&self) -> Result<Arl, StoreError> {
+        let state = self.inner.lock().unwrap();
+        state
+            .arls
+            .iter()
+            .max_by_key(|a| a.number)
             .cloned()
             .ok_or(StoreError::NotFound)
     }

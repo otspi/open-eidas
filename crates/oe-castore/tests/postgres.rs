@@ -8,7 +8,8 @@
 #![cfg(feature = "postgres")]
 
 use oe_castore::{
-    Certificate, CertificateStatus, Crl, Postgres, Request, RequestState, Store, StoreError,
+    Arl, Authority, Certificate, CertificateStatus, Crl, Postgres, Request, RequestState, Store,
+    StoreError,
 };
 use time::OffsetDateTime;
 
@@ -197,6 +198,61 @@ async fn crl_numbers_increase_monotonically_via_sequence() {
     .await
     .unwrap();
     assert_eq!(s.latest_crl().await.unwrap().number, second);
+}
+
+/// Constat C-1 : révocation d'une autorité (première date et premier motif
+/// faisant foi), qu'un nouvel enregistrement de l'autorité (cérémonie rejouée)
+/// n'efface pas, et ARL numérotée par sa propre séquence.
+#[tokio::test]
+async fn authority_revocation_is_idempotent_and_survives_a_resave() {
+    let s = require_store!();
+    let name = unique_id("authority");
+    let authority = Authority {
+        name: name.clone(),
+        subject_dn: "CN=Test Issuing CA".to_string(),
+        der: vec![4, 5, 6],
+        token_label: "issuing".to_string(),
+        key_label: "issuing-key".to_string(),
+        created_at: OffsetDateTime::UNIX_EPOCH,
+        revoked_at: None,
+        revocation_reason: 0,
+    };
+    s.save_authority(authority.clone()).await.unwrap();
+
+    let first = OffsetDateTime::now_utc().replace_nanosecond(0).unwrap();
+    s.revoke_authority(&name, first, 2).await.unwrap();
+    s.revoke_authority(&name, first + time::Duration::hours(1), 5)
+        .await
+        .unwrap();
+    s.save_authority(authority).await.unwrap();
+
+    let stored = s.authority(&name).await.unwrap();
+    assert_eq!(stored.revoked_at, Some(first));
+    assert_eq!(stored.revocation_reason, 2);
+    assert!(s
+        .revoked_authorities()
+        .await
+        .unwrap()
+        .iter()
+        .any(|a| a.name == name));
+
+    assert!(matches!(
+        s.revoke_authority(&unique_id("unknown"), first, 2).await,
+        Err(StoreError::NotFound)
+    ));
+
+    let a1 = s.next_arl_number().await.unwrap();
+    let a2 = s.next_arl_number().await.unwrap();
+    assert!(a2 > a1, "la séquence de l'ARL ne doit jamais reculer");
+    s.save_arl(Arl {
+        number: a2,
+        der: vec![7],
+        this_update: first,
+        next_update: first + time::Duration::days(365),
+    })
+    .await
+    .unwrap();
+    assert_eq!(s.latest_arl().await.unwrap().number, a2);
 }
 
 #[tokio::test]

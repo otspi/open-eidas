@@ -7,6 +7,7 @@
 //! du « big bang ».
 //!
 //! Sous-commandes : `ceremony`, `serve`, `ra list|approve|reject`, `revoke`,
+//! `authority revoke|publish-arl`,
 //! `operators bootstrap-admin|recover-admin|audit|reconcile`, `internal-cert server`, `conformance`,
 //! `healthcheck`, `verify-audit`.
 
@@ -49,6 +50,13 @@ enum Command {
         #[arg(trailing_var_arg = true)]
         comment: Vec<String>,
     },
+    /// Actes de la racine hors ligne (constat C-1) : révocation d'une autorité
+    /// et publication de l'ARL. Ouvre le token de la racine, comme `ceremony` ;
+    /// jamais pendant `serve`.
+    Authority {
+        #[command(subcommand)]
+        action: AuthorityAction,
+    },
     /// Registre des opérateurs de la console d'exploitation (docs/WEBUI.md §10).
     Operators {
         #[command(subcommand)]
@@ -71,6 +79,27 @@ enum Command {
     /// Affiche la version (identique à `--version`, sous forme de
     /// sous-commande — reproduit `cmd/ca-server` (Go), qui n'a que celle-ci).
     Version,
+}
+
+#[derive(Subcommand)]
+enum AuthorityAction {
+    /// Révoque une autorité subordonnée (`issuing`) avec la clé de la racine, et
+    /// republie immédiatement l'ARL. L'émettrice révoquée cesse aussitôt
+    /// d'émettre, même si `serve` tourne déjà. La racine ne peut pas se
+    /// révoquer elle-même.
+    Revoke {
+        /// Nom de l'autorité dans le registre (`issuing`).
+        name: String,
+        /// Code motif RFC 5280 §5.3.1 (1=keyCompromise, 2=cACompromise,
+        /// 4=superseded, 5=cessationOfOperation, ...).
+        reason: i32,
+        operator: String,
+        #[arg(trailing_var_arg = true)]
+        comment: Vec<String>,
+    },
+    /// Publie une nouvelle ARL, même vide : à relancer avant l'échéance de la
+    /// précédente, au moins une fois par an (ETSI EN 319 411-1 `CSS-6.3.9-12`).
+    PublishArl,
 }
 
 #[derive(Subcommand)]
@@ -361,8 +390,9 @@ async fn run_ceremony() {
         Arc::new(oe_hsm::SyncToken::new(issuing_token));
 
     let recorder: Arc<dyn oe_ca_core::Recorder> = Arc::new(open_recorder(&cfg));
+    let store: Arc<dyn oe_castore::Store> = Arc::new(store);
     let h = oe_ca_core::ceremony::run_ceremony(oe_ca_core::ceremony::CeremonyOptions {
-        root_signer,
+        root_signer: root_signer.clone(),
         issuing_signer,
         root_cn: cfg.root_cn.clone(),
         issuing_cn: cfg.issuing_cn.clone(),
@@ -374,12 +404,29 @@ async fn run_ceremony() {
         root_key_label: cfg.root_key_label.clone(),
         issuing_token_label: cfg.issuing_token_label.clone(),
         issuing_key_label: cfg.issuing_key_label.clone(),
-        store: Arc::new(store),
+        store: store.clone(),
         operator: cfg.ceremony_operator.clone(),
-        recorder: Some(recorder),
+        recorder: Some(recorder.clone()),
+        public_url: cfg.public_url.clone(),
     })
     .await
     .unwrap_or_else(|e| die("cérémonie de clé", e));
+
+    // Constat C-1 : le CDP de l'émettrice pointe vers l'ARL de la racine, qui
+    // doit donc exister dès la cérémonie — la racine n'est ouverte qu'ici et
+    // dans `authority`, jamais pendant `serve`.
+    match store.latest_arl().await {
+        Ok(_) => {}
+        Err(oe_castore::StoreError::NotFound) => {
+            let root = root_authority(&cfg, root_signer, h.root.clone(), store, recorder);
+            let arl = root
+                .publish_arl()
+                .await
+                .unwrap_or_else(|e| die("publication de l'ARL initiale", e));
+            tracing::info!(numero = arl.number, next_update = %arl.next_update, "ARL initiale publiée");
+        }
+        Err(e) => die("lecture de l'ARL", e),
+    }
 
     tracing::info!(
         creee = h.created,
@@ -388,6 +435,66 @@ async fn run_ceremony() {
         emettrice_expiration = %h.issuing.tbs_certificate().validity().not_after.to_date_time(),
         "hiérarchie de CA en place"
     );
+}
+
+fn root_authority(
+    cfg: &Config,
+    signer: Arc<dyn SigningToken + Send + Sync>,
+    certificate: x509_cert::Certificate,
+    store: Arc<dyn oe_castore::Store>,
+    recorder: Arc<dyn oe_ca_core::Recorder>,
+) -> oe_ca_core::root::RootAuthority {
+    oe_ca_core::root::RootAuthority::new(oe_ca_core::root::RootAuthorityOptions {
+        signer,
+        certificate,
+        store,
+        arl_validity: cfg.arl_validity,
+        recorder: Some(recorder),
+    })
+}
+
+/// Actes de la racine après la cérémonie (constat C-1) : ouvre son token, et
+/// lui seul — l'émettrice n'a rien à signer ici.
+async fn run_authority(action: AuthorityAction) {
+    tracing_subscriber::fmt::init();
+    let cfg = Config::load().unwrap_or_else(|e| die("configuration invalide", &e));
+    let store: Arc<dyn oe_castore::Store> = Arc::new(open_store(&cfg).await);
+    let hierarchy = oe_ca_core::ceremony::load_hierarchy(store.as_ref())
+        .await
+        .unwrap_or_else(|e| die("lecture de la hiérarchie de CA", e))
+        .unwrap_or_else(|| {
+            die(
+                "lecture de la hiérarchie de CA",
+                "aucune hiérarchie enregistrée : exécutez d'abord `ca-server ceremony`",
+            )
+        });
+    let recorder: Arc<dyn oe_ca_core::Recorder> = Arc::new(open_recorder(&cfg));
+    let signer: Arc<dyn SigningToken + Send + Sync> =
+        Arc::new(oe_hsm::SyncToken::new(open_root_key(&cfg)));
+    let root = root_authority(&cfg, signer, hierarchy.root, store, recorder);
+
+    match action {
+        AuthorityAction::Revoke {
+            name,
+            reason,
+            operator,
+            comment,
+        } => {
+            let comment = join_comment(&comment);
+            let arl = root
+                .revoke_authority(&name, reason, &operator, &comment)
+                .await
+                .unwrap_or_else(|e| die("révocation de l'autorité", e));
+            tracing::info!(autorite = %name, motif = reason, operateur = %operator, arl = arl.number, "autorité révoquée et ARL republiée");
+        }
+        AuthorityAction::PublishArl => {
+            let arl = root
+                .publish_arl()
+                .await
+                .unwrap_or_else(|e| die("publication de l'ARL", e));
+            tracing::info!(numero = arl.number, next_update = %arl.next_update, "ARL publiée");
+        }
+    }
 }
 
 /// Relit la hiérarchie enregistrée et construit l'autorité émettrice. Ne
@@ -1146,6 +1253,7 @@ async fn main() {
             operator,
             comment,
         } => run_revoke(serial_hex, reason, operator, comment).await,
+        Command::Authority { action } => run_authority(action).await,
         Command::Operators { action } => match action {
             OperatorsAction::BootstrapAdmin { name, ttl_minutes } => {
                 run_operators_bootstrap_admin(name, ttl_minutes).await

@@ -35,6 +35,11 @@ pub struct CeremonyOptions {
     pub store: std::sync::Arc<dyn Store>,
     pub operator: String,
     pub recorder: Option<std::sync::Arc<dyn Recorder>>,
+    /// Constat C-1 de l'audit du 2026-09-25 : grave dans l'émettrice un CDP
+    /// vers l'ARL de la racine et une AIA `caIssuers` vers son certificat —
+    /// sans quoi rien ne permet à un tiers d'apprendre que l'émettrice a été
+    /// révoquée. Même adresse publique que [`crate::Options::public_url`].
+    pub public_url: String,
 }
 
 pub struct Hierarchy {
@@ -119,6 +124,8 @@ pub async fn run_ceremony(o: CeremonyOptions) -> Result<Hierarchy, CaError> {
             token_label: o.root_token_label.clone(),
             key_label: o.root_key_label.clone(),
             created_at: now,
+            revoked_at: None,
+            revocation_reason: 0,
         },
         Authority {
             name: AUTHORITY_ISSUING.to_string(),
@@ -127,6 +134,8 @@ pub async fn run_ceremony(o: CeremonyOptions) -> Result<Hierarchy, CaError> {
             token_label: o.issuing_token_label.clone(),
             key_label: o.issuing_key_label.clone(),
             created_at: now,
+            revoked_at: None,
+            revocation_reason: 0,
         },
     ] {
         o.store.save_authority(a).await?;
@@ -236,7 +245,7 @@ async fn sign_issuing(
     let not_after_dt = std::cmp::min(now + validity, root_not_after);
     let not_after = to_x509_time(not_after_dt)?;
 
-    let exts = vec![
+    let mut exts = vec![
         extensions::basic_constraints(true, Some(0))?,
         extensions::key_usage(
             x509_cert::ext::pkix::KeyUsages::KeyCertSign | x509_cert::ext::pkix::KeyUsages::CRLSign,
@@ -244,6 +253,20 @@ async fn sign_issuing(
         extensions::subject_key_identifier(&ski)?,
         extensions::authority_key_identifier(&root_ski)?,
     ];
+    // Constat C-1 : sans CDP ni AIA, rien ne permet à un tiers d'apprendre
+    // que l'émettrice a été révoquée, ni de retrouver le certificat de la
+    // racine qui l'a signée.
+    if !o.public_url.is_empty() {
+        let root_file = oe_certs::file_name(&crate::common_name(root));
+        exts.push(extensions::crl_distribution_point(&format!(
+            "{}/download/{root_file}.arl",
+            o.public_url
+        ))?);
+        exts.push(extensions::authority_info_access(
+            Some(&format!("{}/download/{root_file}.cer", o.public_url)),
+            None,
+        )?);
+    }
 
     let spki = SubjectPublicKeyInfo::from_der(&spki_der)?;
     let profile = RawProfile {

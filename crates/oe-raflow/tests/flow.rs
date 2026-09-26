@@ -87,6 +87,7 @@ async fn test_flow_with(recorder: Option<Arc<dyn oe_raflow::Recorder>>) -> (Flow
         issuing_key_label: "issuing-key".to_string(),
         store: store.clone(),
         operator: "test-operator".to_string(),
+        public_url: "https://ca.example.test".to_string(),
         recorder: None,
     })
     .await

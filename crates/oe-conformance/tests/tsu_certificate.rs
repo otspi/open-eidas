@@ -30,6 +30,7 @@ async fn issue_with_profile(p: oe_ca_core::Profile) -> x509_cert::Certificate {
         issuing_key_label: "issuing-key".to_string(),
         store: store.clone(),
         operator: "test-operator".to_string(),
+        public_url: "https://ca.example.test".to_string(),
         recorder: None,
     })
     .await
