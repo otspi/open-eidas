@@ -88,6 +88,60 @@ async fn reserve_serial_twice_conflicts() {
     ));
 }
 
+/// Constat O-1 de l'audit du 2026-09-25 : `issued_serials` doit inclure les
+/// certificats émis et révoqués, jamais les réservations non signées, et
+/// n'a pas de limite de durée (contrairement à `revoked`).
+#[tokio::test]
+async fn issued_serials_lists_issued_and_revoked_but_not_reserved() {
+    let s = require_store!();
+    let far_future = OffsetDateTime::UNIX_EPOCH + time::Duration::days(365 * 50);
+
+    let issued = unique_serial();
+    s.reserve_serial(&issued, "tsa_signer").await.unwrap();
+    s.save_certificate(cert(
+        &issued,
+        "CN=test-pg",
+        CertificateStatus::Issued,
+        far_future,
+    ))
+    .await
+    .unwrap();
+
+    let revoked = unique_serial();
+    s.reserve_serial(&revoked, "tsa_signer").await.unwrap();
+    s.save_certificate(cert(
+        &revoked,
+        "CN=test-pg",
+        CertificateStatus::Issued,
+        far_future,
+    ))
+    .await
+    .unwrap();
+    s.revoke(
+        &revoked,
+        OffsetDateTime::UNIX_EPOCH + time::Duration::days(1),
+        1,
+    )
+    .await
+    .unwrap();
+
+    let reserved_only = unique_serial();
+    s.reserve_serial(&reserved_only, "tsa_signer")
+        .await
+        .unwrap();
+
+    let all = s.issued_serials().await.unwrap();
+    assert!(all.contains(&issued), "un certificat émis doit y figurer");
+    assert!(
+        all.contains(&revoked),
+        "un certificat révoqué doit y figurer aussi"
+    );
+    assert!(
+        !all.contains(&reserved_only),
+        "une réservation non signée ne doit jamais y figurer"
+    );
+}
+
 #[tokio::test]
 async fn revoke_is_idempotent_on_first_date() {
     let s = require_store!();

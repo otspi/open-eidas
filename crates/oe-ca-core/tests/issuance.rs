@@ -248,6 +248,50 @@ async fn revoke_then_publish_crl_lists_the_certificate() {
     assert_eq!(current.number, crl.number);
 }
 
+/// Constat O-1 de l'audit du 2026-09-25 : la CRL porte, en plus des
+/// révoqués, tous les numéros émis — c'est ce qui permet au répondeur OCSP
+/// de distinguer un numéro jamais émis d'un numéro émis mais non révoqué
+/// (`oe_conformance::OID_CRL_ISSUED_SERIALS`).
+#[tokio::test]
+async fn published_crl_lists_every_issued_serial_not_only_the_revoked_ones() {
+    let store = store();
+    let (issuer, _issuing_signer) = issuer_from_ceremony(store.clone()).await;
+
+    let end_entity = SoftwareToken::generate(2048);
+    let public_key_der = end_entity.public_key_der().unwrap();
+    let cert = issuer
+        .issue(
+            &public_key_der,
+            "ocsp.example.test",
+            &profile::ocsp_responder(),
+            "txn-o1",
+        )
+        .await
+        .unwrap();
+    let serial = oe_ca_core::canonical_serial(cert.tbs_certificate().serial_number());
+
+    let crl = issuer.publish_crl().await.unwrap();
+    let parsed: x509_cert::crl::CertificateList =
+        x509_cert::crl::CertificateList::from_der(&crl.der).unwrap();
+    let issued_oid =
+        der::asn1::ObjectIdentifier::new(oe_conformance::OID_CRL_ISSUED_SERIALS).unwrap();
+    let ext = parsed
+        .tbs_cert_list
+        .crl_extensions
+        .expect("la CRL doit porter des extensions")
+        .into_iter()
+        .find(|e| e.extn_id == issued_oid)
+        .expect("l'extension des séries émises doit être présente");
+    let issued: Vec<x509_cert::serial_number::SerialNumber> =
+        der::Decode::from_der(ext.extn_value.as_bytes()).unwrap();
+    assert!(
+        issued
+            .iter()
+            .any(|s| oe_ca_core::canonical_serial(s) == serial),
+        "le certificat non révoqué doit figurer parmi les séries émises"
+    );
+}
+
 #[tokio::test]
 async fn revoke_is_idempotent_and_keeps_first_reason() {
     let store = store();

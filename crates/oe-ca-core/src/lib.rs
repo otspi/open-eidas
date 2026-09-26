@@ -486,9 +486,16 @@ impl Issuer {
             .subject_public_key_info()
             .to_der()?;
         let ski = signing::subject_key_id(&issuer_spki_der)?;
+        // Constat O-1 : la CRL seule ne distingue pas un numéro jamais émis
+        // d'un numéro émis mais non révoqué. Cette extension porte tous les
+        // numéros émis (jamais purgée, à la différence des entrées
+        // révoquées ci-dessus) pour que le répondeur OCSP réponde `unknown`
+        // à un numéro absent d'ici, jamais `good`.
+        let issued = self.opts.store.issued_serials().await?;
         let crl_extensions: x509_cert::ext::Extensions = vec![
             extensions::crl_number(number)?,
             extensions::authority_key_identifier(&ski)?,
+            extensions::crl_issued_serials(&issued)?,
         ];
 
         let tbs = x509_cert::crl::TbsCertList {

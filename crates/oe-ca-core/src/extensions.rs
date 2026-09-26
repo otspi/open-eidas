@@ -94,6 +94,21 @@ pub(crate) fn extended_key_usage(
     build(OID_EXT_KEY_USAGE, critical, &oids.to_vec())
 }
 
+/// Constat O-1 de l'audit du 2026-09-25 (EN 319 411-1 `OVR-6.6.3-02`) : le
+/// répondeur OCSP ne connaît que la CRL, où un certificat jamais émis est
+/// indiscernable d'un certificat émis mais non révoqué — les deux sont
+/// simplement absents. Cette extension de la **CRL** (pas d'un certificat)
+/// porte tous les numéros de série jamais émis, pour que le répondeur
+/// réponde `unknown` à une série absente d'ici, jamais `good`. Non critique :
+/// un vérificateur RFC 5280 qui l'ignore lit une CRL par ailleurs valide.
+pub(crate) fn crl_issued_serials(serials: &[Vec<u8>]) -> Result<Extension, CaError> {
+    let values: Result<Vec<x509_cert::serial_number::SerialNumber>, _> = serials
+        .iter()
+        .map(|s| x509_cert::serial_number::SerialNumber::new(s))
+        .collect();
+    build(oe_conformance::OID_CRL_ISSUED_SERIALS, false, &values?)
+}
+
 pub(crate) fn ocsp_no_check() -> Extension {
     // La valeur est un NULL DER : l'extension vaut par sa seule présence.
     Extension {

@@ -161,6 +161,14 @@ pub trait Store: Send + Sync {
         grace: time::Duration,
     ) -> Result<Vec<Certificate>, StoreError>;
 
+    /// Tous les numéros de série émis (`issued` ou `revoked`, jamais
+    /// `reserved`), sans limite de durée — jamais purgé, à la différence de
+    /// [`Store::revoked`] (constat O-1 de l'audit du 2026-09-25) : le
+    /// répondeur OCSP en a besoin pour distinguer un certificat jamais émis
+    /// (`unknown`) d'un certificat émis, même expiré depuis longtemps ou
+    /// révoqué puis retiré de la CRL (`good`/`revoked`, jamais `unknown`).
+    async fn issued_serials(&self) -> Result<Vec<Serial>, StoreError>;
+
     async fn create_request(&self, r: Request) -> Result<(), StoreError>;
     async fn request_by_fingerprint(&self, fingerprint: &str) -> Result<Request, StoreError>;
     async fn request_by_transaction_id(&self, transaction_id: &str) -> Result<Request, StoreError>;
@@ -328,6 +336,18 @@ impl Store for Memory {
             .cloned()
             .collect();
         out.sort_by(|a, b| a.serial.cmp(&b.serial));
+        Ok(out)
+    }
+
+    async fn issued_serials(&self) -> Result<Vec<Serial>, StoreError> {
+        let state = self.inner.lock().unwrap();
+        let mut out: Vec<Serial> = state
+            .certificates
+            .values()
+            .filter(|c| c.status != CertificateStatus::Reserved)
+            .map(|c| c.serial.clone())
+            .collect();
+        out.sort();
         Ok(out)
     }
 

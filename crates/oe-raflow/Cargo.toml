@@ -27,5 +27,6 @@ async-trait = "0.1"
 [dev-dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 oe-hsm = { path = "../oe-hsm" }
+oe-conformance = { path = "../oe-conformance" }
 spki = "0.8"
 rand = "0.8"
