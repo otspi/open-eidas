@@ -28,6 +28,8 @@ use hmac::{Hmac, Mac};
 use sha2::{Digest, Sha256};
 use x509_cert::request::CertReq;
 
+/// Voie par laquelle l'opérateur d'une décision a été identifié (constat R-1).
+pub use oe_ca_core::{SystemIdentity, Via};
 use oe_castore::{Request, RequestState, Store, StoreError};
 
 #[derive(Debug, thiserror::Error)]
@@ -219,9 +221,16 @@ impl Decider {
         transaction_id: &str,
         operator: &str,
         comment: &str,
+        via: &Via,
     ) -> Result<Request, RaflowError> {
-        self.decide(transaction_id, operator, comment, RequestState::Approved)
-            .await
+        self.decide(
+            transaction_id,
+            operator,
+            comment,
+            via,
+            RequestState::Approved,
+        )
+        .await
     }
 
     /// Refuse définitivement une demande. Le demandeur en est informé lors
@@ -231,9 +240,16 @@ impl Decider {
         transaction_id: &str,
         operator: &str,
         comment: &str,
+        via: &Via,
     ) -> Result<Request, RaflowError> {
-        self.decide(transaction_id, operator, comment, RequestState::Rejected)
-            .await
+        self.decide(
+            transaction_id,
+            operator,
+            comment,
+            via,
+            RequestState::Rejected,
+        )
+        .await
     }
 
     async fn decide(
@@ -241,6 +257,7 @@ impl Decider {
         transaction_id: &str,
         operator: &str,
         comment: &str,
+        via: &Via,
         target: RequestState,
     ) -> Result<Request, RaflowError> {
         if operator.is_empty() {
@@ -248,6 +265,7 @@ impl Decider {
                 "la décision exige l'identité de l'opérateur qui la prend".to_string(),
             ));
         }
+        via.check_comment(comment).map_err(RaflowError::Other)?;
         let r = match self
             .opts
             .store
@@ -288,17 +306,15 @@ impl Decider {
         // Exception documentée (voir `Recorder`) : l'écriture optimiste
         // ci-dessus, qui départage deux décisions concurrentes, reste avant
         // le journal — pas après, comme partout ailleurs.
-        self.record(
-            event,
-            serde_json::json!({
-                "transaction": updated.transaction_id,
-                "profil": updated.profile,
-                "sujet_cn": updated.subject_cn,
-                "operateur": operator,
-                "commentaire": comment,
-            }),
-        )
-        .await?;
+        let mut data = serde_json::json!({
+            "transaction": updated.transaction_id,
+            "profil": updated.profile,
+            "sujet_cn": updated.subject_cn,
+            "operateur": operator,
+            "commentaire": comment,
+        });
+        via.annotate(&mut data);
+        self.record(event, data).await?;
         Ok(updated)
     }
 
@@ -572,6 +588,7 @@ impl Flow {
                     SUPERSEDED,
                     "raflow:renouvellement",
                     &format!("remplacé par {}", hex::encode(&serial)),
+                    &Via::Automatic,
                 )
                 .await?;
         }

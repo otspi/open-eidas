@@ -858,7 +858,12 @@ impl Service {
                 ..
             } => self
                 .decider
-                .approve(transaction_id, &operator.name, comment)
+                .approve(
+                    transaction_id,
+                    &operator.name,
+                    comment,
+                    &oe_raflow::Via::WebAuthn,
+                )
                 .await
                 .map(|_| None)
                 .map_err(|e| Error::Effect(e.to_string()))?,
@@ -867,7 +872,12 @@ impl Service {
                 comment,
             } => self
                 .decider
-                .reject(transaction_id, &operator.name, comment)
+                .reject(
+                    transaction_id,
+                    &operator.name,
+                    comment,
+                    &oe_raflow::Via::WebAuthn,
+                )
                 .await
                 .map(|_| None)
                 .map_err(|e| Error::Effect(e.to_string()))?,

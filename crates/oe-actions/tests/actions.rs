@@ -531,7 +531,12 @@ async fn a_request_decided_meanwhile_is_not_overwritten() {
 
     // Un autre chemin (le CLI de secours) rejette la demande entre-temps.
     env.decider
-        .reject(&r.transaction_id, "cli", "refusée par le secours")
+        .reject(
+            &r.transaction_id,
+            "cli",
+            "refusée par le secours",
+            &oe_raflow::Via::Cli(oe_raflow::SystemIdentity::current()),
+        )
         .await
         .unwrap();
 

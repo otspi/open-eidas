@@ -12,7 +12,7 @@ use der::{Decode, Encode};
 use x509_cert::Certificate;
 
 use oe_ca_core::ceremony::{run_ceremony, CeremonyOptions, AUTHORITY_ISSUING, AUTHORITY_ROOT};
-use oe_ca_core::{profile, Issuer, Options};
+use oe_ca_core::{profile, Issuer, Options, Via};
 use oe_castore::{Memory, Store};
 use oe_hsm::testing::SoftwareToken;
 use oe_hsm::SigningToken;
@@ -119,6 +119,7 @@ async fn root_revokes_the_issuing_authority_and_publishes_the_arl() {
             1,
             "test-operator",
             "clé émettrice compromise",
+            &Via::WebAuthn,
         )
         .await
         .expect("la révocation de l'émettrice doit réussir");
@@ -156,7 +157,7 @@ async fn root_cannot_revoke_itself() {
             recorder: None,
         });
     let err = root_authority
-        .revoke_authority(AUTHORITY_ROOT, 1, "test-operator", "")
+        .revoke_authority(AUTHORITY_ROOT, 1, "test-operator", "", &Via::WebAuthn)
         .await
         .unwrap_err();
     assert!(err.to_string().contains("racine"), "{err}");
@@ -176,7 +177,7 @@ async fn a_journal_failure_blocks_authority_revocation_before_the_store_is_touch
         });
 
     let err = root_authority
-        .revoke_authority(AUTHORITY_ISSUING, 1, "test-operator", "")
+        .revoke_authority(AUTHORITY_ISSUING, 1, "test-operator", "", &Via::WebAuthn)
         .await
         .unwrap_err();
     assert!(err.to_string().contains("journal"), "{err}");
@@ -345,7 +346,7 @@ async fn revoke_then_publish_crl_lists_the_certificate() {
     assert!(parsed_empty.tbs_cert_list.revoked_certificates.is_none());
 
     issuer
-        .revoke(&serial, 1, "test-operator", "")
+        .revoke(&serial, 1, "test-operator", "", &Via::WebAuthn)
         .await
         .expect("la révocation doit réussir");
 
@@ -433,11 +434,11 @@ async fn revoke_is_idempotent_and_keeps_first_reason() {
     let serial = oe_ca_core::canonical_serial(cert.tbs_certificate().serial_number());
 
     issuer
-        .revoke(&serial, 1, "test-operator", "")
+        .revoke(&serial, 1, "test-operator", "", &Via::WebAuthn)
         .await
         .unwrap();
     issuer
-        .revoke(&serial, 5, "test-operator", "")
+        .revoke(&serial, 5, "test-operator", "", &Via::WebAuthn)
         .await
         .unwrap();
 
@@ -520,7 +521,7 @@ async fn openssl_accepts_the_chain_and_honors_revocation() {
     );
 
     issuer
-        .revoke(&serial, 1, "test-operator", "")
+        .revoke(&serial, 1, "test-operator", "", &Via::WebAuthn)
         .await
         .unwrap();
     let crl = issuer.publish_crl().await.unwrap();
@@ -694,7 +695,7 @@ async fn every_authority_decision_is_recorded() {
         .unwrap();
     let serial = oe_ca_core::canonical_serial(cert.tbs_certificate().serial_number());
     issuer
-        .revoke(&serial, 1, "test-operator", "test")
+        .revoke(&serial, 1, "test-operator", "test", &Via::WebAuthn)
         .await
         .unwrap();
     issuer.publish_crl().await.unwrap();
@@ -725,7 +726,7 @@ async fn revoke_rejects_empty_operator() {
         .unwrap();
     let serial = oe_ca_core::canonical_serial(cert.tbs_certificate().serial_number());
 
-    let err = issuer.revoke(&serial, 1, "", "").await;
+    let err = issuer.revoke(&serial, 1, "", "", &Via::WebAuthn).await;
     assert!(
         err.is_err(),
         "révoquer sans identité d'opérateur doit être refusé — traçabilité de la décision"
@@ -970,7 +971,7 @@ async fn a_journal_failure_blocks_revocation_before_the_store_is_touched() {
     .unwrap();
 
     let err = failing_issuer
-        .revoke(&serial, 1, "test-operator", "test")
+        .revoke(&serial, 1, "test-operator", "test", &Via::WebAuthn)
         .await
         .unwrap_err();
     assert!(err.to_string().contains("journal"), "{err}");
@@ -1064,7 +1065,13 @@ async fn a_revoked_issuing_authority_refuses_to_issue() {
         .expect("avant révocation, l'émission doit réussir");
 
     root_authority
-        .revoke_authority(AUTHORITY_ISSUING, 1, "test-operator", "compromission")
+        .revoke_authority(
+            AUTHORITY_ISSUING,
+            1,
+            "test-operator",
+            "compromission",
+            &Via::WebAuthn,
+        )
         .await
         .unwrap();
 
@@ -1147,7 +1154,13 @@ async fn openssl_rejects_a_leaf_under_a_revoked_issuing_authority() {
     );
 
     let arl = root_authority
-        .revoke_authority(AUTHORITY_ISSUING, 1, "test-operator", "compromission")
+        .revoke_authority(
+            AUTHORITY_ISSUING,
+            1,
+            "test-operator",
+            "compromission",
+            &Via::WebAuthn,
+        )
         .await
         .unwrap();
     let after = verify(&arl.der);
@@ -1166,4 +1179,43 @@ async fn openssl_rejects_a_leaf_under_a_revoked_issuing_authority() {
     );
 
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Constat R-1 : une révocation prise par le CLI (voie de secours) sans
+/// commentaire est refusée avant toute écriture, et le certificat reste actif.
+#[tokio::test]
+async fn a_cli_revocation_without_a_comment_is_refused_before_the_store_is_touched() {
+    let store = store();
+    let (issuer, _issuing_signer) = issuer_from_ceremony(store.clone()).await;
+    let public_key_der = SoftwareToken::generate(2048).public_key_der().unwrap();
+    let cert = issuer
+        .issue(
+            &public_key_der,
+            "tsu.example.test",
+            &profile::tsa_signer(),
+            "txn-cli",
+        )
+        .await
+        .unwrap();
+    let serial = oe_ca_core::canonical_serial(cert.tbs_certificate().serial_number());
+
+    let cli = Via::Cli(oe_ca_core::SystemIdentity::current());
+    let err = issuer
+        .revoke(&serial, 1, "prenom.nom", "", &cli)
+        .await
+        .expect_err("une révocation CLI sans commentaire doit être refusée");
+    assert!(err.to_string().contains("commentaire"), "{err}");
+    assert_eq!(
+        store.certificate(&serial).await.unwrap().status,
+        oe_castore::CertificateStatus::Issued
+    );
+
+    issuer
+        .revoke(&serial, 1, "prenom.nom", "clé exposée", &cli)
+        .await
+        .expect("avec un commentaire, la voie de secours reste ouverte");
+    assert_eq!(
+        store.certificate(&serial).await.unwrap().status,
+        oe_castore::CertificateStatus::Revoked
+    );
 }

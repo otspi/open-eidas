@@ -40,14 +40,17 @@ enum Command {
         #[command(subcommand)]
         action: RaAction,
     },
-    /// Révoque un certificat émis et republie la CRL.
+    /// Révoque un certificat émis et republie la CRL. Voie de secours : la
+    /// voie primaire est l'action signée (`revoke_certificate`, docs/WEBUI.md §20).
     Revoke {
         /// Numéro de série en hexadécimal (voir `ra list`, le journal d'audit).
         serial_hex: String,
         /// Code motif RFC 5280 §5.3.1 (1=keyCompromise, 4=superseded, 5=cessationOfOperation, ...).
         reason: i32,
         operator: String,
-        #[arg(trailing_var_arg = true)]
+        /// Motif de la décision, obligatoire : voie de secours, l'opérateur
+        /// n'est que déclaré (docs/WEBUI.md §20).
+        #[arg(trailing_var_arg = true, required = true)]
         comment: Vec<String>,
     },
     /// Actes de la racine hors ligne (constat C-1) : révocation d'une autorité
@@ -94,7 +97,9 @@ enum AuthorityAction {
         /// 4=superseded, 5=cessationOfOperation, ...).
         reason: i32,
         operator: String,
-        #[arg(trailing_var_arg = true)]
+        /// Motif de la décision, obligatoire : voie de secours, l'opérateur
+        /// n'est que déclaré (docs/WEBUI.md §20).
+        #[arg(trailing_var_arg = true, required = true)]
         comment: Vec<String>,
     },
     /// Publie une nouvelle ARL, même vide : à relancer avant l'échéance de la
@@ -190,18 +195,24 @@ enum OperatorsAction {
 enum RaAction {
     /// Liste les demandes d'enrôlement.
     List { state: Option<String> },
-    /// Approuve une demande, sous l'identité d'un opérateur.
+    /// Approuve une demande, sous l'identité déclarée d'un opérateur (voie de
+    /// secours, consignée `authenticated_via: cli` avec l'identité système).
     Approve {
         transaction_id: String,
         operator: String,
-        #[arg(trailing_var_arg = true)]
+        /// Motif de la décision, obligatoire : voie de secours, l'opérateur
+        /// n'est que déclaré (docs/WEBUI.md §20).
+        #[arg(trailing_var_arg = true, required = true)]
         comment: Vec<String>,
     },
-    /// Rejette une demande, sous l'identité d'un opérateur.
+    /// Rejette une demande, sous l'identité déclarée d'un opérateur (voie de
+    /// secours, consignée `authenticated_via: cli` avec l'identité système).
     Reject {
         transaction_id: String,
         operator: String,
-        #[arg(trailing_var_arg = true)]
+        /// Motif de la décision, obligatoire : voie de secours, l'opérateur
+        /// n'est que déclaré (docs/WEBUI.md §20).
+        #[arg(trailing_var_arg = true, required = true)]
         comment: Vec<String>,
     },
 }
@@ -481,8 +492,10 @@ async fn run_authority(action: AuthorityAction) {
             comment,
         } => {
             let comment = join_comment(&comment);
+            // Voie de secours (docs/WEBUI.md §20, constat R-1), comme `revoke`.
+            let via = oe_ca_core::Via::Cli(oe_ca_core::SystemIdentity::current());
             let arl = root
-                .revoke_authority(&name, reason, &operator, &comment)
+                .revoke_authority(&name, reason, &operator, &comment, &via)
                 .await
                 .unwrap_or_else(|e| die("révocation de l'autorité", e));
             tracing::info!(autorite = %name, motif = reason, operateur = %operator, arl = arl.number, "autorité révoquée et ARL republiée");
@@ -839,10 +852,17 @@ async fn run_decide(
     });
 
     let comment = join_comment(&comment);
+    // Voie de secours (docs/WEBUI.md §20, constat R-1) : l'opérateur n'est que
+    // déclaré ; le journal le marque comme tel, avec l'identité système réelle.
+    let via = oe_raflow::Via::Cli(oe_raflow::SystemIdentity::current());
     let r = if action_name == "approve" {
-        decider.approve(&transaction_id, &operator, &comment).await
+        decider
+            .approve(&transaction_id, &operator, &comment, &via)
+            .await
     } else {
-        decider.reject(&transaction_id, &operator, &comment).await
+        decider
+            .reject(&transaction_id, &operator, &comment, &via)
+            .await
     };
     let r = r.unwrap_or_else(|e| die("décision RA", e));
     tracing::info!(action = action_name, transaction = %r.transaction_id, profil = %r.profile, sujet_cn = %r.subject_cn, operateur = %operator, "décision enregistrée");
@@ -859,8 +879,10 @@ async fn run_revoke(serial_hex: String, reason: i32, operator: String, comment: 
     let issuer = build_issuer(&cfg, store, recorder).await;
 
     let comment = join_comment(&comment);
+    // Voie de secours (docs/WEBUI.md §20, constat R-1), comme `ra approve`.
+    let via = oe_ca_core::Via::Cli(oe_ca_core::SystemIdentity::current());
     issuer
-        .revoke(&serial, reason, &operator, &comment)
+        .revoke(&serial, reason, &operator, &comment, &via)
         .await
         .unwrap_or_else(|e| die("révocation", e));
     // La CRL est republiée immédiatement : une révocation qui n'est pas
