@@ -37,6 +37,7 @@ async fn console(environment: Environment) -> Option<axum::Router> {
             login: common::login_service(pool.clone()),
             sessions: common::sessions(pool),
             journal: Arc::new(ra_console::audit::NullRecorder),
+            s3: None,
         }),
         Console { environment },
     ))

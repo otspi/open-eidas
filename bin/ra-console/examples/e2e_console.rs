@@ -275,6 +275,7 @@ async fn main() {
             ),
             sessions: common::sessions(pool),
             journal: Arc::new(ra_console::audit::NullRecorder),
+            s3: None,
         }),
         ra_console::web::Console {
             environment: ra_console::web::Environment::Staging,
