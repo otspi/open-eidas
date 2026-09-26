@@ -180,7 +180,10 @@ impl ParsedToken {
         let tst_info =
             oe_rfc3161_asn1::TstInfo::from_der(octets.as_bytes()).map_err(|e| e.to_string())?;
 
-        let gen_time = tst_info.gen_time.to_date_time().to_string();
+        // `gen_time` est un `Any` (pas `der::asn1::GeneralizedTime`, qui
+        // interdit les fractions de seconde — voir `oe_rfc3161_asn1::gen_time`) :
+        // son contenu est déjà la chaîne ASCII `YYYYMMDDHHMMSS[.fff]Z`.
+        let gen_time = String::from_utf8_lossy(tst_info.gen_time.value()).to_string();
 
         let signer_subject = signed_data.certificates.as_ref().and_then(|set| {
             set.0.iter().find_map(|choice| match choice {
