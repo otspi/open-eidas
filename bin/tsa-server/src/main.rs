@@ -75,7 +75,7 @@ fn json_to_audit_data(data: serde_json::Value) -> Option<oe_audit::Data> {
     }
 }
 
-impl oe_tsa_core::Recorder for AuditRecorder {
+impl oe_timesource::Recorder for AuditRecorder {
     fn append(&self, event: &str, data: serde_json::Value) -> Result<(), String> {
         self.0
             .append(event, json_to_audit_data(data))
@@ -83,9 +83,53 @@ impl oe_tsa_core::Recorder for AuditRecorder {
     }
 }
 
-impl oe_timesource::Recorder for AuditRecorder {
+/// Résume l'état de traçabilité de l'heure au moment de l'appel, pour
+/// enrichir le journal de `oe-tsa-core` (constat J-3 de l'audit du
+/// 2026-09-25, recommandation « état de l'horloge — écart, sources — au
+/// moment de l'émission »).
+fn describe_clock_status(status: &oe_timesource::Status) -> serde_json::Value {
+    let format_time = |t: time::OffsetDateTime| {
+        t.format(&time::format_description::well_known::Rfc3339)
+            .unwrap_or_default()
+    };
+    serde_json::json!({
+        "politique": status.policy.to_string(),
+        "tracable": status.traceable,
+        "raison": status.reason,
+        "ecart_secondes": status.offset.as_seconds_f64(),
+        "etendue_secondes": status.spread.as_seconds_f64(),
+        "derniere_synchro": status.last_sync.map(format_time),
+        "sources": status.sources.iter().map(|s| serde_json::json!({
+            "serveur": s.server,
+            "ecart_secondes": s.offset.as_seconds_f64(),
+            "aller_retour_secondes": s.rtt.as_seconds_f64(),
+            "stratum": s.stratum,
+            "a": format_time(s.at),
+            "erreur": s.err,
+        })).collect::<Vec<_>>(),
+    })
+}
+
+/// Relie le journal d'`oe-tsa-core` au moniteur NTP : `oe_tsa_core::Recorder`
+/// reste délibérément découplé d'`oe-timesource` (voir `MonitorClock`
+/// ci-dessous) — c'est ici, où `tsa-server` connaît déjà les deux, que
+/// l'état de l'horloge courant est ajouté à chaque événement journalisé,
+/// sans que le cœur métier de l'horodatage ait à en savoir quoi que ce soit.
+struct TsaAuditRecorder {
+    log: Arc<oe_audit::Log>,
+    monitor: Arc<oe_timesource::Monitor>,
+}
+
+impl oe_tsa_core::Recorder for TsaAuditRecorder {
     fn append(&self, event: &str, data: serde_json::Value) -> Result<(), String> {
-        self.0
+        let mut data = data;
+        if let serde_json::Value::Object(map) = &mut data {
+            map.insert(
+                "horloge".to_string(),
+                describe_clock_status(&self.monitor.status()),
+            );
+        }
+        self.log
             .append(event, json_to_audit_data(data))
             .map_err(|e| e.to_string())
     }
@@ -161,7 +205,10 @@ async fn run_serve() {
     // Conservés pour la durée du process : le thread de sondage s'arrête à l'abandon du drapeau.
     let (_poll_handle, _poll_stop) = monitor.start_background();
 
-    let tsa_recorder: Arc<dyn oe_tsa_core::Recorder> = Arc::new(AuditRecorder(log.clone()));
+    let tsa_recorder: Arc<dyn oe_tsa_core::Recorder> = Arc::new(TsaAuditRecorder {
+        log: log.clone(),
+        monitor: monitor.clone(),
+    });
     let authority = Arc::new(
         oe_tsa_core::Authority::new(oe_tsa_core::Options {
             signer,
@@ -345,5 +392,79 @@ async fn main() {
             );
         }
         Command::Version => println!("{}", env!("CARGO_PKG_VERSION")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn describe_clock_status_reports_offset_traceability_and_sources() {
+        let status = oe_timesource::Status {
+            policy: oe_timesource::Policy::Enforce,
+            traceable: true,
+            reason: String::new(),
+            offset: time::Duration::milliseconds(120),
+            spread: time::Duration::milliseconds(5),
+            last_sync: None,
+            sources: Vec::new(),
+        };
+        let json = describe_clock_status(&status);
+        assert_eq!(json["politique"], "enforce");
+        assert_eq!(json["tracable"], true);
+        assert!((json["ecart_secondes"].as_f64().unwrap() - 0.12).abs() < 1e-9);
+    }
+
+    /// Constat J-3 de l'audit du 2026-09-25 : le journal d'`oe-tsa-core` doit
+    /// aussi porter l'état de l'horloge au moment de l'émission — preuve que
+    /// le `Recorder` englobant de `tsa-server` l'ajoute réellement, sans que
+    /// `oe-tsa-core` ait eu à connaître `oe-timesource` (voir la note de
+    /// `TsaAuditRecorder`).
+    #[test]
+    fn tsa_audit_recorder_journals_the_clock_state_at_the_moment_of_issuance() {
+        let dir = std::env::temp_dir().join(format!(
+            "tsa-audit-recorder-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("audit.log");
+        let log = Arc::new(oe_audit::Log::open(&path).unwrap());
+        // Politique désactivée, aucun serveur : l'état est fixé
+        // immédiatement, sans sonder de vrai serveur NTP (voir
+        // `Monitor::new`).
+        let monitor = oe_timesource::Monitor::new(oe_timesource::Options {
+            servers: Vec::new(),
+            policy: oe_timesource::Policy::Disabled,
+            max_offset: time::Duration::milliseconds(500),
+            max_age: time::Duration::HOUR,
+            min_sources: 1,
+            poll_interval: std::time::Duration::from_secs(60),
+            timeout: std::time::Duration::from_secs(1),
+            recorder: None,
+        })
+        .unwrap();
+        let recorder = TsaAuditRecorder { log, monitor };
+
+        oe_tsa_core::Recorder::append(
+            &recorder,
+            "timestamp.granted",
+            serde_json::json!({ "serial_number": "abcd" }),
+        )
+        .unwrap();
+
+        let records = oe_audit::read(&path).unwrap();
+        assert_eq!(records.len(), 1);
+        let horloge = records[0]
+            .data
+            .as_ref()
+            .and_then(|d| d.get("horloge"))
+            .expect("le champ horloge est absent du journal");
+        assert_eq!(horloge["politique"], "disabled");
+        assert_eq!(horloge["tracable"], true);
     }
 }

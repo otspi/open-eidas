@@ -283,13 +283,26 @@ impl Authority {
         // signe jamais deux fois la même chose, et rien n'annule une
         // signature déjà produite). Si le journal échoue, aucun jeton n'est
         // signé.
+        //
+        // `serial_number` est celui du **jeton** (`tst_info.serial_number`,
+        // tiré à chaque appel), jamais celui, constant, du certificat de la
+        // TSU : c'est ce qui permet, après incident, d'identifier quels
+        // jetons ont été émis (EN 319 421 `OVR-7.13-05`, constat J-3 de
+        // l'audit du 2026-09-25). `message_imprint` et `gen_time` (avec sa
+        // fraction) viennent du jeton réellement construit, pas d'une valeur
+        // reconstruite après coup.
         self.record(
             "timestamp.granted",
             serde_json::json!({
-                "serial_number": bytes_to_hex(parts_serial_number_bytes(&self.opts.certificate)),
-                "gen_time": gen_time.to_string(),
+                "serial_number": bytes_to_hex(tst_info.serial_number.as_bytes()),
+                "gen_time": gen_time
+                    .format(&time::format_description::well_known::Rfc3339)
+                    .unwrap_or_else(|_| gen_time.to_string()),
                 "policy": self.opts.policy.to_string(),
                 "nonce": req.nonce.is_some(),
+                "message_imprint_alg": req.message_imprint.hash_algorithm.oid.to_string(),
+                "message_imprint": bytes_to_hex(req.message_imprint.hashed_message.as_bytes()),
+                "tsu_certificate_fingerprint": bytes_to_hex(&signing_cert_digest),
             }),
         )?;
 
@@ -344,11 +357,7 @@ impl Authority {
     }
 }
 
-fn parts_serial_number_bytes(cert: &Certificate) -> Vec<u8> {
-    cert.tbs_certificate().serial_number().as_bytes().to_vec()
-}
-
-fn bytes_to_hex(bytes: Vec<u8>) -> String {
+fn bytes_to_hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
@@ -526,6 +535,18 @@ mod tests {
         ))
     }
 
+    fn test_certificate_serial() -> Vec<u8> {
+        let dir = fixtures_dir();
+        let cert_pem = std::fs::read_to_string(dir.join("tsu-cert.pem")).unwrap();
+        let cert_block = pem::parse(cert_pem.as_bytes()).unwrap();
+        let certificate = Certificate::from_der(cert_block.contents()).unwrap();
+        certificate
+            .tbs_certificate()
+            .serial_number()
+            .as_bytes()
+            .to_vec()
+    }
+
     fn corpus_dir() -> PathBuf {
         PathBuf::from(concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -548,6 +569,27 @@ mod tests {
     }
 
     fn new_test_authority(clock: Arc<dyn Clock>) -> Authority {
+        new_test_authority_with(clock, None)
+    }
+
+    /// Capture les données de chaque événement journalisé, pour les tests qui
+    /// vérifient *ce qui* est consigné, pas seulement que l'horodatage réussit.
+    #[derive(Default)]
+    struct CapturingRecorder {
+        events: std::sync::Mutex<Vec<(String, serde_json::Value)>>,
+    }
+
+    impl Recorder for CapturingRecorder {
+        fn append(&self, event: &str, data: serde_json::Value) -> Result<(), String> {
+            self.events.lock().unwrap().push((event.to_string(), data));
+            Ok(())
+        }
+    }
+
+    fn new_test_authority_with(
+        clock: Arc<dyn Clock>,
+        recorder: Option<Arc<dyn Recorder>>,
+    ) -> Authority {
         let dir = fixtures_dir();
         let key_pem = std::fs::read_to_string(dir.join("tsu-key.pem")).unwrap();
         let cert_pem = std::fs::read_to_string(dir.join("tsu-cert.pem")).unwrap();
@@ -563,9 +605,52 @@ mod tests {
             accuracy: std::time::Duration::from_secs(1),
             signing_digest: DigestAlg::Sha256,
             clock,
-            recorder: None,
+            recorder,
         })
         .unwrap()
+    }
+
+    /// Constat J-3 de l'audit du 2026-09-25 : le journal doit tracer le
+    /// **jeton** émis, pas seulement le certificat de la TSU (constant d'un
+    /// appel à l'autre). Deux jetons distincts doivent produire deux séries
+    /// distinctes au journal (recommandation explicite de l'audit).
+    #[test]
+    fn timestamp_granted_journals_the_tokens_own_serial_not_the_certificates() {
+        let recorder = Arc::new(CapturingRecorder::default());
+        let authority = new_test_authority_with(Arc::new(TestClock), Some(recorder.clone()));
+        let req_der = read_corpus_request("granted-sha256-with-cert");
+
+        authority.timestamp(&req_der).expect("horodatage refusé");
+        authority.timestamp(&req_der).expect("horodatage refusé");
+
+        let events = recorder.events.lock().unwrap();
+        let granted: Vec<_> = events
+            .iter()
+            .filter(|(e, _)| e == "timestamp.granted")
+            .collect();
+        assert_eq!(granted.len(), 2, "{events:?}");
+
+        let cert_serial = bytes_to_hex(&test_certificate_serial());
+        let mut series = std::collections::HashSet::new();
+        for (_, data) in &granted {
+            let serial = data["serial_number"].as_str().unwrap();
+            assert_ne!(
+                serial, cert_serial,
+                "la série journalisée est celle du certificat, pas celle du jeton"
+            );
+            assert!(!data["message_imprint"].as_str().unwrap().is_empty());
+            assert!(!data["message_imprint_alg"].as_str().unwrap().is_empty());
+            assert!(!data["tsu_certificate_fingerprint"]
+                .as_str()
+                .unwrap()
+                .is_empty());
+            series.insert(serial.to_string());
+        }
+        assert_eq!(
+            series.len(),
+            2,
+            "deux jetons doivent produire deux séries distinctes au journal"
+        );
     }
 
     fn read_corpus_request(case: &str) -> Vec<u8> {
