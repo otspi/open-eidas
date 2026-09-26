@@ -496,6 +496,11 @@ pub fn check_ocsp_responder_certificate(
 /// les seuls endroits à changer.
 pub const OID_POLICY_INTERNAL_CLIENT: &str = "1.3.6.1.4.1.0.1.1";
 pub const OID_POLICY_INTERNAL_SERVER: &str = "1.3.6.1.4.1.0.1.2";
+/// Extension privée de la CRL portant la liste des numéros de série émis
+/// (constat O-1 de l'audit du 2026-09-25) — voir
+/// `oe_ca_core::extensions::issued_serials`, produite par `ca-server` et lue
+/// par `oe_ocsp_core::Responder`. **PROVISOIRE**, même arc que ci-dessus.
+pub const OID_CRL_ISSUED_SERIALS: &str = "1.3.6.1.4.1.0.1.3";
 /// Le seul nom courant que porte le certificat client de `ra-console`.
 pub const INTERNAL_CLIENT_CN: &str = "ra-console";
 pub const OID_EKU_SERVER_AUTH: &str = "1.3.6.1.5.5.7.3.1";

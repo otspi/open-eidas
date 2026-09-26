@@ -119,3 +119,15 @@ async fn reports_revoked_status_for_a_revoked_certificate() {
     let resp_der = responder.handle(&req_der);
     verify_with_openssl(&resp_der, "revoked");
 }
+
+/// Constat O-1 de l'audit du 2026-09-25 (EN 319 411-1 `OVR-6.6.3-02`) : un
+/// numéro de série jamais émis par cette CA doit recevoir `unknown`, jamais
+/// `good` par défaut — la CRL seule ne peut pas faire la différence, d'où
+/// l'extension privée `OID_CRL_ISSUED_SERIALS` que ce test exerce.
+#[tokio::test]
+async fn reports_unknown_status_for_a_serial_never_issued() {
+    let responder = build_responder().await;
+    let req_der = std::fs::read(fixtures_dir().join("request-unknown.der")).unwrap();
+    let resp_der = responder.handle(&req_der);
+    verify_with_openssl(&resp_der, "unknown");
+}

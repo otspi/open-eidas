@@ -60,6 +60,10 @@ struct Revoked {
 
 struct CrlSnapshot {
     revoked: HashMap<Vec<u8>, Revoked>,
+    /// Constat O-1 : tous les numéros émis, tirés de l'extension privée de
+    /// la CRL (`oe_conformance::OID_CRL_ISSUED_SERIALS`). Un numéro absent
+    /// d'ici est `unknown`, jamais `good` par défaut.
+    issued: std::collections::HashSet<Vec<u8>>,
     this_update: time::OffsetDateTime,
     next_update: time::OffsetDateTime,
     last_fetch: Option<std::time::Instant>,
@@ -69,6 +73,7 @@ impl Default for CrlSnapshot {
     fn default() -> Self {
         CrlSnapshot {
             revoked: HashMap::new(),
+            issued: std::collections::HashSet::new(),
             this_update: time::OffsetDateTime::UNIX_EPOCH,
             next_update: time::OffsetDateTime::UNIX_EPOCH,
             last_fetch: None,
@@ -174,8 +179,31 @@ impl Responder {
             }
         }
 
+        // Constat O-1 : sans cette extension, impossible de distinguer un
+        // numéro jamais émis d'un numéro émis mais non révoqué — une CRL qui
+        // ne la porte pas est donc refusée, comme une CRL illisible (aucune
+        // CRL produite par cette CA n'en manque, voir
+        // `oe_ca_core::extensions::crl_issued_serials`).
+        let issued_oid = der::asn1::ObjectIdentifier::new(oe_conformance::OID_CRL_ISSUED_SERIALS)
+            .expect("OID constant invalide");
+        let issued_ext = crl
+            .tbs_cert_list
+            .crl_extensions
+            .as_ref()
+            .and_then(|exts| exts.iter().find(|e| e.extn_id == issued_oid))
+            .ok_or_else(|| {
+                OcspError::InvalidCrl(der::Error::new(der::ErrorKind::Failed, der::Length::ZERO))
+            })?;
+        let issued_serials: Vec<x509_cert::serial_number::SerialNumber> =
+            der::Decode::from_der(issued_ext.extn_value.as_bytes())?;
+        let issued: std::collections::HashSet<Vec<u8>> = issued_serials
+            .iter()
+            .map(|s| s.as_bytes().to_vec())
+            .collect();
+
         let mut snap = self.snapshot.write().expect("verrou de CRL empoisonné");
         snap.revoked = revoked;
+        snap.issued = issued;
         snap.this_update = x509_time_to_offset(&crl.tbs_cert_list.this_update);
         snap.next_update = crl
             .tbs_cert_list
@@ -231,14 +259,18 @@ impl Responder {
             return Ok(error_response(OcspResponseStatus::TryLater));
         }
 
-        let status = match snap.revoked.get(cert_id.serial_number.as_bytes()) {
+        let serial = cert_id.serial_number.as_bytes();
+        let status = match snap.revoked.get(serial) {
             Some(rev) => CertStatus::Revoked(RevokedInfo {
                 revocation_time: der::asn1::GeneralizedTime::from_date_time(
                     offset_to_der_datetime(rev.at)?,
                 ),
                 revocation_reason: rev.reason,
             }),
-            None => CertStatus::Good(der::asn1::Null),
+            // Constat O-1 : un numéro absent des deux listes n'a jamais été
+            // émis par cette CA — `unknown`, jamais `good` par défaut.
+            None if snap.issued.contains(serial) => CertStatus::Good(der::asn1::Null),
+            None => CertStatus::Unknown(der::asn1::Null),
         };
         let this_update = snap.this_update;
         let next_update = snap.next_update;
