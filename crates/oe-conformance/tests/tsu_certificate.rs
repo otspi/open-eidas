@@ -11,7 +11,7 @@ use oe_castore::Memory;
 use oe_hsm::testing::SoftwareToken;
 use oe_hsm::SigningToken;
 
-async fn issue_with_profile(p: oe_ca_core::Profile) -> x509_cert::Certificate {
+async fn build_issuer() -> Issuer {
     let store = Arc::new(Memory::new());
     let root_signer = Arc::new(SoftwareToken::generate(3072));
     let issuing_signer = Arc::new(SoftwareToken::generate(3072));
@@ -36,7 +36,7 @@ async fn issue_with_profile(p: oe_ca_core::Profile) -> x509_cert::Certificate {
     .await
     .unwrap();
 
-    let issuer = Issuer::new(Options {
+    Issuer::new(Options {
         signer: issuing_signer,
         certificate: hierarchy.issuing,
         chain: vec![],
@@ -47,19 +47,23 @@ async fn issue_with_profile(p: oe_ca_core::Profile) -> x509_cert::Certificate {
         crl_grace: time::Duration::hours(1),
         recorder: None,
     })
-    .unwrap();
+    .unwrap()
+}
 
+async fn issue_with_profile(p: oe_ca_core::Profile) -> x509_cert::Certificate {
+    let issuer = build_issuer().await;
+    try_issue(&issuer, &p).await.unwrap()
+}
+
+async fn try_issue(
+    issuer: &Issuer,
+    p: &oe_ca_core::Profile,
+) -> Result<x509_cert::Certificate, oe_ca_core::CaError> {
     let end_entity = SoftwareToken::generate(3072);
     let public_key_der = end_entity.public_key_der().unwrap();
     issuer
-        .issue(
-            &public_key_der,
-            "entity.example.test",
-            &p,
-            "txn-conformance",
-        )
+        .issue(&public_key_der, "entity.example.test", p, "txn-conformance")
         .await
-        .unwrap()
 }
 
 #[tokio::test]
@@ -67,6 +71,39 @@ async fn accepts_a_certificate_issued_with_the_tsa_signer_profile() {
     let cert = issue_with_profile(profile::tsa_signer()).await;
     oe_conformance::check_tsu_certificate("test", &cert)
         .expect("un certificat émis avec le profil tsa_signer doit être accepté");
+}
+
+/// Constat T-3 de l'audit du 2026-09-25 : sans `privateKeyUsagePeriod`, rien
+/// ne borne la durée de vie de la clé — le certificat seul ne suffit pas.
+/// `check_tsu_certificate` est aussi le `Profile::check` de `tsa_signer` :
+/// l'émission elle-même doit être refusée, pas seulement l'affichage après
+/// coup (même discipline que le reste du profil, voir `Issuer::issue`).
+#[tokio::test]
+async fn issuance_is_refused_without_a_private_key_usage_period() {
+    let issuer = build_issuer().await;
+    let profile = oe_ca_core::Profile {
+        private_key_validity: None,
+        ..profile::tsa_signer()
+    };
+    let err = try_issue(&issuer, &profile).await.unwrap_err();
+    assert!(err.to_string().contains("privateKeyUsagePeriod"), "{err}");
+}
+
+/// La clé ne doit jamais valoir plus longtemps que le certificat qui la
+/// porte (EN 319 421 `TIS-7.6.7-02/-04`).
+#[tokio::test]
+async fn issuance_is_refused_when_the_key_outlives_the_certificate() {
+    let issuer = build_issuer().await;
+    let profile = oe_ca_core::Profile {
+        // La clé (10 ans) dépasse largement la validité du certificat (2 ans).
+        private_key_validity: Some(time::Duration::days(10 * 365)),
+        ..profile::tsa_signer()
+    };
+    let err = try_issue(&issuer, &profile).await.unwrap_err();
+    assert!(
+        err.to_string().contains("expire après le certificat"),
+        "{err}"
+    );
 }
 
 #[tokio::test]

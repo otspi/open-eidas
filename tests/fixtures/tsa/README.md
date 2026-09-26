@@ -14,9 +14,26 @@ réutiliser en dehors du dépôt.
 rejette désormais tout certificat TSU dont la durée de vie dépasse ce
 plafond, y compris cette fixture.
 
-Régénérer :
+**Porte aussi `privateKeyUsagePeriod`** (constat T-3 de l'audit du
+2026-09-25) : `oe_conformance::check_tsu_certificate` (appelée par
+`Authority::new`) exige cette extension, avec un `notAfter` strictement
+antérieur à celui du certificat. `openssl req -addext` ne connaît pas cette
+extension par son nom (« extension setting not supported ») : elle est
+donnée en DER brut (`2.5.29.16=DER:<hex>`), calculé pour un `notAfter`
+`SEQUENCE { [1] IMPLICIT GeneralizedTime }` — voir le script Python en
+commentaire ci-dessous pour en calculer un autre.
+
+Régénérer (le `notAfter` de `privateKeyUsagePeriod` ci-dessous,
+`20280926000000Z`, doit rester antérieur à celui du certificat produit par
+`-days 1095`, sans quoi `check_tsu_certificate` refuse la fixture) :
 
 ```
+# python3 -c "
+# content = '20280926000000Z'.encode()
+# inner = bytes([0x81, len(content)]) + content
+# outer = bytes([0x30, len(inner)]) + inner
+# print(outer.hex())
+# "
 openssl req -x509 -newkey rsa:3072 -nodes \
   -keyout tests/fixtures/tsa/tsu-key.pem \
   -out tests/fixtures/tsa/tsu-cert.pem \
@@ -24,5 +41,6 @@ openssl req -x509 -newkey rsa:3072 -nodes \
   -subj "/CN=Open eIDAS Time-Stamping Unit (fixture de test Rust)" \
   -addext "keyUsage=critical,digitalSignature,nonRepudiation" \
   -addext "extendedKeyUsage=critical,timeStamping" \
-  -addext "basicConstraints=critical,CA:FALSE"
+  -addext "basicConstraints=critical,CA:FALSE" \
+  -addext "2.5.29.16=DER:3011810f32303238303932363030303030305a"
 ```

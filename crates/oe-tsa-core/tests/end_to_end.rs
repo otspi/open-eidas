@@ -194,6 +194,13 @@ impl oe_hsm::SigningToken for CountingSigner {
 fn load_authority_with_signer(
     recorder: Option<Arc<dyn oe_tsa_core::Recorder>>,
 ) -> (Authority, Arc<CountingSigner>) {
+    load_authority_with_signer_and_clock(recorder, Arc::new(FixedClock))
+}
+
+fn load_authority_with_signer_and_clock(
+    recorder: Option<Arc<dyn oe_tsa_core::Recorder>>,
+    clock: Arc<dyn Clock>,
+) -> (Authority, Arc<CountingSigner>) {
     let dir = fixtures_dir();
     let key_pem =
         std::fs::read_to_string(dir.join("tsu-key.pem")).expect("lecture de la clé de test");
@@ -214,11 +221,44 @@ fn load_authority_with_signer(
         policy: der::asn1::ObjectIdentifier::new("1.3.6.1.4.1.99999.1.1.1").unwrap(),
         accuracy: std::time::Duration::from_secs(1),
         signing_digest: DigestAlg::Sha256,
-        clock: Arc::new(FixedClock),
+        clock,
         recorder,
     })
     .expect("construction de l'autorité");
     (authority, signer)
+}
+
+/// Après l'expiration de la clé de la fixture (`privateKeyUsagePeriod`,
+/// notAfter `2028-09-26`, voir `tests/fixtures/tsa/README.md`), mais avant
+/// celle du certificat lui-même (`2029-09-25`) : isole le seul cas qui
+/// intéresse le constat T-3.
+struct KeyExpiredClock;
+impl Clock for KeyExpiredClock {
+    fn now(&self) -> Result<time::OffsetDateTime, String> {
+        let date = time::Date::from_calendar_date(2029, time::Month::January, 1)
+            .map_err(|e| e.to_string())?;
+        Ok(date
+            .with_hms(0, 0, 0)
+            .map_err(|e| e.to_string())?
+            .assume_utc())
+    }
+}
+
+/// Constat T-3 de l'audit du 2026-09-25 (EN 319 421 `TIS-7.7.1-09`) : passé
+/// la date d'expiration de la **clé** (pas celle du certificat, encore
+/// valide), l'horodatage doit être refusé — et surtout, aucune signature ne
+/// doit avoir lieu (pas seulement une erreur rendue après coup).
+#[test]
+fn a_timestamp_is_refused_once_the_signing_key_has_expired() {
+    let (authority, signer) = load_authority_with_signer_and_clock(None, Arc::new(KeyExpiredClock));
+    let req_der = any_granted_request();
+    let err = authority.timestamp(&req_der).unwrap_err();
+    assert!(err.to_string().contains("expirée"), "{err}");
+    assert_eq!(
+        signer.calls.load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "aucune signature ne doit avoir eu lieu : la clé a expiré avant"
+    );
 }
 
 #[test]
