@@ -219,6 +219,54 @@ async fn approve_then_resubmit_issues_a_certificate_signed_by_the_issuing_key() 
     );
 }
 
+/// Constat O-1 de l'audit du 2026-09-25 : sans republication immédiate, un
+/// certificat qui vient d'être émis répondrait `unknown` en OCSP jusqu'à la
+/// prochaine republication périodique de la CRL — aussi grave qu'une
+/// révocation non publiée. `Flow::issue` doit republier avant de rendre la
+/// main à l'appelant.
+#[tokio::test]
+async fn issuance_immediately_republishes_the_crl_with_the_new_serial() {
+    let (flow, store) = test_flow().await;
+    let (csr_der, _key) = build_csr("tsu.example.test");
+    let sig = oe_raflow::signature(&csr_der, HMAC_SECRET);
+
+    let opened = flow
+        .submit(&csr_der, profile::PROFILE_TSA_SIGNER, &sig)
+        .await
+        .unwrap();
+    flow.decider()
+        .approve(&opened.transaction_id, "operateur-ra", "conforme")
+        .await
+        .unwrap();
+    let issued = flow
+        .submit(&csr_der, profile::PROFILE_TSA_SIGNER, &sig)
+        .await
+        .unwrap();
+    let cert = issued.certificate.expect("un certificat doit être renvoyé");
+    let serial = oe_ca_core::canonical_serial(cert.tbs_certificate().serial_number());
+
+    let crl = store.latest_crl().await.expect("une CRL doit être publiée");
+    let parsed: x509_cert::crl::CertificateList =
+        x509_cert::crl::CertificateList::from_der(&crl.der).unwrap();
+    let issued_oid =
+        der::asn1::ObjectIdentifier::new(oe_conformance::OID_CRL_ISSUED_SERIALS).unwrap();
+    let ext = parsed
+        .tbs_cert_list
+        .crl_extensions
+        .expect("la CRL doit porter des extensions")
+        .into_iter()
+        .find(|e| e.extn_id == issued_oid)
+        .expect("l'extension des séries émises doit être présente");
+    let serials: Vec<x509_cert::serial_number::SerialNumber> =
+        der::Decode::from_der(ext.extn_value.as_bytes()).unwrap();
+    assert!(
+        serials
+            .iter()
+            .any(|s| oe_ca_core::canonical_serial(s) == serial),
+        "le certificat tout juste émis doit déjà figurer dans la CRL republiée"
+    );
+}
+
 #[tokio::test]
 async fn reject_then_resubmit_reports_the_operator_and_comment() {
     let (flow, _store) = test_flow().await;

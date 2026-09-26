@@ -576,6 +576,17 @@ impl Flow {
                 .await?;
         }
 
+        // Republie la CRL immédiatement : elle porte, depuis le constat O-1
+        // de l'audit du 2026-09-25, la liste des numéros émis
+        // (`oe_conformance::OID_CRL_ISSUED_SERIALS`) que consulte le
+        // répondeur OCSP pour distinguer un numéro jamais émis d'un numéro
+        // émis mais non révoqué. Sans cette republication immédiate, le
+        // certificat qui vient d'être émis répondrait `unknown` en OCSP
+        // jusqu'à la prochaine republication périodique — aussi grave qu'une
+        // révocation non publiée (même raison que la CLI `revoke`, qui
+        // republie elle aussi tout de suite).
+        self.opts.issuer.publish_crl().await?;
+
         Ok(SubmitResult {
             state: RequestState::Issued,
             transaction_id: r.transaction_id,
