@@ -123,6 +123,7 @@ async fn run_serve() {
         link,
         login,
         sessions,
+        s3: cfg.s3.clone(),
     }));
     let listener = tokio::net::TcpListener::bind(bind_addr(&cfg.listen))
         .await

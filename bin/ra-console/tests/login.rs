@@ -114,6 +114,7 @@ impl Env {
             pool,
             link,
             login,
+            s3: None,
         }));
         Some(Env {
             console,

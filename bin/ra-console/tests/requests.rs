@@ -90,6 +90,7 @@ impl Env {
             pool: pool.clone(),
             link,
             login,
+            s3: None,
         }));
         Some(Env {
             console,

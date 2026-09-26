@@ -49,6 +49,7 @@ async fn healthz_needs_both_the_database_and_the_link() {
         link,
         login: common::login_service(pool.clone()),
         sessions: common::sessions(pool.clone()),
+        s3: None,
     }));
     let (status, body) = get(&app).await;
     assert_eq!(status, axum::http::StatusCode::OK, "{body}");
@@ -67,6 +68,7 @@ async fn healthz_needs_both_the_database_and_the_link() {
         link,
         login: common::login_service(pool.clone()),
         sessions: common::sessions(pool),
+        s3: None,
     }));
     let (status, body) = get(&app).await;
     assert_eq!(

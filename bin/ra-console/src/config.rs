@@ -38,6 +38,11 @@ pub struct S3Config {
     pub access_key: String,
     pub secret_key: String,
     pub key: String,
+    /// Clé du journal **de `ca-server`** dans le même compartiment
+    /// (docs/WEBUI.md §7, §15 étape 2b-D) : `GET /api/v1/audit/search` relit
+    /// et vérifie les deux chaînes, `ra-console` n'a aucun accès local au
+    /// journal de `ca-server`, seul S3 les met en commun.
+    pub ca_key: String,
 }
 
 fn s3_config() -> Result<Option<S3Config>, String> {
@@ -52,6 +57,7 @@ fn s3_config() -> Result<Option<S3Config>, String> {
         access_key: required("OPENEIDAS_S3_ACCESS_KEY")?,
         secret_key: required("OPENEIDAS_S3_SECRET_KEY")?,
         key: optional("OPENEIDAS_S3_KEY", "ra-console/audit.log"),
+        ca_key: optional("OPENEIDAS_S3_CA_KEY", "ca-server/audit.log"),
     }))
 }
 
