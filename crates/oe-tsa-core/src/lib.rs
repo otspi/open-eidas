@@ -107,6 +107,12 @@ pub struct Options {
 
 pub struct Authority {
     opts: Options,
+    /// Constat T-3 de l'audit du 2026-09-25 (EN 319 421 `TIS-7.7.1-09`) :
+    /// mise en cache à la construction (`privateKeyUsagePeriod` du
+    /// certificat, `oe_conformance::tsu_private_key_not_after`) — relue à
+    /// chaque signature dans [`Self::timestamp`], jamais recalculée depuis
+    /// le certificat à chaque appel.
+    key_not_after: time::OffsetDateTime,
 }
 
 impl Authority {
@@ -149,8 +155,15 @@ impl Authority {
         // confiance parce qu'il a été émis un jour — reproduit
         // `CheckTSUCertificate` appelée par `cmd/tsa-server` (Go).
         oe_conformance::check_tsu_certificate("certificat TSU", &opts.certificate)?;
+        // Garanti lisible : `check_tsu_certificate` ci-dessus vient de
+        // vérifier que l'extension existe et est bien formée.
+        let key_not_after =
+            oe_conformance::tsu_private_key_not_after("certificat TSU", &opts.certificate)?;
 
-        Ok(Authority { opts })
+        Ok(Authority {
+            opts,
+            key_not_after,
+        })
     }
 
     pub fn certificate(&self) -> &Certificate {
@@ -243,6 +256,21 @@ impl Authority {
                 format!("source de temps indisponible: {e}"),
             )
         })?;
+
+        // Constat T-3 de l'audit du 2026-09-25 (EN 319 421 `TIS-7.7.1-09`) :
+        // la clé de signature a sa propre date d'expiration, plus courte que
+        // celle du certificat — vérifiée à *chaque* signature, pas seulement
+        // au démarrage, un processus de longue durée pouvant la dépasser en
+        // cours de route.
+        if gen_time >= self.key_not_after {
+            return Err(reject(
+                FailureInfo::SystemFailure,
+                format!(
+                    "clé de signature TSU expirée depuis le {}",
+                    self.key_not_after
+                ),
+            ));
+        }
 
         let tst_info = self.build_tst_info(&req, gen_time)?;
         let tst_info_der = tst_info.to_der()?;

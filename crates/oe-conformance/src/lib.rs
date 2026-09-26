@@ -345,10 +345,17 @@ pub fn check_signature_algorithm(subject: &str, algorithm_oid: &str) -> Result<(
     Ok(())
 }
 
-fn x509_time_to_offset_date_time(t: &x509_cert::time::Time) -> time::OffsetDateTime {
-    let dt = t.to_date_time();
+fn der_date_time_to_offset_date_time(dt: der::DateTime) -> time::OffsetDateTime {
     time::OffsetDateTime::from_unix_timestamp(dt.unix_duration().as_secs() as i64)
         .unwrap_or(time::OffsetDateTime::UNIX_EPOCH)
+}
+
+fn x509_time_to_offset_date_time(t: &x509_cert::time::Time) -> time::OffsetDateTime {
+    der_date_time_to_offset_date_time(t.to_date_time())
+}
+
+fn generalized_time_to_offset_date_time(t: &der::asn1::GeneralizedTime) -> time::OffsetDateTime {
+    der_date_time_to_offset_date_time(t.to_date_time())
 }
 
 fn find_extension<'a>(
@@ -423,7 +430,40 @@ pub fn check_tsu_certificate(subject: &str, cert: &x509_cert::Certificate) -> Re
         ));
     }
 
+    // Constat T-3 de l'audit du 2026-09-25 (EN 319 421 TIS-7.6.7-01/-02/-04/-05) :
+    // la clé de signature d'une TSU doit avoir sa propre date d'expiration,
+    // plus courte que celle du certificat — sans quoi rien n'empêche de
+    // signer indéfiniment avec la même clé.
+    let key_not_after = tsu_private_key_not_after(subject, cert)?;
+    if key_not_after > not_after {
+        return Err(format!(
+            "{subject}: la clé privée expire après le certificat lui-même"
+        ));
+    }
+
     Ok(())
+}
+
+/// Date d'expiration de la clé privée d'un certificat TSU, gravée dans son
+/// extension `privateKeyUsagePeriod` (constat T-3) — appelé par
+/// `check_tsu_certificate`, et par `oe_tsa_core::Authority` pour refuser de
+/// signer une fois cette date dépassée (`TIS-7.7.1-09`, « le système rejette
+/// toute émission une fois la date d'expiration de la clé atteinte »).
+pub fn tsu_private_key_not_after(
+    subject: &str,
+    cert: &x509_cert::Certificate,
+) -> Result<time::OffsetDateTime, String> {
+    use der::Decode;
+
+    let pkup_ext = find_extension(cert, "2.5.29.16")
+        .ok_or_else(|| format!("{subject}: extension privateKeyUsagePeriod absente"))?;
+    let pkup =
+        x509_cert::ext::pkix::PrivateKeyUsagePeriod::from_der(pkup_ext.extn_value.as_bytes())
+            .map_err(|e| format!("{subject}: privateKeyUsagePeriod illisible: {e}"))?;
+    let key_not_after = pkup
+        .not_after
+        .ok_or_else(|| format!("{subject}: privateKeyUsagePeriod sans notAfter"))?;
+    Ok(generalized_time_to_offset_date_time(&key_not_after))
 }
 
 /// RFC 6960 §4.2.2.2 : le certificat de signature du répondeur OCSP relu et

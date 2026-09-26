@@ -109,6 +109,28 @@ pub(crate) fn crl_issued_serials(serials: &[Vec<u8>]) -> Result<Extension, CaErr
     build(oe_conformance::OID_CRL_ISSUED_SERIALS, false, &values?)
 }
 
+const OID_PRIVATE_KEY_USAGE_PERIOD: &str = "2.5.29.16";
+
+/// Constat T-3 de l'audit du 2026-09-25 (EN 319 421 `TIS-7.6.7-*`) : la clé
+/// privée d'une TSU doit avoir sa propre date d'expiration, plus courte que
+/// celle du certificat (`profile.private_key_validity`). Non critique,
+/// comme le recommande RFC 5280 pour cette extension.
+pub(crate) fn private_key_usage_period(
+    not_after: time::OffsetDateTime,
+) -> Result<Extension, CaError> {
+    let not_after = der::asn1::GeneralizedTime::from_unix_duration(
+        std::time::Duration::from_secs(not_after.unix_timestamp().max(0) as u64),
+    )?;
+    build(
+        OID_PRIVATE_KEY_USAGE_PERIOD,
+        false,
+        &x509_cert::ext::pkix::PrivateKeyUsagePeriod {
+            not_before: None,
+            not_after: Some(not_after),
+        },
+    )
+}
+
 pub(crate) fn ocsp_no_check() -> Extension {
     // La valeur est un NULL DER : l'extension vaut par sa seule présence.
     Extension {
