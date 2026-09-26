@@ -260,7 +260,7 @@ async fn run_serve() {
                 move |body: axum::body::Bytes| {
                     let responder = responder.clone();
                     async move {
-                        let der = responder.handle(&body);
+                        let der = responder.handle(&body).await;
                         (
                             [(
                                 axum::http::header::CONTENT_TYPE,

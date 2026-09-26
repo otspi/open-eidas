@@ -20,6 +20,11 @@ des secrets** : aucun usage en dehors de ces tests.
   CA (`0x9999`, absente de `OID_CRL_ISSUED_SERIALS` ci-dessus), produite par
   `openssl ocsp -issuer issuer-cert.pem -serial 0x9999 -reqout
   request-unknown.der` (constat O-1).
+- `issuer.crl.stale.der` — même CRL, mais antérieure à l'émission de `0x1001`
+  (numéro de CRL `4095` au lieu de `4096`, `OID_CRL_ISSUED_SERIALS` ne porte
+  que `0x1000`) : simule l'instantané que le répondeur a en cache juste avant
+  qu'une CA republie une CRL plus récente — sert à prouver le rafraîchissement
+  à la volée (`try_on_demand_refresh`).
 
 Régénéré via une CA `openssl ca` classique (répertoire `newcerts`/`index.txt`)
 puis `openssl ocsp -reqout` — voir l'historique de commit introduisant ces
