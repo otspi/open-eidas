@@ -318,11 +318,10 @@ async fn ra_console_role_cannot_write_ca_tables() {
         );
     }
 
-    // Aucune lecture des tables sans droit : hachés de jetons, actions,
-    // challenges, autorités, CRL.
+    // Aucune lecture des tables sans droit : hachés de jetons, challenges,
+    // autorités, CRL.
     for table in [
         "operator_invites",
-        "actions",
         "action_challenges",
         "authorities",
         "crls",
@@ -336,6 +335,8 @@ async fn ra_console_role_cannot_write_ca_tables() {
 
     // La lecture, elle, fonctionne : c'est ce dont la console a besoin.
     for table in [
+        // La salle d'attente des actions à plusieurs signatures (§8).
+        "actions",
         "enrollment_requests",
         "certificates",
         "operators",
