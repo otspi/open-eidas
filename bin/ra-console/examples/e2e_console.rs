@@ -72,65 +72,139 @@ async fn main() {
     // L'opérateur et sa clé, comme en production mais sans passer par
     // l'enregistrement relayé (qui a ses propres tests).
     let now = time::OffsetDateTime::now_utc();
-    let operator = registry
-        .add_operator("alice", Role::RaOperateur, "e2e", now)
-        .await
-        .unwrap();
+    // Trois opérateurs : alice décide des demandes (étape 6b), bob et carol
+    // révoquent à deux (étape 6c, double contrôle).
+    let people = [
+        ("alice", Role::RaOperateur),
+        ("bob", Role::CaOperateur),
+        ("carol", Role::CaOperateur),
+    ];
     let reg_verifier = verifier();
     // Le SoftToken s'enregistre dans ce fichier à sa fermeture : c'est ainsi que
-    // la clé du credential créé ci-dessous se relit (aucun accesseur public).
+    // la clé des credentials créés ci-dessous se relit (aucun accesseur public).
     let token_path = std::env::temp_dir().join(format!("{name}.softtoken"));
     let token_file = std::fs::File::create(&token_path).unwrap();
     let mut authn = WebauthnAuthenticator::new(SoftTokenFile::new(token, token_file));
-    let (options, state) = reg_verifier
-        .start_registration(operator, "alice", None)
-        .unwrap();
-    let reg = authn.do_registration(origin.clone(), options).unwrap();
+    let mut registered = Vec::new();
+    for (who, role) in people {
+        let id = registry.add_operator(who, role, "e2e", now).await.unwrap();
+        let (options, state) = reg_verifier.start_registration(id, who, None).unwrap();
+        let reg = authn.do_registration(origin.clone(), options).unwrap();
+        let key = reg_verifier.finish_registration(&reg, &state).unwrap();
+        registry
+            .add_credential(
+                NewCredential {
+                    operator_id: id,
+                    passkey: &key,
+                    aaguid: AAGUID,
+                    attestation_format: "packed",
+                    attestation_object: reg.response.attestation_object.as_ref(),
+                    label: "e2e",
+                    initiated_by: "e2e",
+                    confirmed_by: Some("e2e"),
+                },
+                now,
+            )
+            .await
+            .unwrap();
+        registered.push((who, role, id, reg.raw_id.as_ref().to_vec()));
+    }
     drop(authn);
-    let key = reg_verifier.finish_registration(&reg, &state).unwrap();
-    registry
-        .add_credential(
-            NewCredential {
-                operator_id: operator,
-                passkey: &key,
-                aaguid: AAGUID,
-                attestation_format: "packed",
-                attestation_object: reg.response.attestation_object.as_ref(),
-                label: "e2e",
-                initiated_by: "e2e",
-                confirmed_by: Some("e2e"),
-            },
-            now,
-        )
-        .await
-        .unwrap();
 
-    // La clé privée du SoftToken (SEC1), convertie en PKCS#8 pour le navigateur.
-    let credential_id: Vec<u8> = reg.raw_id.as_ref().to_vec();
+    // Les clés privées du SoftToken (SEC1), converties en PKCS#8 pour le navigateur.
     let soft: serde_cbor_2::Value =
         serde_cbor_2::from_slice(&std::fs::read(&token_path).unwrap()).unwrap();
     let _ = std::fs::remove_file(&token_path);
-    let (sec1, counter) = soft_key(&soft, &credential_id);
-    let ec = openssl::ec::EcKey::private_key_from_der(&sec1).unwrap();
-    let pkcs8 = openssl::pkey::PKey::from_ec_key(ec)
-        .unwrap()
-        .private_key_to_pkcs8()
-        .unwrap();
     let b64 = base64::engine::general_purpose::STANDARD;
+    let mut operators = serde_json::Map::new();
+    for (who, role, id, credential_id) in &registered {
+        let (sec1, counter) = soft_key(&soft, credential_id);
+        let ec = openssl::ec::EcKey::private_key_from_der(&sec1).unwrap();
+        let pkcs8 = openssl::pkey::PKey::from_ec_key(ec)
+            .unwrap()
+            .private_key_to_pkcs8()
+            .unwrap();
+        operators.insert(
+            who.to_string(),
+            serde_json::json!({
+                "role": role.as_str(),
+                "credential": {
+                    "credentialId": b64.encode(credential_id),
+                    "isResidentCredential": false,
+                    "rpId": "localhost",
+                    "privateKey": b64.encode(pkcs8),
+                    "userHandle": b64.encode(id.as_bytes()),
+                    "signCount": counter,
+                },
+            }),
+        );
+    }
+
+    // Une vraie CA sur la même base, et deux certificats émis à révoquer (6c).
+    let issuing = Arc::new(oe_hsm::testing::SoftwareToken::generate(2048));
+    let h = oe_ca_core::ceremony::run_ceremony(oe_ca_core::ceremony::CeremonyOptions {
+        root_signer: Arc::new(oe_hsm::testing::SoftwareToken::generate(2048)),
+        issuing_signer: issuing.clone(),
+        root_cn: "E2E Root CA".into(),
+        issuing_cn: "E2E Issuing CA".into(),
+        organization: "Open eIDAS e2e".into(),
+        country: "FR".into(),
+        root_validity: time::Duration::days(3650),
+        issuing_validity: time::Duration::days(3650),
+        root_token_label: "r".into(),
+        root_key_label: "r".into(),
+        issuing_token_label: "i".into(),
+        issuing_key_label: "i".into(),
+        store: store.clone(),
+        operator: "e2e".into(),
+        recorder: None,
+    })
+    .await
+    .unwrap();
+    let issuer = Arc::new(
+        oe_ca_core::Issuer::new(oe_ca_core::Options {
+            signer: issuing,
+            certificate: h.issuing,
+            chain: vec![],
+            store: store.clone(),
+            public_url: "https://ca.example.test".into(),
+            ocsp_url: None,
+            crl_validity: time::Duration::hours(24),
+            crl_grace: time::Duration::hours(1),
+            recorder: None,
+        })
+        .unwrap(),
+    );
+    let mut to_revoke = Vec::new();
+    for i in 1..=2 {
+        let key = oe_hsm::testing::SoftwareToken::generate(2048);
+        let cert = issuer
+            .issue(
+                &oe_hsm::SigningToken::public_key_der(&key).unwrap(),
+                &format!("tsu-rev-{i}.example.test"),
+                &oe_ca_core::profile::tsa_signer(),
+                &format!("tx-rev-{i}"),
+            )
+            .await
+            .unwrap();
+        to_revoke.push(
+            oe_ca_core::canonical_serial(cert.tbs_certificate().serial_number())
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect::<String>(),
+        );
+    }
+
     let pending: Vec<String> = (1..=8).map(|i| format!("tx-e2e-{i}")).collect();
+    let alice = operators["alice"].clone();
     let out = serde_json::json!({
         "origin": origin.as_str().trim_end_matches('/'),
         "pending": pending,
+        "certificates": to_revoke,
         "operator": "alice",
         "role": "ra_operateur",
-        "credential": {
-            "credentialId": b64.encode(&credential_id),
-            "isResidentCredential": false,
-            "rpId": "localhost",
-            "privateKey": b64.encode(pkcs8),
-            "userHandle": b64.encode(operator.as_bytes()),
-            "signCount": counter,
-        },
+        "credential": alice["credential"],
+        "operators": operators,
     });
     if let Some(parent) = std::path::Path::new(&fixture).parent() {
         std::fs::create_dir_all(parent).unwrap();
@@ -160,18 +234,21 @@ async fn main() {
 
     // Le vrai service d'actions de ca-server, derrière son routeur interne et le
     // lien mTLS : les décisions signées dans le navigateur y sont vérifiées.
-    let service = Arc::new(oe_actions::Service::new(
-        registry.clone(),
-        verifier(),
-        store.clone(),
-        oe_raflow::Decider::new(oe_raflow::DeciderOptions {
-            store: store.clone(),
-            recorder: None,
-            clock: None,
-        }),
-        Arc::new(NullJournal),
-        Arc::new(time::OffsetDateTime::now_utc),
-    ));
+    let service = Arc::new(
+        oe_actions::Service::new(
+            registry.clone(),
+            verifier(),
+            store.clone(),
+            oe_raflow::Decider::new(oe_raflow::DeciderOptions {
+                store: store.clone(),
+                recorder: None,
+                clock: None,
+            }),
+            Arc::new(NullJournal),
+            Arc::new(time::OffsetDateTime::now_utc),
+        )
+        .with_revoker(Arc::new(ca_server::revoker::IssuerRevoker(issuer))),
+    );
     let pki = common::pki().await;
     let internal = pki
         .serve_router(ca_server::internal::router(service, 64 * 1024))

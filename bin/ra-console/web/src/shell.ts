@@ -6,7 +6,10 @@
 import { call, isError, type ConsoleInfo, type Me } from "./api";
 import { banner } from "./banner";
 import { h, replace } from "./dom";
+import { certificatesView } from "./certificates";
+import { quorumView } from "./quorum";
 import { requestsView } from "./requests";
+import type { View } from "./view";
 
 const ROLE_LABELS: Record<Me["role"], string> = {
   auditeur: "auditeur",
@@ -32,16 +35,31 @@ export function renderShell(root: HTMLElement, info: ConsoleInfo, me: Me, onLogo
   );
   const requests = h("span", { class: "count", "data-testid": "count-requests" }, "…");
   const quorum = h("span", { class: "count", "data-testid": "count-quorum" }, "…");
-  const nav = h(
-    "nav",
-    { class: "sidebar", "aria-label": "Files de travail" },
-    h("ul", {}, h("li", {}, "Demandes RA ", requests), h("li", {}, "Quorum ", quorum)),
-  );
-  const view = requestsView(() => void refreshCounts(requests, quorum));
-  const work = h("main", { class: "workspace", tabindex: "-1" }, view.element);
+  const refresh = (): void => void refreshCounts(requests, quorum);
+  const work = h("main", { class: "workspace", tabindex: "-1" });
+  let current: View | null = null;
+  const views: [string, string, HTMLElement | null, () => View][] = [
+    ["requests", "Demandes RA ", requests, () => requestsView(refresh)],
+    ["certificates", "Certificats", null, () => certificatesView(refresh)],
+    ["quorum", "Quorum ", quorum, () => quorumView(me, refresh)],
+  ];
+  const buttons = views.map(([id, label, count, make]) => {
+    const button = h("button", { type: "button", class: "nav", "data-testid": `nav-${id}` }, label, count);
+    button.addEventListener("click", () => show(id, make));
+    return button;
+  });
+  const show = (id: string, make: () => View): void => {
+    current?.dispose();
+    current = make();
+    replace(work, current.element);
+    for (const b of buttons) b.setAttribute("aria-current", String(b.dataset.testid === `nav-${id}`));
+  };
+  const nav = h("nav", { class: "sidebar", "aria-label": "Files de travail" }, h("ul", {}, ...buttons.map((b) => h("li", {}, b))));
   replace(root, banner(info), bar, h("div", { class: "layout" }, nav, work));
-  void refreshCounts(requests, quorum);
-  return view.dispose;
+  const first = views[0]!;
+  show(first[0], first[3]);
+  refresh();
+  return () => current?.dispose();
 }
 
 async function refreshCounts(requests: HTMLElement, quorum: HTMLElement): Promise<void> {

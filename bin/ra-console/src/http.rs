@@ -18,7 +18,7 @@ use crate::audit::{self, Recorder};
 use crate::ca_link::{CaLink, Relayed};
 use crate::login::{LoginError, LoginService};
 use crate::session::{Authenticated, SessionError, Sessions, COOKIE_NAME, SESSION_TTL};
-use crate::{quorum, requests};
+use crate::{certificates, quorum, requests};
 
 /// Assez pour un objet d'attestation, pas pour bourrer la mémoire.
 const MAX_BODY_BYTES: usize = 64 * 1024;
@@ -56,6 +56,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/v1/me", get(handle_me))
         .route("/api/v1/logout", post(handle_logout))
         .route("/api/v1/requests", get(handle_requests))
+        .route("/api/v1/certificates", get(handle_certificates))
         .route("/api/v1/webauthn/challenge", post(handle_action_challenge))
         .route("/api/v1/requests/{id}/approve", post(handle_approve))
         .route("/api/v1/requests/{id}/reject", post(handle_reject))
@@ -826,6 +827,41 @@ fn quorum_status(body: &serde_json::Value) -> serde_json::Value {
         "signed_by": body.get("operator"),
         "result": body.get("result"),
     })
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CertificatesQuery {
+    status: Option<String>,
+}
+
+/// `GET /api/v1/certificates?status=issued` : les certificats émis, en lecture
+/// seule (docs/WEBUI.md §5, §15 étape 6c). Comme pour les demandes, toute
+/// session authentifiée peut lire ; la révocation reste jugée par `ca-server`.
+async fn handle_certificates(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(q): Query<CertificatesQuery>,
+) -> Response {
+    if let Err(resp) = authenticate(&state, &headers).await {
+        return resp;
+    }
+    if let Some(s) = &q.status {
+        if !certificates::STATUSES.contains(&s.as_str()) {
+            return error(StatusCode::BAD_REQUEST, "bad_request", "état invalide");
+        }
+    }
+    match certificates::list(&state.pool, q.status.as_deref()).await {
+        Ok(list) => Json(list).into_response(),
+        Err(e) => {
+            tracing::error!(erreur = %e, "certificates : base indisponible");
+            error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "unavailable",
+                "service indisponible",
+            )
+        }
+    }
 }
 
 /// `POST /api/v1/logout` : révoque la session sans attendre son expiration.
