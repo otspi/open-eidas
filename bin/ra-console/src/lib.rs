@@ -20,6 +20,7 @@ pub mod http;
 pub mod login;
 pub mod purge;
 pub mod quorum;
+pub mod registry_routes;
 pub mod requests;
 pub mod session;
 pub mod webauthn_models;
