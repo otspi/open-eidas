@@ -31,6 +31,15 @@ pub struct AppState {
     pub journal: Arc<dyn Recorder>,
 }
 
+/// L'application complète servie par `ra-console` : l'API ([`router`]), le
+/// frontend embarqué ([`crate::web`]) et les en-têtes de sécurité sur toutes
+/// les réponses (docs/UI-UX.md §6.3).
+pub fn app(state: Arc<AppState>, console: crate::web::Console) -> Router {
+    router(state)
+        .merge(crate::web::router(console))
+        .layer(axum::middleware::from_fn(crate::web::security_headers))
+}
+
 pub fn router(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/healthz", get(handle_health))

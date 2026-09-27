@@ -22,4 +22,5 @@ pub mod purge;
 pub mod quorum;
 pub mod requests;
 pub mod session;
+pub mod web;
 pub mod webauthn_models;

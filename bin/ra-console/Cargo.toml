@@ -53,6 +53,12 @@ rand = "0.8"
 
 [dev-dependencies]
 async-trait = "0.1"
+# Harnais de bout en bout du frontend (examples/e2e_console.rs) : export de la
+# clé du SoftToken vers l'authentificateur virtuel du navigateur. Déjà dans
+# l'arbre de dépendances (webauthn-authenticator-rs), aucune crate nouvelle.
+serde_cbor_2 = "0.13"
+openssl = "0.10"
+base64 = "0.22"
 oe-raflow = { path = "../../crates/oe-raflow" }
 webauthn-authenticator-rs = { version = "0.5", features = ["softtoken"] }
 ca-server = { path = "../ca-server" }

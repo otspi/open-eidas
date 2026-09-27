@@ -99,13 +99,19 @@ async fn run_serve() {
     // aucune opération manuelle, arrêtée par le même signal que le serveur.
     purge::spawn_periodic(pool.clone(), cfg.purge_interval);
 
-    let app = http::router(Arc::new(http::AppState {
-        pool,
-        link,
-        login,
-        sessions,
-        journal,
-    }));
+    let console = ra_console::web::Console {
+        environment: cfg.environment,
+    };
+    let app = http::app(
+        Arc::new(http::AppState {
+            pool,
+            link,
+            login,
+            sessions,
+            journal,
+        }),
+        console,
+    );
     let listener = tokio::net::TcpListener::bind(bind_addr(&cfg.listen))
         .await
         .unwrap_or_else(|e| die(&format!("écoute sur {}", cfg.listen), e));

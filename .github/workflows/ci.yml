@@ -358,6 +358,73 @@ jobs:
           git commit -m "Épingle le staging sur open-eidas/open-eidas@${GITHUB_SHA}"
           git push origin main
 
+  frontend:
+    name: Frontend de ra-console (typage, build, bout en bout)
+    runs-on: ubuntu-latest
+    # La console réelle tourne sur PostgreSQL (examples/e2e_console.rs), avec un
+    # opérateur dont la clé est confiée à l'authentificateur WebAuthn virtuel de
+    # Chromium : connexion, déconnexion et verrouillage sont prouvés dans un vrai
+    # navigateur, en-têtes de sécurité et CSP compris (docs/UI-UX.md §6.3).
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_PASSWORD: test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    defaults:
+      run:
+        working-directory: bin/ra-console/web
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: bin/ra-console/web/package-lock.json
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Dépendances de développement (jamais dans l'image)
+        run: npm ci
+
+      - name: Typage strict (navigateur et tests)
+        run: npm run typecheck
+
+      - name: web/dist correspond aux sources
+        # Les assets sont versionnés pour que la compilation Rust n'exige pas
+        # Node ; un dist/ désynchronisé servirait autre chose que le code relu.
+        run: |
+          npm run build
+          git diff --exit-code -- dist || {
+            echo "::error::web/dist est désynchronisé : lancez 'npm run build' dans bin/ra-console/web"
+            exit 1
+          }
+
+      - name: Navigateur de test
+        run: npx playwright install --with-deps chromium
+
+      - name: Parcours de bout en bout (Playwright)
+        env:
+          OE_CASTORE_TEST_DSN: postgres://postgres:test@localhost:5432/postgres
+        run: npx playwright test
+
+      - name: Rapport Playwright (en cas d'échec)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: bin/ra-console/web/playwright-report
+          retention-days: 7
+
   helm-lint:
     name: Lint du chart Helm
     runs-on: ubuntu-latest

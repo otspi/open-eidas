@@ -18,6 +18,8 @@ pub struct Config {
     /// Journal chaîné propre à `ra-console` (docs/WEBUI.md §7, §15 étape 2b-A) :
     /// jamais celui de `ca-server`, une chaîne distincte.
     pub audit_file: String,
+    /// Environnement annoncé par le frontend (docs/UI-UX.md §1, principe 4).
+    pub environment: crate::web::Environment,
 }
 
 /// Vérification des connexions (docs/WEBUI.md §15, étape 1c, §16) : `ra-console`
@@ -117,6 +119,9 @@ impl Config {
                 "OPENEIDAS_RA_AUDIT_FILE",
                 "/var/lib/open-eidas/state/ra-console-audit.log",
             ),
+            environment: crate::web::Environment::parse(
+                &std::env::var("OPENEIDAS_RA_ENVIRONMENT").unwrap_or_default(),
+            )?,
         })
     }
 
