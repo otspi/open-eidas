@@ -359,6 +359,26 @@ cette voie est le RBAC qui autorise `exec` sur le pod de la CA. Les décisions
 signées portent `"authenticated_via": "webauthn"`, la révocation `superseded`
 d'un renouvellement `"authenticated_via": "automatique"`.
 
+**Revue a posteriori** (décision O4 : sa fréquence est fixée par
+l'association). Le journal chaîné fait foi ; la commande n'ouvre ni la base ni
+un token, et lit aussi bien une copie répliquée :
+
+```bash
+# Décisions de secours pas encore revues (code 0 : aucune ; 1 : à revoir ;
+# 2 : journal illisible ou rompu, rien n'est jugé)
+ca-server audit cli-decisions
+ca-server audit cli-decisions --since 2026-09-01T00:00:00Z --journal /copie/ca-audit.log --json
+
+# Consigner la revue (événement ra.cli_decisions_reviewed) : la suivante repart d'ici
+ca-server audit cli-decisions --acknowledge --reviewer "prenom.nom" "décisions justifiées par le ticket …"
+```
+
+L'acquittement couvre les enregistrements lus (jusqu'à la tête du journal au
+moment de la lecture), refuse de s'écrire ailleurs que dans le journal en
+service, et exige un commentaire. Lui aussi passe par le CLI : il porte donc
+`"authenticated_via": "cli"` et l'identité système, mais n'est pas relisté
+comme une décision.
+
 La révocation est idempotente et la **première date fait foi** : la
 réappliquer ne repousse pas l'instant à partir duquel le certificat cesse
 d'être fiable. `revoke` republie la CRL immédiatement — une révocation non

@@ -35,7 +35,7 @@ tracing = "0.1"
 tracing-subscriber = "0.3"
 der = { version = "0.8", features = ["pem", "std"] }
 x509-cert = "0.3"
-time = { version = "0.3", features = ["std", "formatting"] }
+time = { version = "0.3", features = ["std", "formatting", "parsing"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 hex = "0.4"
