@@ -1,5 +1,5 @@
 //! Portage de `internal/timesource` (surveillance NTP multi-sources, ETSI EN
-//! 319 421 §7.6) — jalon J4 du plan de migration
+//! 319 421 §7.7.2) — jalon J4 du plan de migration
 //! (`/home/philippe/.claude/plans/witty-hopping-nest.md`).
 //!
 //! ETSI EN 319 421 exige que l'heure d'un jeton soit traçable jusqu'à UTC et
