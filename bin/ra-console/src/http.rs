@@ -5,7 +5,7 @@
 use std::sync::Arc;
 
 use axum::body::Bytes;
-use axum::extract::{DefaultBodyLimit, Query, State};
+use axum::extract::{DefaultBodyLimit, Path, Query, State};
 use axum::http::header::{COOKIE, SET_COOKIE};
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
@@ -48,6 +48,8 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/v1/logout", post(handle_logout))
         .route("/api/v1/requests", get(handle_requests))
         .route("/api/v1/webauthn/challenge", post(handle_action_challenge))
+        .route("/api/v1/requests/{id}/approve", post(handle_approve))
+        .route("/api/v1/requests/{id}/reject", post(handle_reject))
         .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
         .with_state(state)
 }
@@ -508,6 +510,114 @@ async fn handle_action_challenge(
         );
     }
     relayed(result)
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Signed {
+    challenge_id: String,
+    /// La sortie brute de `navigator.credentials.get` : relayée telle quelle,
+    /// vérifiée par `ca-server` seul (§4, étape 6).
+    assertion: serde_json::Value,
+}
+
+/// Un identifiant de transaction tel que `ca-server` les émet : borné, sans
+/// caractère de contrôle. Il n'est qu'une attente : `ca-server` le compare au
+/// corps qu'il a figé.
+fn looks_like_a_transaction(s: &str) -> bool {
+    !s.is_empty() && s.len() <= 128 && s.chars().all(|c| c.is_ascii_graphic())
+}
+
+async fn handle_approve(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    relay_decision(&state, "approve_request", &id, &headers, &body).await
+}
+
+async fn handle_reject(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    relay_decision(&state, "reject_request", &id, &headers, &body).await
+}
+
+/// `POST /api/v1/requests/{id}/approve|reject` (docs/WEBUI.md §4 étapes 5 à 7,
+/// §5) : la console relaie l'identifiant du challenge et l'assertion brute —
+/// **jamais de corps** : `ca-server` exécute celui qu'il a figé. Elle y joint
+/// ce que la route promet (`expect` : l'action et la demande du chemin), que
+/// `ca-server` compare au corps figé avant toute vérification : une signature
+/// obtenue pour une demande ne décide jamais d'une autre.
+async fn relay_decision(
+    state: &AppState,
+    action: &str,
+    transaction_id: &str,
+    headers: &HeaderMap,
+    body: &[u8],
+) -> Response {
+    if !is_json(headers) {
+        return unsupported_media_type();
+    }
+    let who = match authenticate(state, headers).await {
+        Ok(a) => a,
+        Err(resp) => return resp,
+    };
+    let req: Signed = match serde_json::from_slice(body) {
+        Ok(r) => r,
+        Err(_) => return error(StatusCode::BAD_REQUEST, "bad_request", "corps invalide"),
+    };
+    if !looks_like_uuid(&req.challenge_id)
+        || !req.assertion.is_object()
+        || !looks_like_a_transaction(transaction_id)
+    {
+        return error(StatusCode::BAD_REQUEST, "bad_request", "corps invalide");
+    }
+    let result = state
+        .link
+        .post(
+            "/internal/v1/actions",
+            &serde_json::json!({
+                "challenge_id": req.challenge_id,
+                "assertion": req.assertion,
+                "expect": { "action": action, "transaction_id": transaction_id },
+            }),
+        )
+        .await;
+    if let Ok(r) = &result {
+        state.journal.append(
+            audit::EVENT_ACTION_RELAYED,
+            serde_json::json!({
+                "session_operator": who.operator,
+                "action": action,
+                "transaction_id": transaction_id,
+                "action_id": r.body.get("action_id"),
+                "signed_by": r.body.get("operator"),
+                "status": r.status,
+                "error": r.body.get("error"),
+            }),
+        );
+    }
+    match result {
+        // La forme du §5 : l'identité qui a décidé est celle que `ca-server` a
+        // lue dans son registre, pas celle de la session.
+        Ok(r)
+            if r.status == 200
+                && r.body.get("status").and_then(|s| s.as_str()) == Some("executed") =>
+        {
+            Json(serde_json::json!({
+                "transaction_id": transaction_id,
+                "state": if action == "approve_request" { "APPROVED" } else { "REJECTED" },
+                "decided_by": r.body.get("operator"),
+                "action_id": r.body.get("action_id"),
+            }))
+            .into_response()
+        }
+        other => relayed(other),
+    }
 }
 
 /// `POST /api/v1/logout` : révoque la session sans attendre son expiration.
