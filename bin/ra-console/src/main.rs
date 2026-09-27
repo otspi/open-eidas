@@ -93,7 +93,7 @@ async fn run_serve() {
         cfg.webauthn.login_decoy_secret.into_bytes(),
         journal.clone(),
     );
-    let sessions = Sessions::new(oe_actions::Registry::new(pool.clone()), journal);
+    let sessions = Sessions::new(oe_actions::Registry::new(pool.clone()), journal.clone());
 
     // Purge périodique des sessions et challenges expirés (§15 étape 1c-2b) :
     // aucune opération manuelle, arrêtée par le même signal que le serveur.
@@ -104,6 +104,7 @@ async fn run_serve() {
         link,
         login,
         sessions,
+        journal,
     }));
     let listener = tokio::net::TcpListener::bind(bind_addr(&cfg.listen))
         .await

@@ -90,6 +90,7 @@ impl Env {
             pool: pool.clone(),
             link,
             login,
+            journal: Arc::new(ra_console::audit::NullRecorder),
         }));
         Some(Env {
             console,

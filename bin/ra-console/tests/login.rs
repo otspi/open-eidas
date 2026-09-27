@@ -111,6 +111,7 @@ impl Env {
             pool,
             link,
             login,
+            journal: Arc::new(ra_console::audit::NullRecorder),
         }));
         Some(Env {
             console,
