@@ -48,7 +48,8 @@ async fn main() {
         .await
         .unwrap();
     let dsn = format!("{}/{name}", base.rsplit_once('/').unwrap().0);
-    let _ = oe_castore::Postgres::open(&dsn).await.unwrap();
+    let store: Arc<dyn oe_castore::Store> =
+        Arc::new(oe_castore::Postgres::open(&dsn).await.unwrap());
     let registry = Registry::connect(&dsn).await.unwrap();
 
     let (token, root) = SoftToken::new(true).unwrap();
@@ -116,8 +117,10 @@ async fn main() {
         .private_key_to_pkcs8()
         .unwrap();
     let b64 = base64::engine::general_purpose::STANDARD;
+    let pending: Vec<String> = (1..=8).map(|i| format!("tx-e2e-{i}")).collect();
     let out = serde_json::json!({
         "origin": origin.as_str().trim_end_matches('/'),
+        "pending": pending,
         "operator": "alice",
         "role": "ra_operateur",
         "credential": {
@@ -134,14 +137,50 @@ async fn main() {
     }
     std::fs::write(&fixture, serde_json::to_vec_pretty(&out).unwrap()).unwrap();
 
-    // Un lien vers ca-server injoignable : la connexion et le poste n'en ont
-    // pas besoin (seul /healthz s'en soucie).
+    // Des demandes d'enrôlement en attente, pour les écrans de décision (6b).
+    for (i, tx) in pending.iter().enumerate() {
+        store
+            .create_request(oe_castore::Request {
+                transaction_id: tx.clone(),
+                csr_fingerprint: format!("empreinte-{tx}"),
+                csr_der: vec![0x30, 0x00],
+                profile: "tsa_signer".to_string(),
+                subject_cn: format!("tsu-{}.example.test", i + 1),
+                state: oe_castore::RequestState::Pending,
+                created_at: now,
+                decided_at: None,
+                operator: String::new(),
+                comment: String::new(),
+                issued_at: None,
+                certificate_serial: None,
+            })
+            .await
+            .unwrap();
+    }
+
+    // Le vrai service d'actions de ca-server, derrière son routeur interne et le
+    // lien mTLS : les décisions signées dans le navigateur y sont vérifiées.
+    let service = Arc::new(oe_actions::Service::new(
+        registry.clone(),
+        verifier(),
+        store.clone(),
+        oe_raflow::Decider::new(oe_raflow::DeciderOptions {
+            store: store.clone(),
+            recorder: None,
+            clock: None,
+        }),
+        Arc::new(NullJournal),
+        Arc::new(time::OffsetDateTime::now_utc),
+    ));
     let pki = common::pki().await;
+    let internal = pki
+        .serve_router(ca_server::internal::router(service, 64 * 1024))
+        .await;
     let dir = common::tempdir::Dir::new();
     let client = pki
         .cert(&oe_ca_core::profile::internal_client(), "ra-console")
         .await;
-    let link = CaLink::new(&pki.files(&dir, &client, 9)).unwrap();
+    let link = CaLink::new(&pki.files(&dir, &client, internal)).unwrap();
     let pool = PgPoolOptions::new().connect(&dsn).await.unwrap();
     let console = app(
         Arc::new(AppState {
@@ -208,4 +247,13 @@ fn bytes_of(values: &[serde_cbor_2::Value]) -> Vec<u8> {
             _ => panic!("octet attendu"),
         })
         .collect()
+}
+
+struct NullJournal;
+
+#[async_trait::async_trait]
+impl oe_raflow::Recorder for NullJournal {
+    async fn append(&self, _: &str, _: serde_json::Value) -> Result<(), String> {
+        Ok(())
+    }
 }
