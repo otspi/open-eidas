@@ -1,0 +1,148 @@
+{{- if .Values.raConsole.enabled -}}
+{{- /* La console n'agit que par le lien interne de la CA : sans lui, elle ne
+       démarrerait pas (le rendu échoue plutôt que de déployer une console
+       inutilisable, ou d'ouvrir le lien à moitié configuré). */ -}}
+{{- if not .Values.ca.internal.enabled -}}
+{{- fail "raConsole.enabled exige ca.internal.enabled : la console n'agit que par le lien interne de la CA (docs/WEBUI.md §16)" -}}
+{{- end -}}
+{{- $fullname := include "open-eidas.fullname" . -}}
+{{- $name := printf "%s-ra-console" $fullname -}}
+{{- $secretName := include "open-eidas.secretName" . -}}
+{{- $pgHost := include "open-eidas.postgresHost" . -}}
+{{- $pgPort := include "open-eidas.postgresPort" . -}}
+{{- $w := .Values.ca.internal.webauthn -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "open-eidas.componentLabels" (dict "context" . "component" "ra-console") | nindent 4 }}
+spec:
+  # Une instance : la clé du certificat client et le journal d'audit chaîné de
+  # la console vivent sur un volume ReadWriteOnce.
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "open-eidas.componentSelectorLabels" (dict "context" . "component" "ra-console") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "open-eidas.componentSelectorLabels" (dict "context" . "component" "ra-console") | nindent 8 }}
+    spec:
+      securityContext:
+        fsGroup: 10004
+      # Attend que le Job des droits ait créé le rôle en lecture seule, avec les
+      # identifiants de la console elle-même (jamais ceux d'administration).
+      initContainers:
+        - name: wait-db-role
+          image: "{{ .Values.postgres.image.repository }}:{{ .Values.postgres.image.tag }}"
+          imagePullPolicy: {{ .Values.imagePullPolicy }}
+          command:
+            - /bin/sh
+            - -c
+            - |
+              until psql "$OPENEIDAS_DATABASE_URL" -tAc 'SELECT 1 FROM sessions LIMIT 0' >/dev/null 2>&1; do
+                echo "rôle openeidas_ra_console pas encore prêt, nouvel essai dans 5 s"
+                sleep 5
+              done
+          env:
+            - name: RA_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secretName }}
+                  key: ra-console-db-password
+            - name: OPENEIDAS_DATABASE_URL
+              value: {{ printf "postgres://openeidas_ra_console:$(RA_DB_PASSWORD)@%s:%s/%s?sslmode=disable" $pgHost $pgPort .Values.postgres.database | quote }}
+      containers:
+        - name: ra-console
+          image: "{{ .Values.raConsole.image.repository }}:{{ .Values.raConsole.image.tag }}"
+          imagePullPolicy: {{ .Values.imagePullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.raConsole.service.port }}
+          env:
+            - name: OPENEIDAS_RA_LISTEN
+              value: {{ printf ":%d" (.Values.raConsole.service.port | int) | quote }}
+            - name: RA_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secretName }}
+                  key: ra-console-db-password
+            # Le rôle en lecture seule, jamais le DSN de ca-server : la console
+            # refuse d'ailleurs de démarrer si son rôle peut écrire (db_guard).
+            - name: OPENEIDAS_DATABASE_URL
+              value: {{ printf "postgres://openeidas_ra_console:$(RA_DB_PASSWORD)@%s:%s/%s?sslmode=disable" $pgHost $pgPort .Values.postgres.database | quote }}
+            - name: OPENEIDAS_CA_INTERNAL_URL
+              value: {{ printf "https://%s:%d" (include "open-eidas.caInternalDNS" .) (.Values.ca.service.internalPort | int) | quote }}
+            # Premier démarrage (deploy/ra-console/entrypoint.sh) : certificat de
+            # la CA émettrice, puis certificat client `internal_client`.
+            - name: OPENEIDAS_CA_CHAIN_URL
+              value: {{ printf "%s/api/v1/ca.pem" (include "open-eidas.caInternalURL" .) | quote }}
+            - name: OPENEIDAS_ENROLL_URL
+              value: {{ printf "%s/api/v1/enroll" (include "open-eidas.caInternalURL" .) | quote }}
+            - name: OPENEIDAS_ENROLL_HMAC_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secretName }}
+                  key: enroll-hmac-key
+            - name: OPENEIDAS_ENROLL_TIMEOUT_SECONDS
+              value: {{ .Values.raConsole.enrollTimeoutSeconds | quote }}
+            # Même Relying Party que ca-server : une seule configuration.
+            - name: OPENEIDAS_WEBAUTHN_RP_ID
+              value: {{ required "ca.internal.webauthn.rpId est obligatoire quand raConsole.enabled" $w.rpId | quote }}
+            - name: OPENEIDAS_WEBAUTHN_ORIGIN
+              value: {{ required "ca.internal.webauthn.origin est obligatoire quand raConsole.enabled" $w.origin | quote }}
+            - name: OPENEIDAS_WEBAUTHN_RP_NAME
+              value: {{ $w.rpName | quote }}
+            - name: OPENEIDAS_WEBAUTHN_MODELS_FILE
+              value: /etc/open-eidas/webauthn/models.json
+            - name: OPENEIDAS_LOGIN_DECOY_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secretName }}
+                  key: ra-console-decoy-secret
+            - name: OPENEIDAS_PURGE_INTERVAL_SECONDS
+              value: {{ .Values.raConsole.purgeIntervalSeconds | quote }}
+          volumeMounts:
+            - name: state
+              mountPath: /var/lib/open-eidas/state
+            - name: webauthn-models
+              mountPath: /etc/open-eidas/webauthn
+              readOnly: true
+          # Le premier démarrage attend l'approbation du certificat client :
+          # la sonde de démarrage laisse ce temps.
+          startupProbe:
+            tcpSocket:
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 90
+          # Prête seulement si la base ET le lien vers ca-server répondent
+          # (/healthz de la console).
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          # Vivante tant qu'elle écoute : une CA indisponible rend la console non
+          # prête, pas à redémarrer.
+          livenessProbe:
+            tcpSocket:
+              port: http
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 6
+          resources:
+            {{- toYaml .Values.raConsole.resources | nindent 12 }}
+      volumes:
+        - name: state
+          persistentVolumeClaim:
+            claimName: {{ $name }}-state
+        - name: webauthn-models
+          configMap:
+            name: {{ $fullname }}-ca-webauthn-models
+{{- end }}
