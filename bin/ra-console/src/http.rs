@@ -18,7 +18,7 @@ use crate::audit::{self, Recorder};
 use crate::ca_link::{CaLink, Relayed};
 use crate::login::{LoginError, LoginService};
 use crate::session::{Authenticated, SessionError, Sessions, COOKIE_NAME, SESSION_TTL};
-use crate::{certificates, quorum, requests};
+use crate::{certificates, operators, quorum, requests};
 
 /// Assez pour un objet d'attestation, pas pour bourrer la mémoire.
 const MAX_BODY_BYTES: usize = 64 * 1024;
@@ -57,6 +57,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/v1/logout", post(handle_logout))
         .route("/api/v1/requests", get(handle_requests))
         .route("/api/v1/certificates", get(handle_certificates))
+        .route("/api/v1/operators", get(handle_operators))
         .route("/api/v1/webauthn/challenge", post(handle_action_challenge))
         .route("/api/v1/requests/{id}/approve", post(handle_approve))
         .route("/api/v1/requests/{id}/reject", post(handle_reject))
@@ -841,6 +842,26 @@ pub(crate) fn quorum_status(body: &serde_json::Value) -> serde_json::Value {
         "signed_by": body.get("operator"),
         "result": body.get("result"),
     })
+}
+
+/// `GET /api/v1/operators` : le registre en lecture seule (docs/WEBUI.md §10),
+/// pour toute session authentifiée ; les écritures restent des actions signées
+/// que `ca-server` juge.
+async fn handle_operators(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
+    if let Err(resp) = authenticate(&state, &headers).await {
+        return resp;
+    }
+    match operators::list(&state.pool, time::OffsetDateTime::now_utc()).await {
+        Ok(registry) => Json(registry).into_response(),
+        Err(e) => {
+            tracing::error!(erreur = %e, "operators : base indisponible");
+            error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "unavailable",
+                "service indisponible",
+            )
+        }
+    }
 }
 
 #[derive(Deserialize)]

@@ -7,6 +7,7 @@ import { call, isError, type ConsoleInfo, type Me } from "./api";
 import { banner } from "./banner";
 import { h, replace } from "./dom";
 import { certificatesView } from "./certificates";
+import { operatorsView } from "./operators";
 import { quorumView } from "./quorum";
 import { requestsView } from "./requests";
 import type { View } from "./view";
@@ -42,6 +43,7 @@ export function renderShell(root: HTMLElement, info: ConsoleInfo, me: Me, onLogo
     ["requests", "Demandes RA ", requests, () => requestsView(refresh)],
     ["certificates", "Certificats", null, () => certificatesView(refresh)],
     ["quorum", "Quorum ", quorum, () => quorumView(me, refresh)],
+    ["operators", "Opérateurs", null, () => operatorsView(me)],
   ];
   const buttons = views.map(([id, label, count, make]) => {
     const button = h("button", { type: "button", class: "nav", "data-testid": `nav-${id}` }, label, count);
