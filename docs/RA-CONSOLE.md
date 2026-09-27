@@ -66,9 +66,11 @@ exécutera, son empreinte (`body_hash`) et les options WebAuthn à passer à la 
   (`operator_hint`) vient de la session, jamais du navigateur. L'action est relue dans
   l'énumération fermée d'`oe_actions` puis resérialisée : un champ en trop ne franchit
   pas la console.
-- Sont préparés à ce stade l'approbation et le rejet d'une demande (§15, étape 3) et
-  la révocation d'un certificat (`revoke_certificate`, étape 4) ; toute autre action
-  est refusée (`403 action_not_available`) sans solliciter `ca-server`.
+- Sont préparées toutes les actions d'`oe_actions` : l'approbation et le rejet d'une
+  demande (§15, étape 3), la révocation d'un certificat (`revoke_certificate`, étape
+  4), et la gestion du registre (`invite_operator`, `confirm_key`, `revoke_key`,
+  `set_role`, voir plus bas). Une action ajoutée plus tard à l'énumération ne sera pas
+  préparée tant que la console ne la nomme pas (`403 action_not_available`).
 - Le rôle et l'état de la demande sont jugés par `ca-server` (un administrateur ne peut
   pas approuver) ; la console relaie son refus.
 - Chaque préparation est inscrite au journal de la console (`ra.action_challenge` :
@@ -137,6 +139,36 @@ lecture sur `actions`, ajouté au script des droits. Rejouer
 `psql -f crates/oe-castore/sql/ra_console_grants.sql` (idempotent) ; sans cela,
 `GET /api/v1/quorum` et la co-signature répondent `503`.
 
+## Gestion du registre des opérateurs
+
+Même schéma : le challenge est préparé avec l'action voulue, puis l'assertion est
+relayée à la route correspondante (`{"challenge_id", "assertion"}`), qui rend la forme
+d'une action à plusieurs signatures (`status`, `signatures`, `required`, `signed_by`,
+`result`). Seul un `admin` signe ces actions ; `ca-server` en décide.
+
+| Route | Action préparée | Cible contrôlée par `ca-server` |
+|---|---|---|
+| `POST /api/v1/operators` | `{"action": "invite_operator", "name", "role"}` | le type seulement (l'opérateur n'existe pas encore) |
+| `POST /api/v1/credentials/{credential_id}/confirm` | `{"action": "confirm_key", "credential_id", "key_fingerprint"}` | l'identifiant de la clé |
+| `POST /api/v1/credentials/{credential_id}/revoke` | `{"action": "revoke_key", "credential_id", "reason"}` | l'identifiant de la clé |
+| `POST /api/v1/operators/{name}/role` | `{"action": "set_role", "operator", "role"}` | l'opérateur, par son nom |
+
+- **Invitation** : le jeton n'existe que dans `result.invite_token` de la réponse
+  d'exécution, rendu **une seule fois** ; ni `ca-server` ni la console ne le
+  journalisent ni ne le conservent. L'invité enregistre ensuite sa clé par le relais
+  d'enregistrement (plus haut) : elle reste en attente, avec une empreinte que l'invité
+  transmet hors bande.
+- **Confirmation** : l'administrateur signe l'empreinte ; `ca-server` la recompare à la
+  clé en attente et refuse qu'un opérateur confirme sa propre clé.
+- **Révocation de clé** : motif obligatoire ; `ca-server` refuse de révoquer la dernière
+  clé d'administrateur active (la voie de secours est `recover-admin`).
+- **Rôle `admin`** : créer un administrateur, élever un opérateur au rôle `admin` ou
+  changer le rôle d'un administrateur exige **deux administrateurs** — la première
+  signature rend `AWAITING_QUORUM`, la seconde passe par la salle d'attente
+  (`/api/v1/quorum/{action_id}/sign`). Un opérateur ne change pas son propre rôle.
+- Identifiant de clé : base64url, 1 024 caractères au plus ; nom d'opérateur : 1 à 256
+  caractères. Toute autre forme est refusée avant relais.
+
 ## Variables d'environnement
 
 | Variable | Défaut | Rôle |
@@ -171,7 +203,8 @@ lecture sur `actions`, ajouté au script des droits. Rejouer
 
 ## Ce qui n'existe pas encore
 
-La gestion du registre depuis la console (invitations, clés, rôles), le workflow d'incident et le frontend : voir [WEBUI.md](WEBUI.md) §15 et `TODO.md`. La
+La liste des clés en attente de confirmation, le libre-service (ajout et retrait de ses
+propres clés, §10), le workflow d'incident et le frontend : voir [WEBUI.md](WEBUI.md) §15 et `TODO.md`. La
 connexion, les sessions et la lecture (`/api/v1/requests`) existent, mais ne sont pas
 encore décrites ici. L'image, le chart Helm et le
 `docker-compose.yml` de la console non plus. Le certificat client (3 mois) se
