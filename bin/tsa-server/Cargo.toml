@@ -31,3 +31,9 @@ time = { version = "0.3", features = ["std"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal"] }
 tracing-subscriber = "0.3"
 axum = "0.8"
+
+[dev-dependencies]
+oe-ca-core = { path = "../../crates/oe-ca-core" }
+oe-castore = { path = "../../crates/oe-castore" }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+base64 = "0.22"

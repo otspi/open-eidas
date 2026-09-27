@@ -60,10 +60,12 @@ Ce dépôt héberge le prototype **fonctionnel et vérifiable** du premier servi
   et réponses OCSP — qui délivre le certificat de l'unité d'horodatage par
   enrôlement automatisé ;
 - une **matrice de conformité ETSI** générée depuis le code
-  ([docs/CONFORMITE-ETSI.md](docs/CONFORMITE-ETSI.md)) : chaque exigence
-  applicable est portée par un mécanisme identifié et un test exécutable, ou
-  déclarée comme écart avec sa cible — la CI échoue si une ligne perd l'un
-  des deux ;
+  ([docs/CONFORMITE-ETSI.md](docs/CONFORMITE-ETSI.md)), qui cite la version
+  de chaque norme et ses identifiants d'exigence : une exigence n'y est
+  « couverte » que si un binaire en service l'applique (test du binaire ou
+  job de démonstration réelle), sinon elle est déclarée « implémentée, pas en
+  service » ou « écart » avec sa cible — la CI échoue si une ligne perd sa
+  preuve ou cite un test introuvable ou ignoré ;
 - un **HSM logiciel SoftHSM2** parlant le protocole d'un HSM certifié, pour que
   le passage en production soit un changement de configuration, pas de code ;
 - une **heure traçable jusqu'à UTC** : le service recoupe deux serveurs de

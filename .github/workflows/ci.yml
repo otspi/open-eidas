@@ -50,13 +50,18 @@ jobs:
       - name: cargo clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
 
-      # Les tests qui exigent SoftHSM2/PostgreSQL réels (feature `postgres`,
-      # crates/oe-hsm/tests/pkcs11_integration.rs) sont explicitement ignorés
-      # par défaut ou gardés par une variable d'environnement absente en CI ;
-      # ce job couvre donc la logique métier, pas l'intégration matérielle —
-      # celle-ci est revalidée par les jobs de démonstration (kind, compose)
-      # plus bas, qui tournent en conditions réelles.
+      # SoftHSM2 pour le test du binaire tsa-server (bin/tsa-server/tests/serve.rs),
+      # que la matrice de conformité cite comme preuve de mise en service
+      # (constat D-2) : OE_REQUIRE_SOFTHSM le fait échouer, plutôt que s'ignorer,
+      # si SoftHSM venait à manquer. Les tests PostgreSQL restent gardés par
+      # OE_CASTORE_TEST_DSN, absente ici ; l'intégration complète est revalidée
+      # par les jobs de démonstration (kind, compose) plus bas.
+      - name: Installe SoftHSM2
+        run: sudo apt-get update && sudo apt-get install -y softhsm2
+
       - name: cargo test
+        env:
+          OE_REQUIRE_SOFTHSM: "1"
         run: cargo test --workspace
 
       # Suites PostgreSQL, gardées par OE_CASTORE_TEST_DSN : schéma du registre,
