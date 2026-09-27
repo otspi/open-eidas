@@ -205,10 +205,20 @@ pub struct Expect {
     /// canonique du corps figé).
     #[serde(default)]
     pub serial: Option<String>,
+    /// Action visée par une co-signature (double contrôle, §8) : le challenge
+    /// présenté doit avoir été émis pour elle.
+    #[serde(default)]
+    pub action_id: Option<Uuid>,
 }
 
 impl Expect {
-    fn check(&self, action: &Action) -> Result<(), Error> {
+    fn check(&self, action: &Action, action_id: Uuid) -> Result<(), Error> {
+        if self.action_id.is_some_and(|expected| expected != action_id) {
+            return Err(Error::Mismatch(format!(
+                "action attendue {}, challenge émis pour {action_id}",
+                self.action_id.unwrap_or_default()
+            )));
+        }
         if self.action != action.kind() {
             return Err(Error::Mismatch(format!(
                 "attendu {}, figé {}",
@@ -733,7 +743,7 @@ impl Service {
         // Avant de retirer l'état de la cérémonie : une assertion présentée pour
         // une autre cible ne consomme rien, le bon appel reste possible.
         if let Some(expect) = expect {
-            expect.check(&stored.action)?;
+            expect.check(&stored.action, action_id)?;
         }
 
         // Une seule tentative par cérémonie : l'état sort de la mémoire quoi
@@ -1002,25 +1012,26 @@ mod expect_tests {
             action: action.to_string(),
             transaction_id: tx.map(str::to_string),
             serial: None,
+            action_id: None,
         }
     }
 
     #[test]
     fn only_the_frozen_action_and_target_pass() {
         assert!(expect("approve_request", Some("tx-a"))
-            .check(&approve("tx-a"))
+            .check(&approve("tx-a"), Uuid::nil())
             .is_ok());
         assert!(matches!(
-            expect("approve_request", Some("tx-b")).check(&approve("tx-a")),
+            expect("approve_request", Some("tx-b")).check(&approve("tx-a"), Uuid::nil()),
             Err(Error::Mismatch(_))
         ));
         assert!(matches!(
-            expect("reject_request", Some("tx-a")).check(&approve("tx-a")),
+            expect("reject_request", Some("tx-a")).check(&approve("tx-a"), Uuid::nil()),
             Err(Error::Mismatch(_))
         ));
         // Une décision sans cible précisée n'est pas une attente : refusée.
         assert!(matches!(
-            expect("approve_request", None).check(&approve("tx-a")),
+            expect("approve_request", None).check(&approve("tx-a"), Uuid::nil()),
             Err(Error::BadRequest(_))
         ));
         // Une action sans demande visée : seul le type compte.
@@ -1028,7 +1039,7 @@ mod expect_tests {
             operator: "alice".to_string(),
             role: Role::Auditeur,
         };
-        assert!(expect("set_role", None).check(&role).is_ok());
+        assert!(expect("set_role", None).check(&role, Uuid::nil()).is_ok());
 
         // Révocation : la cible est le numéro de série, jamais une demande.
         let revoke = Action::RevokeCertificate {
@@ -1040,16 +1051,32 @@ mod expect_tests {
             action: "revoke_certificate".to_string(),
             transaction_id: None,
             serial: Some(s.to_string()),
+            action_id: None,
         };
-        assert!(by_serial("0a1b").check(&revoke).is_ok());
+        assert!(by_serial("0a1b").check(&revoke, Uuid::nil()).is_ok());
         assert!(matches!(
-            by_serial("0a1c").check(&revoke),
+            by_serial("0a1c").check(&revoke, Uuid::nil()),
             Err(Error::Mismatch(_))
         ));
         let mixed = Expect {
             transaction_id: Some("tx".to_string()),
             ..by_serial("0a1b")
         };
-        assert!(matches!(mixed.check(&revoke), Err(Error::BadRequest(_))));
+        assert!(matches!(
+            mixed.check(&revoke, Uuid::nil()),
+            Err(Error::BadRequest(_))
+        ));
+
+        // Co-signature : le challenge doit avoir été émis pour l'action visée.
+        let target = Uuid::from_u128(7);
+        let for_target = Expect {
+            action_id: Some(target),
+            ..by_serial("0a1b")
+        };
+        assert!(for_target.check(&revoke, target).is_ok());
+        assert!(matches!(
+            for_target.check(&revoke, Uuid::from_u128(8)),
+            Err(Error::Mismatch(_))
+        ));
     }
 }

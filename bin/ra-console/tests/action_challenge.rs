@@ -707,3 +707,178 @@ async fn an_ra_operator_cannot_prepare_a_revocation() {
     assert_eq!(status, StatusCode::FORBIDDEN, "{err}");
     assert_eq!(env.actions_frozen().await, 0);
 }
+
+impl Env {
+    async fn get(&self, path: &str, cookie: &str) -> (StatusCode, serde_json::Value) {
+        let res = self
+            .console
+            .clone()
+            .oneshot(
+                Request::get(path)
+                    .header("cookie", cookie)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = res.status();
+        let bytes = res.into_body().collect().await.unwrap().to_bytes();
+        (status, serde_json::from_slice(&bytes).unwrap_or_default())
+    }
+
+    /// Première signature d'une révocation par l'opérateur de `cookie` : rend
+    /// l'identifiant de l'action figée.
+    async fn first_signature(&mut self, cookie: &str, serial: &str) -> String {
+        let (_, issued) = self.challenge(Some(cookie), revoke(serial)).await;
+        let assertion = self.sign(&issued);
+        let (status, done) = self
+            .decide(
+                Some(cookie),
+                &format!("/api/v1/certificates/{serial}/revoke"),
+                &issued,
+                &assertion,
+            )
+            .await;
+        assert_eq!(done["status"], "AWAITING_QUORUM", "{status} {done}");
+        done["action_id"].as_str().unwrap().to_string()
+    }
+}
+
+/// Étape 4b : deux `ca_operateur` distincts révoquent ensemble. La salle
+/// d'attente lit l'état de `ca-server` ; une seconde signature du même
+/// opérateur ne compte pas ; la dernière signature exécute, une seule fois.
+#[tokio::test]
+async fn two_distinct_ca_operators_revoke_together() {
+    let mut env = env!();
+    env.operator_with_key("alice", Role::CaOperateur).await;
+    env.operator_with_key("bob", Role::CaOperateur).await;
+    let alice = env.log_in("alice").await;
+    let bob = env.log_in("bob").await;
+    let serial = env.certificate("tx-quorum").await;
+    let action_id = env.first_signature(&alice, &serial).await;
+
+    let (status, waiting) = env.get("/api/v1/quorum?state=PENDING", &bob).await;
+    assert_eq!(status, StatusCode::OK, "{waiting}");
+    let waiting = waiting.as_array().unwrap();
+    assert_eq!(waiting.len(), 1);
+    assert_eq!(waiting[0]["action_id"], action_id.as_str());
+    assert_eq!(waiting[0]["action"], "revoke_certificate");
+    assert_eq!(waiting[0]["body"]["serial"], serial.as_str());
+    assert_eq!(waiting[0]["signatures"], 1);
+    assert_eq!(waiting[0]["required"], 2);
+    assert_eq!(waiting[0]["signed_by"], serde_json::json!(["alice"]));
+
+    // Alice ne peut pas signer une seconde fois sa propre action.
+    let (status, err) = env
+        .challenge(Some(&alice), serde_json::json!({ "action_id": action_id }))
+        .await;
+    if status == StatusCode::OK {
+        let assertion = env.sign(&err);
+        let (status, err) = env
+            .decide(
+                Some(&alice),
+                &format!("/api/v1/quorum/{action_id}/sign"),
+                &err,
+                &assertion,
+            )
+            .await;
+        assert!(status.is_client_error(), "{status} {err}");
+    } else {
+        assert!(status.is_client_error(), "{status} {err}");
+    }
+    assert_eq!(
+        env.status_of(&serial).await,
+        oe_castore::CertificateStatus::Issued
+    );
+
+    // Bob co-signe : la révocation s'exécute.
+    let (status, issued) = env
+        .challenge(Some(&bob), serde_json::json!({ "action_id": action_id }))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{issued}");
+    let assertion = env.sign(&issued);
+    let (status, done) = env
+        .decide(
+            Some(&bob),
+            &format!("/api/v1/quorum/{action_id}/sign"),
+            &issued,
+            &assertion,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{done}");
+    assert_eq!(done["status"], "EXECUTED", "{done}");
+    assert_eq!(done["signatures"], 2);
+    assert_eq!(done["signed_by"], "bob");
+    assert_eq!(
+        env.status_of(&serial).await,
+        oe_castore::CertificateStatus::Revoked
+    );
+
+    let (_, waiting) = env.get("/api/v1/quorum?state=PENDING", &bob).await;
+    assert_eq!(waiting, serde_json::json!([]));
+    // Une action exécutée ne se prépare plus.
+    let (status, err) = env
+        .challenge(Some(&bob), serde_json::json!({ "action_id": action_id }))
+        .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{err}");
+    assert_eq!(err["error"], "already_executed");
+}
+
+/// Une co-signature ne compte que pour l'action pour laquelle son challenge a
+/// été émis : présentée pour une autre, elle est refusée sans rien consommer.
+/// Les deux actions visent le même certificat : seul leur identifiant les
+/// distingue, c'est bien lui qui est contrôlé.
+#[tokio::test]
+async fn a_co_signature_only_counts_for_its_action() {
+    let mut env = env!();
+    env.operator_with_key("alice", Role::CaOperateur).await;
+    env.operator_with_key("bob", Role::CaOperateur).await;
+    let alice = env.log_in("alice").await;
+    let bob = env.log_in("bob").await;
+    let x = env.certificate("tx-x").await;
+    let action_x = env.first_signature(&alice, &x).await;
+    let action_y = env.first_signature(&alice, &x).await;
+    assert_ne!(action_x, action_y);
+
+    let (_, issued) = env
+        .challenge(Some(&bob), serde_json::json!({ "action_id": action_x }))
+        .await;
+    let assertion = env.sign(&issued);
+    let (status, err) = env
+        .decide(
+            Some(&bob),
+            &format!("/api/v1/quorum/{action_y}/sign"),
+            &issued,
+            &assertion,
+        )
+        .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{err}");
+    assert_eq!(err["error"], "action_mismatch");
+    assert_eq!(
+        env.status_of(&x).await,
+        oe_castore::CertificateStatus::Issued
+    );
+
+    let (status, done) = env
+        .decide(
+            Some(&bob),
+            &format!("/api/v1/quorum/{action_x}/sign"),
+            &issued,
+            &assertion,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{done}");
+    assert_eq!(done["action_id"], action_x.as_str());
+    assert_eq!(
+        env.status_of(&x).await,
+        oe_castore::CertificateStatus::Revoked
+    );
+
+    // Une action inconnue, ou un identifiant qui n'en est pas un.
+    for id in ["3f2b8c1e-9d4a-4e6b-8a7c-1234567890ab", "pas-un-uuid"] {
+        let (status, err) = env
+            .challenge(Some(&bob), serde_json::json!({ "action_id": id }))
+            .await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{id} {err}");
+    }
+}

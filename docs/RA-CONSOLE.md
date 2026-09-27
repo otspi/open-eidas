@@ -110,10 +110,32 @@ forme canonique du corps figé) ; toute autre forme est refusée avant relais.
   distincts** (docs/WEBUI.md §8). La première signature est enregistrée par
   `ca-server` et **rien n'est révoqué** : réponse `{"status": "AWAITING_QUORUM",
   "signatures": 1, "required": 2, "action_id", "signed_by"}`. La signature suivante
-  (co-signature) arrive avec l'étape 4b.
+  (co-signature) passe par la salle d'attente, ci-dessous.
 - La cible est contrôlée par `ca-server` comme pour une décision (`expect` porte le
   numéro de série) : une signature ne révoque jamais un autre certificat.
 - Un `ra_operateur` ne peut pas préparer de révocation : `ca-server` refuse.
+
+## Double contrôle : salle d'attente et co-signature
+
+- `GET /api/v1/quorum?state=PENDING` (session) : les actions à plusieurs signatures ni
+  exécutées ni expirées — identifiant, type, **corps figé** (à afficher tel quel à qui
+  va co-signer), empreinte, signatures recueillies et exigées, **qui a déjà signé**.
+  La console lit l'état qui fait foi, dans la table `actions` et `decision_evidence`
+  de `ca-server`, en lecture seule ; elle n'en tient aucune copie et ne conserve
+  jamais d'assertion.
+- Co-signer : `POST /api/v1/webauthn/challenge` avec `{"action_id": "…"}` (la console
+  vérifie que l'action existe, n'est pas exécutée et relève des actions proposées),
+  puis `POST /api/v1/quorum/{action_id}/sign` avec `{"challenge_id", "assertion"}`.
+  La console joint à `expect` l'identifiant de l'action et sa cible : une
+  co-signature ne compte que pour l'action pour laquelle son challenge a été émis.
+- `ca-server` n'accepte qu'une signature par opérateur, relit le rôle de chacun et
+  exécute **une seule fois**, au seuil fixé par sa politique : la dernière signature
+  rend `{"status": "EXECUTED", "signatures": 2, "required": 2, …}`.
+
+**Mise à jour d'un déploiement existant** : la salle d'attente exige le droit de
+lecture sur `actions`, ajouté au script des droits. Rejouer
+`psql -f crates/oe-castore/sql/ra_console_grants.sql` (idempotent) ; sans cela,
+`GET /api/v1/quorum` et la co-signature répondent `503`.
 
 ## Variables d'environnement
 
@@ -149,8 +171,7 @@ forme canonique du corps figé) ; toute autre forme est refusée avant relais.
 
 ## Ce qui n'existe pas encore
 
-La co-signature et la liste des actions en attente (étape 4b), la gestion du registre
-depuis la console, le workflow d'incident et le frontend : voir [WEBUI.md](WEBUI.md) §15 et `TODO.md`. La
+La gestion du registre depuis la console (invitations, clés, rôles), le workflow d'incident et le frontend : voir [WEBUI.md](WEBUI.md) §15 et `TODO.md`. La
 connexion, les sessions et la lecture (`/api/v1/requests`) existent, mais ne sont pas
 encore décrites ici. L'image, le chart Helm et le
 `docker-compose.yml` de la console non plus. Le certificat client (3 mois) se

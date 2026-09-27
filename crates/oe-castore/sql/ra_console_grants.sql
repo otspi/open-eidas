@@ -23,7 +23,12 @@ GRANT SELECT ON
     operators,
     webauthn_credentials,
     pending_credentials,
-    decision_evidence
+    decision_evidence,
+    -- Les actions figées (corps, empreinte, seuil, échéance) : la salle
+    -- d'attente des actions à plusieurs signatures (docs/WEBUI.md §8) les lit
+    -- ici plutôt que d'en tenir une copie. Aucun secret n'y figure : le jeton
+    -- d'une invitation n'est rendu que dans le résultat de l'exécution.
+    actions
 TO openeidas_ra_console;
 
 -- Pour les clés étrangères des tables propres à ra-console.

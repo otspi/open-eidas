@@ -17,8 +17,8 @@ use sqlx::PgPool;
 use crate::audit::{self, Recorder};
 use crate::ca_link::{CaLink, Relayed};
 use crate::login::{LoginError, LoginService};
-use crate::requests;
 use crate::session::{Authenticated, SessionError, Sessions, COOKIE_NAME, SESSION_TTL};
+use crate::{quorum, requests};
 
 /// Assez pour un objet d'attestation, pas pour bourrer la mémoire.
 const MAX_BODY_BYTES: usize = 64 * 1024;
@@ -51,6 +51,8 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/v1/requests/{id}/approve", post(handle_approve))
         .route("/api/v1/requests/{id}/reject", post(handle_reject))
         .route("/api/v1/certificates/{serial}/revoke", post(handle_revoke))
+        .route("/api/v1/quorum", get(handle_quorum))
+        .route("/api/v1/quorum/{action_id}/sign", post(handle_quorum_sign))
         .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
         .with_state(state)
 }
@@ -457,6 +459,57 @@ fn relayed_at_this_stage(action: &oe_actions::Action) -> bool {
     )
 }
 
+fn not_available() -> Response {
+    error(
+        StatusCode::FORBIDDEN,
+        "action_not_available",
+        "cette action n'est pas encore proposée par la console",
+    )
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CoSign {
+    action_id: String,
+}
+
+/// Une action déjà figée par `ca-server`, que la console propose à ce stade et
+/// qui attend encore des signatures. Lue dans la table `actions`, en lecture
+/// seule : rien n'est décidé ici, `ca-server` recontrôle tout.
+///
+/// L'`Err` est la réponse à rendre telle quelle (voir [`authenticate`]).
+#[allow(clippy::result_large_err)]
+async fn frozen_at_this_stage(
+    state: &AppState,
+    action_id: &str,
+) -> Result<(oe_webauthn::Uuid, oe_actions::Action), Response> {
+    let unknown = || error(StatusCode::NOT_FOUND, "unknown_action", "action inconnue");
+    let id: oe_webauthn::Uuid = action_id.parse().map_err(|_| unknown())?;
+    let frozen = quorum::frozen(&state.pool, id)
+        .await
+        .map_err(|e| {
+            tracing::error!(erreur = %e, "quorum : base indisponible");
+            error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "unavailable",
+                "service indisponible",
+            )
+        })?
+        .ok_or_else(unknown)?;
+    if frozen.executed {
+        return Err(error(
+            StatusCode::CONFLICT,
+            "already_executed",
+            "action déjà exécutée",
+        ));
+    }
+    let action: oe_actions::Action = serde_json::from_value(frozen.body).map_err(|_| unknown())?;
+    if !relayed_at_this_stage(&action) {
+        return Err(not_available());
+    }
+    Ok((id, action))
+}
+
 /// `POST /api/v1/webauthn/challenge` (docs/WEBUI.md §4 étapes 1 à 3, §5) :
 /// l'opérateur connecté demande à `ca-server` de figer une action et d'émettre
 /// le challenge qu'il signera. Le corps rendu est celui que `ca-server`
@@ -478,27 +531,35 @@ async fn handle_action_challenge(
         Ok(a) => a,
         Err(resp) => return resp,
     };
-    // Relue dans l'énumération fermée d'`oe_actions`, puis resérialisée : un
-    // champ en trop (un `operator_hint` glissé par le navigateur, par exemple)
-    // ne franchit jamais la console.
-    let action: oe_actions::Action = match serde_json::from_slice(&body) {
-        Ok(a) => a,
+    let value: serde_json::Value = match serde_json::from_slice(&body) {
+        Ok(v) => v,
         Err(_) => return error(StatusCode::BAD_REQUEST, "bad_request", "action invalide"),
     };
-    if !relayed_at_this_stage(&action) {
-        return error(
-            StatusCode::FORBIDDEN,
-            "action_not_available",
-            "cette action n'est pas encore proposée par la console",
-        );
-    }
-    let result = state
-        .link
-        .post(
-            "/internal/v1/challenge",
-            &serde_json::json!({ "body": action, "operator_hint": who.operator_id }),
-        )
-        .await;
+    // Deux formes (§8) : une action nouvelle, ou `{"action_id"}` pour signer
+    // une action déjà figée (double contrôle). Dans les deux cas, l'action est
+    // relue dans l'énumération fermée d'`oe_actions` : un champ en trop (un
+    // `operator_hint` glissé par le navigateur, par exemple) ne franchit
+    // jamais la console.
+    let relay = if value.get("action_id").is_some() {
+        let Ok(CoSign { action_id }) = serde_json::from_value::<CoSign>(value) else {
+            return error(StatusCode::BAD_REQUEST, "bad_request", "action invalide");
+        };
+        let (id, _) = match frozen_at_this_stage(&state, &action_id).await {
+            Ok(f) => f,
+            Err(resp) => return resp,
+        };
+        serde_json::json!({ "action_id": id, "operator_hint": who.operator_id })
+    } else {
+        let action: oe_actions::Action = match serde_json::from_value(value) {
+            Ok(a) => a,
+            Err(_) => return error(StatusCode::BAD_REQUEST, "bad_request", "action invalide"),
+        };
+        if !relayed_at_this_stage(&action) {
+            return not_available();
+        }
+        serde_json::json!({ "body": action, "operator_hint": who.operator_id })
+    };
+    let result = state.link.post("/internal/v1/challenge", &relay).await;
     if let Ok(r) = &result {
         state.journal.append(
             audit::EVENT_ACTION_CHALLENGE,
@@ -663,6 +724,86 @@ async fn handle_revoke(
         Ok(r) => Json(quorum_status(&r.body)).into_response(),
         Err(resp) => resp,
     }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct QuorumQuery {
+    state: Option<String>,
+}
+
+/// `GET /api/v1/quorum?state=PENDING` (docs/WEBUI.md §5, §8) : les actions à
+/// plusieurs signatures ni exécutées ni expirées, avec qui a déjà signé. En
+/// lecture seule sur l'état de `ca-server`, qui fait foi.
+async fn handle_quorum(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(q): Query<QuorumQuery>,
+) -> Response {
+    if let Err(resp) = authenticate(&state, &headers).await {
+        return resp;
+    }
+    if q.state.as_deref().is_some_and(|s| s != "PENDING") {
+        return error(StatusCode::BAD_REQUEST, "bad_request", "état invalide");
+    }
+    match quorum::pending(&state.pool, time::OffsetDateTime::now_utc()).await {
+        Ok(list) => Json(list).into_response(),
+        Err(e) => {
+            tracing::error!(erreur = %e, "quorum : base indisponible");
+            error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "unavailable",
+                "service indisponible",
+            )
+        }
+    }
+}
+
+/// `POST /api/v1/quorum/{action_id}/sign` (docs/WEBUI.md §5, §8) : une
+/// signature de plus sur une action figée, challenge obtenu par
+/// `POST /api/v1/webauthn/challenge` avec `{"action_id"}`. `ca-server`
+/// n'accepte qu'une signature par opérateur et exécute au seuil, une seule
+/// fois ; la console lui dit ce qu'elle attend (l'action de la route et sa
+/// cible), qu'il compare avant toute consommation.
+async fn handle_quorum_sign(
+    State(state): State<Arc<AppState>>,
+    Path(action_id): Path<String>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    if !is_json(&headers) {
+        return unsupported_media_type();
+    }
+    if let Err(resp) = authenticate(&state, &headers).await {
+        return resp;
+    }
+    let (id, action) = match frozen_at_this_stage(&state, &action_id).await {
+        Ok(f) => f,
+        Err(resp) => return resp,
+    };
+    let mut expect = serde_json::json!({ "action": action_kind(&action), "action_id": id });
+    match &action {
+        oe_actions::Action::ApproveRequest { transaction_id, .. }
+        | oe_actions::Action::RejectRequest { transaction_id, .. } => {
+            expect["transaction_id"] = serde_json::json!(transaction_id);
+        }
+        oe_actions::Action::RevokeCertificate { serial, .. } => {
+            expect["serial"] = serde_json::json!(serial);
+        }
+        _ => {}
+    }
+    match relay_assertion(&state, &headers, &body, expect).await {
+        Ok(r) => Json(quorum_status(&r.body)).into_response(),
+        Err(resp) => resp,
+    }
+}
+
+/// Le nom sérialisé d'une action (`approve_request`…), celui du corps figé.
+fn action_kind(action: &oe_actions::Action) -> String {
+    serde_json::to_value(action)
+        .ok()
+        .and_then(|v| v.get("action").and_then(|a| a.as_str()).map(str::to_string))
+        .unwrap_or_default()
 }
 
 /// La forme du §5 pour une action à plusieurs signatures.
