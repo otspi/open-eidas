@@ -53,6 +53,9 @@ tsa:
     sources: "ntp.obspm.fr,ptbtime1.ptb.de"
     minSources: 2
     maxOffset: 500ms
+  # Scellement du journal et contreseing par des TSA tierces : valeurs
+  # transmises au service, qui ne les exploite PAS encore (écart J-1, voir
+  # docs/ARCHITECTURE.md §7).
   crossTSA:
     urls: "https://freetsa.org/tsr,http://timestamp.digicert.com"
   audit:

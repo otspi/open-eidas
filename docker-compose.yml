@@ -131,6 +131,8 @@ services:
       OPENEIDAS_TIME_MIN_SOURCES: "2"
       OPENEIDAS_TIME_MAX_OFFSET: 500ms
       OPENEIDAS_AUDIT_FILE: /var/lib/open-eidas/state/audit.log
+      # Scellement, contreseing tiers et réplication du journal : lus par la
+      # configuration mais PAS encore exploités (écart J-1, docs/ARCHITECTURE.md §7).
       OPENEIDAS_AUDIT_SEAL_INTERVAL: 1h
       OPENEIDAS_CROSS_TSA_URLS: ${OPENEIDAS_CROSS_TSA_URLS:-https://freetsa.org/tsr,http://timestamp.digicert.com}
       OPENEIDAS_AUDIT_REPLICA_URL: http://audit-replica/

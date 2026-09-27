@@ -5,7 +5,7 @@
      correction se fait dans le code, pour que la matrice publiée reste
      celle que le système applique réellement. -->
 
-**28 exigences** — 24 couvertes, 2 écarts documentés, 2 hors périmètre logiciel.
+**28 exigences** — 22 couvertes, 4 écarts documentés, 2 hors périmètre logiciel.
 
 Trois statuts seulement, pour qu'aucune zone grise ne puisse s'y loger :
 
@@ -18,9 +18,9 @@ Trois statuts seulement, pour qu'aucune zone grise ne puisse s'y loger :
 | Clause | Exigence | Statut | Mécanisme | Vérification / cible |
 |---|---|---|---|---|
 | §7.4 | Gestion des clés du prestataire dans un module cryptographique | couvert | Toutes les clés vivent dans un token PKCS#11 et n'en sortent jamais : oe-hsm::Pkcs11Token, validé contre un vrai token SoftHSM2 (crates/oe-hsm/tests/pkcs11_integration.rs). | crates/oe-hsm/tests/pkcs11_integration.rs |
-| §7.10 | Journalisation des événements et durée de conservation | couvert | Journal JSON Lines chaîné par SHA-256 (oe-audit) ; durée de conservation contrôlée à la configuration par oe_conformance::check_audit_retention, branché sur bin/ca-server::Config::load. | crates/oe-audit/src/lib.rs (deux_ecrivains_partagent_la_meme_chaine), crates/oe-conformance/src/lib.rs (check_audit_retention_accepts_the_minimum, check_audit_retention_rejects_unconfigured_and_short_durations) |
+| §7.10 | Journalisation des événements et durée de conservation | écart documenté | Journal JSON Lines chaîné par SHA-256 (oe-audit), écrit avant chaque émission dans les deux services ; durée de conservation contrôlée à la configuration par oe_conformance::check_audit_retention, mais côté CA seulement (bin/ca-server::Config::load). | **Cible :** Contrôler aussi la durée de conservation au démarrage de tsa-server (docs/CPS.md B.3). |
 | §7.9 | Intégrité démontrable des enregistrements d'audit | couvert | Chaînage par hachage vérifié intégralement à l'ouverture ; verrou de fichier partagé entre plusieurs écrivains d'un même processus : oe-audit::Log. | crates/oe-audit/src/lib.rs (deux_ecrivains_partagent_la_meme_chaine, verify_detects_modified_record, verify_detects_truncated_and_rewritten_tail) |
-| §7.11 | Continuité d'activité et reprise après sinistre | couvert | Contreseing du journal par une TSA tierce (oe-crosstsa) et réplication WebDAV hors site (oe-replicate), validés contre un vrai serveur. | crates/oe-crosstsa/tests/against_local_server.rs (seals_a_digest_against_a_real_rfc3161_server), crates/oe-replicate/tests/against_local_server.rs (replicates_content_via_webdav_put) |
+| §7.11 | Continuité d'activité et reprise après sinistre | écart documenté | Contreseing du journal par une TSA tierce (oe-crosstsa) et réplication WebDAV hors site (oe-replicate) écrits et testés contre un vrai serveur, mais appelés par aucun binaire : l'intégrité et la survie du journal reposent sur le contrôle d'accès et la sauvegarde de son volume. | **Cible :** Constat J-1 : câbler dans tsa-server serve puis ca-server serve le scellement périodique (log.sealed), le contreseing tiers (log.cross_sealed) et la copie hors site (PR #49, #50 pour le stockage S3), testés de bout en bout sur le binaire ; dégrader /healthz sur échec prolongé. |
 | §7.12 | Plan de cessation d'activité | hors périmètre logiciel | Procédure organisationnelle décrite dans docs/CA.md, indépendante du langage d'implémentation. | **Cible :** Engagement juridique de l'association, dépôt auprès de l'organe de contrôle, séquestre des journaux. |
 | §6.1 | Politique de service et déclaration des pratiques publiées | écart documenté | docs/CPS.md porte un brouillon structuré, déjà indépendant du langage d'implémentation du service. | **Cible :** Adoption formelle de docs/CPS.md par l'association (organisationnel, non affecté par le portage Rust). |
 

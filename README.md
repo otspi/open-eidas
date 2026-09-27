@@ -69,9 +69,12 @@ Ce dépôt héberge le prototype **fonctionnel et vérifiable** du premier servi
 - une **heure traçable jusqu'à UTC** : le service recoupe deux serveurs de
   laboratoires de métrologie (Observatoire de Paris, PTB) et **cesse d'émettre**
   dès que la dérive dépasse le seuil annoncé, comme l'exige ETSI EN 319 421 ;
-- un **journal d'audit chaîné par hachage, contresigné par des TSA tierces
-  publiques** (FreeTSA.org, DigiCert) : chaque scellement se vérifie avec les
-  outils RFC 3161 standards, sans dépendre de la confiance en Open eIDAS ;
+- un **journal d'audit chaîné par hachage**, écrit *avant* chaque signature :
+  si le journal ne peut pas être écrit, aucun jeton ne sort. Le scellement de
+  la tête de chaîne par des TSA tierces publiques et la réplication hors site
+  existent en bibliothèques (`oe-crosstsa`, `oe-replicate`) mais **ne sont pas
+  encore câblés dans les services** — écart déclaré dans
+  [docs/CONFORMITE-ETSI.md](docs/CONFORMITE-ETSI.md) ;
 - le tout orchestré en `docker compose`, démarrable en une commande.
 
 Ce n'est pas encore une TSA qualifiée : les écarts avec le référentiel eIDAS
@@ -120,9 +123,6 @@ awk '/BEGIN CERTIFICATE/{n++} {print > (n == 1 ? "tsu.pem" : "ca.pem")}' tsa-cha
 openssl ts -verify -in facture.tsr -queryfile facture.tsq -CAfile ca.pem
 ```
 
-L'interface d'administration de la PKI est disponible sur
-<https://localhost:8443/webui/> (certificat auto-signé).
-
 ### Relire le journal d'audit
 
 ```bash
@@ -167,7 +167,7 @@ crates/oe-castore/     registre de la CA (PostgreSQL, et mémoire pour les tests
 crates/oe-hsm/         accès PKCS#11 aux clés de signature (seule crate autorisant `unsafe`)
 crates/oe-timesource/  surveillance de la traçabilité de l'heure
 crates/oe-audit/       journal d'audit chaîné par hachage
-crates/oe-crosstsa/    contreseing du journal par des TSA tierces publiques
+crates/oe-crosstsa/    contreseing du journal par des TSA tierces publiques (pas encore câblé)
 crates/oe-enroll/      client d'enrôlement auprès de la CA
 crates/oe-httpapi/     endpoints HTTP (RFC 3161 + façade JSON)
 deploy/                images des trois services, chart Helm

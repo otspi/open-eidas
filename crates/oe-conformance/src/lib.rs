@@ -630,10 +630,10 @@ pub fn system_matrix() -> Matrix {
         },
         Entry {
             requirement: Requirement { standard: "ETSI EN 319 401", clause: "§7.10", title: "Journalisation des événements et durée de conservation" },
-            status: Status::Covered,
-            mechanism: "Journal JSON Lines chaîné par SHA-256 (oe-audit) ; durée de conservation contrôlée à la configuration par oe_conformance::check_audit_retention, branché sur bin/ca-server::Config::load.",
+            status: Status::Gap,
+            mechanism: "Journal JSON Lines chaîné par SHA-256 (oe-audit), écrit avant chaque émission dans les deux services ; durée de conservation contrôlée à la configuration par oe_conformance::check_audit_retention, mais côté CA seulement (bin/ca-server::Config::load).",
             test: "crates/oe-audit/src/lib.rs (deux_ecrivains_partagent_la_meme_chaine), crates/oe-conformance/src/lib.rs (check_audit_retention_accepts_the_minimum, check_audit_retention_rejects_unconfigured_and_short_durations)",
-            target: "",
+            target: "Contrôler aussi la durée de conservation au démarrage de tsa-server (docs/CPS.md B.3).",
         },
         Entry {
             requirement: Requirement { standard: "ETSI EN 319 401", clause: "§7.9", title: "Intégrité démontrable des enregistrements d'audit" },
@@ -644,10 +644,10 @@ pub fn system_matrix() -> Matrix {
         },
         Entry {
             requirement: Requirement { standard: "ETSI EN 319 401", clause: "§7.11", title: "Continuité d'activité et reprise après sinistre" },
-            status: Status::Covered,
-            mechanism: "Contreseing du journal par une TSA tierce (oe-crosstsa) et réplication WebDAV hors site (oe-replicate), validés contre un vrai serveur.",
+            status: Status::Gap,
+            mechanism: "Contreseing du journal par une TSA tierce (oe-crosstsa) et réplication WebDAV hors site (oe-replicate) écrits et testés contre un vrai serveur, mais appelés par aucun binaire : l'intégrité et la survie du journal reposent sur le contrôle d'accès et la sauvegarde de son volume.",
             test: "crates/oe-crosstsa/tests/against_local_server.rs (seals_a_digest_against_a_real_rfc3161_server), crates/oe-replicate/tests/against_local_server.rs (replicates_content_via_webdav_put)",
-            target: "",
+            target: "Constat J-1 : câbler dans tsa-server serve puis ca-server serve le scellement périodique (log.sealed), le contreseing tiers (log.cross_sealed) et la copie hors site (PR #49, #50 pour le stockage S3), testés de bout en bout sur le binaire ; dégrader /healthz sur échec prolongé.",
         },
         Entry {
             requirement: Requirement { standard: "ETSI EN 319 401", clause: "§7.12", title: "Plan de cessation d'activité" },

@@ -194,67 +194,49 @@ quiconque relit le fichier — y compris sans accès au service :
 docker compose exec tsa tsa-server verify-audit
 ```
 
-Y sont consignés l'ouverture du journal, chaque jeton émis (numéro de série,
-`genTime`, politique, empreinte soumise, présence d'un nonce), chaque refus
-avec son `failureInfo`, chaque mesure de temps avec l'écart par source, et
-chaque enrôlement de certificat. Le jeton émis est **relu avant d'être
-consigné** : le journal enregistre ce que contient réellement le jeton, pas ce
-que le service croit y avoir mis.
+Y sont consignés l'ouverture du journal, chaque jeton émis
+(`timestamp.granted` : `genTime`, politique, présence d'un nonce, et le numéro
+de série du **certificat** TSU), chaque refus avec son `failureInfo`
+(`timestamp.rejected`) et chaque mesure de temps avec l'écart par source
+(`time.measurement`). La CA tient son propre journal chaîné, où figurent les
+demandes d'enrôlement, les décisions RA, les émissions et les révocations.
+
+**Écart en cours de correction** (constat J-3 de l'audit du 2026-09-25,
+PR #52) : le journal de la TSA ne consigne pas encore le numéro de série du
+**jeton**, ni l'empreinte soumise, et le jeton n'est pas relu avant d'être
+consigné.
 
 Deux propriétés rendent le dispositif exploitable :
 
-- **Une écriture ratée annule l'émission.** Si le journal ne peut pas être
-  écrit, la requête échoue. Un jeton non tracé ne sort jamais du service.
+- **Une écriture ratée annule l'émission.** L'événement est écrit *avant* la
+  signature : si le journal ne peut pas être écrit, la requête échoue et rien
+  n'est signé. Un jeton non tracé ne sort jamais du service. Il en va de même
+  côté CA pour l'émission, la révocation et la publication de la CRL.
 - **Un journal altéré empêche le démarrage.** La chaîne est vérifiée
   intégralement à l'ouverture.
 
-La tête de chaîne est **scellée périodiquement**
-(`OPENEIDAS_AUDIT_SEAL_INTERVAL`, une heure par défaut) : la TSU horodate sa
-propre empreinte de tête et le jeton obtenu est inscrit au journal, ce qui
-date son contenu.
+### Limite : l'intégrité repose sur l'hôte (écart déclaré)
 
-### Contreseing par des TSA tierces
+Le chaînage SHA-256 n'utilise pas de clé : quiconque peut écrire dans le
+fichier peut en tronquer la fin ou le réécrire en recalculant la chaîne, sans
+que `verify-audit` le voie. Ce qui ancre la tête de chaîne hors du système
+**n'est pas encore en service** (constat J-1) :
 
-Le scellement ci-dessus reste auto-référentiel : il ne prouve l'antériorité à
-un tiers que si l'on fait déjà confiance à la TSU elle-même. Le service
-soumet donc la même tête de chaîne à une ou plusieurs **TSA publiques
-indépendantes** (`OPENEIDAS_CROSS_TSA_URLS`, par défaut FreeTSA.org et
-DigiCert), via le protocole RFC 3161 standard, et consigne chaque attestation
-obtenue (`log.cross_sealed`) : émetteur, date, numéro de série et jeton
-complet en base64.
+- **Scellement périodique** par la TSU elle-même (`log.sealed`) : le format
+  est prévu (`oe_audit::EVENT_SEALED`, compté par `verify-audit`), mais aucun
+  service ne scelle.
+- **Contreseing par des TSA tierces** indépendantes (`oe-crosstsa`, protocole
+  RFC 3161 standard, vérifiable par `openssl ts -verify` sans rien d'Open
+  eIDAS) : bibliothèque écrite et testée contre un vrai serveur, non câblée.
+- **Réplication hors site** : `oe-replicate` (WebDAV) est écrit et testé, non
+  câblé ; une copie vers un stockage objet compatible S3 auto-hébergé est en
+  cours (PR #49 et #50).
 
-Un auditeur n'a besoin de rien d'Open eIDAS pour vérifier une attestation : le
-certificat de la TSA tierce est public, et les outils standards suffisent —
-```bash
-openssl ts -query -digest <tête-de-chaîne> -sha256 -no_nonce -out head.tsq
-openssl ts -verify -in <jeton-décodé> -queryfile head.tsq \
-    -CAfile <CA-de-la-TSA-tierce> -untrusted <certificat-de-la-TSA-tierce>
-```
-— une réponse `Verification: OK` établit que la tête de chaîne, donc tout le
-journal qu'elle couvre par construction, existait à la date attestée par une
-autorité qui n'a aucun lien avec Open eIDAS.
-
-L'indisponibilité d'une TSA tierce est journalisée mais non bloquante : le
-scellement propre au service continue, et les autres TSA configurées
-prennent le relais.
-
-### Réplication hors site
-
-Un journal chaîné et contresigné ne protège que contre l'altération — pas
-contre la perte de l'instance elle-même (panne disque, compromission,
-suppression accidentelle). À chaque scellement, le service dépose donc une
-copie complète et datée du journal (`audit-<horodatage>-seq<n>.log`) sur un
-serveur **WebDAV** distant (`OPENEIDAS_AUDIT_REPLICA_URL`) : Nextcloud, un
-stockage d'objets exposé en WebDAV, ou tout hébergeur souverain qui l'offre —
-aucun fournisseur particulier n'est imposé.
-
-Chaque copie est un journal complet et vérifiable indépendamment :
-```bash
-tsa-server verify-audit audit-20260906T145600Z-seq000030.log
-```
-retrouve exactement la même chaîne de hachage que sur l'instance d'origine,
-jusqu'au numéro de séquence capturé. L'échec de la réplication est
-journalisé mais non bloquant, comme pour le contreseing tiers.
+Les variables `OPENEIDAS_AUDIT_SEAL_INTERVAL`, `OPENEIDAS_CROSS_TSA_URLS` et
+`OPENEIDAS_AUDIT_REPLICA_*` du `docker-compose.yml` et du chart Helm sont
+lues sans être exploitées. D'ici là, l'intégrité du journal revient au
+contrôle d'accès de son volume (voir [CPS.md](CPS.md) B.3 et
+[CONFORMITE-ETSI.md](CONFORMITE-ETSI.md)).
 
 ## 8. Écarts assumés du prototype vis-à-vis d'une TSA qualifiée
 
@@ -269,10 +251,10 @@ ci-dessous en donne la lecture d'ensemble.
 | Source de temps | Surveillance NTP de deux sources UTC(k) avec suspension automatique de l'émission | Réception redondante et indépendante, calibration documentée, journal des mesures conservé et audité |
 | Cérémonie de clé | Scriptée, idempotente, procès-verbal consigné au journal d'audit (empreintes, opérateur, horodatage) — mais sans double contrôle ni témoin | Double contrôle, témoin indépendant, HSM certifié, racine hors ligne après cérémonie (voir [CA.md](CA.md)) |
 | Approbation RA | Point d'approbation réellement actif : aucun chemin du code ne mène à l'émission sans décision d'un opérateur identifié, consignée en base et au journal. Automatisée sous un compte technique pour que la démonstration/CI s'amorce sans opérateur humain | Revue humaine réelle par un opérateur RA nominatif, à la place de l'approbation automatisée |
-| Journalisation | Journal chaîné par hachage, contresigné par des TSA tierces publiques et répliqué hors site à chaque scellement ; durée de conservation contrôlée au démarrage | Politique de conservation formalisée, réplication multi-région |
+| Journalisation | Journal chaîné par hachage, écrit avant chaque émission ; durée de conservation contrôlée au démarrage côté CA seulement. Scellement, contreseing tiers et réplication hors site **non câblés** (écart J-1) | Scellement et contreseing périodiques, copie hors site, conservation contrôlée côté TSA, politique de conservation formalisée |
 | Politique d'horodatage | OID de test `1.3.6.1.4.1.99999.1.1.1` ; brouillon de Policy/Practice Statement dans [CPS.md](CPS.md) | OID sous l'arc PEN de l'association, [CPS.md](CPS.md) adopté formellement et publié |
 | Profils de certificat | Structures Rust compilées et testées ; le certificat émis est relu depuis son DER et re-contrôlé avant délivrance ; CDP, AIA `ca_issuers` et répondeur OCSP réellement publiés et vérifiés | OID de politique de certification propre |
-| Continuité | Instance unique ; registre PostgreSQL sauvegardable, journal répliqué hors site | Redondance active/active, sauvegarde et restauration testées, plan de cessation d'activité engagé (voir [CA.md](CA.md)) |
+| Continuité | Instance unique ; registre PostgreSQL sauvegardable ; journal **non** répliqué hors site (écart J-1) | Redondance active/active, sauvegarde et restauration testées, plan de cessation d'activité engagé (voir [CA.md](CA.md)) |
 | Audit | Aucun | Évaluation par un organisme accrédité (LSTI, Apave), inscription à la liste de confiance |
 
 Le prototype refuse de démarrer sur les écarts qui rendraient les jetons ou
