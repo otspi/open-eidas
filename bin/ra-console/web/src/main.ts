@@ -13,10 +13,13 @@ async function boot(root: HTMLElement): Promise<void> {
       : { environment: "undeclared", version: "?" };
 
   let stopIdle: (() => void) | null = null;
+  let disposeView: (() => void) | null = null;
 
   const showLogin = (notice?: string): void => {
     stopIdle?.();
     stopIdle = null;
+    disposeView?.();
+    disposeView = null;
     renderLogin(root, info, showShell, notice);
   };
 
@@ -26,7 +29,7 @@ async function boot(root: HTMLElement): Promise<void> {
   };
 
   const showShell = (me: Me): void => {
-    renderShell(root, info, me, () => void logout());
+    disposeView = renderShell(root, info, me, () => void logout());
     let warning: HTMLElement | null = null;
     stopIdle = watchIdle(
       () => {
