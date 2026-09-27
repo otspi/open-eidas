@@ -48,6 +48,7 @@ struct Env {
     console: axum::Router,
     registry: Registry,
     store: Arc<dyn Store>,
+    issuer: Arc<oe_ca_core::Issuer>,
     verifier: Verifier,
     authn: WebauthnAuthenticator<SoftToken>,
     _dir: Dir,
@@ -71,6 +72,43 @@ impl Env {
         let store: Arc<dyn Store> = Arc::new(Postgres::open(&dsn).await.unwrap());
         let registry = Registry::connect(&dsn).await.unwrap();
 
+        // Une vraie CA sur la même base, pour que la révocation porte sur un
+        // certificat réellement émis (étape 4).
+        let issuing = Arc::new(oe_hsm::testing::SoftwareToken::generate(2048));
+        let h = oe_ca_core::ceremony::run_ceremony(oe_ca_core::ceremony::CeremonyOptions {
+            root_signer: Arc::new(oe_hsm::testing::SoftwareToken::generate(2048)),
+            issuing_signer: issuing.clone(),
+            root_cn: "Test Root CA".into(),
+            issuing_cn: "Test Issuing CA".into(),
+            organization: "Open eIDAS Test".into(),
+            country: "FR".into(),
+            root_validity: time::Duration::days(3650),
+            issuing_validity: time::Duration::days(3650),
+            root_token_label: "r".into(),
+            root_key_label: "r".into(),
+            issuing_token_label: "i".into(),
+            issuing_key_label: "i".into(),
+            store: store.clone(),
+            operator: "test".into(),
+            recorder: None,
+        })
+        .await
+        .unwrap();
+        let issuer = Arc::new(
+            oe_ca_core::Issuer::new(oe_ca_core::Options {
+                signer: issuing,
+                certificate: h.issuing,
+                chain: vec![],
+                store: store.clone(),
+                public_url: "https://ca.example.test".into(),
+                ocsp_url: None,
+                crl_validity: time::Duration::hours(24),
+                crl_grace: time::Duration::hours(1),
+                recorder: None,
+            })
+            .unwrap(),
+        );
+
         // Un seul modèle de clé de confiance, le même pour ca-server (qui
         // vérifiera les assertions d'action) et pour la console (connexion).
         let (token, root) = SoftToken::new(true).unwrap();
@@ -90,18 +128,21 @@ impl Env {
             .unwrap()
         };
 
-        let service = Arc::new(Service::new(
-            registry.clone(),
-            verifier(),
-            store.clone(),
-            Decider::new(DeciderOptions {
-                store: store.clone(),
-                recorder: None,
-                clock: None,
-            }),
-            Arc::new(NullJournal),
-            Arc::new(time::OffsetDateTime::now_utc),
-        ));
+        let service = Arc::new(
+            Service::new(
+                registry.clone(),
+                verifier(),
+                store.clone(),
+                Decider::new(DeciderOptions {
+                    store: store.clone(),
+                    recorder: None,
+                    clock: None,
+                }),
+                Arc::new(NullJournal),
+                Arc::new(time::OffsetDateTime::now_utc),
+            )
+            .with_revoker(Arc::new(ca_server::revoker::IssuerRevoker(issuer.clone()))),
+        );
         let pki = pki().await;
         let port = pki
             .serve_router(ca_server::internal::router(service, 64 * 1024))
@@ -130,6 +171,7 @@ impl Env {
             console,
             registry,
             store,
+            issuer,
             verifier: verifier(),
             authn: WebauthnAuthenticator::new(token),
             _dir: dir,
@@ -334,9 +376,9 @@ async fn the_console_prepares_nothing_without_a_session_or_outside_step_3() {
     }
 
     // Une action que ca-server saurait exécuter, mais que la console ne propose
-    // pas encore (révocation : étape 4 ; registre : plus tard).
+    // pas encore (gestion du registre : après l'étape 4).
     for action in [
-        serde_json::json!({ "action": "revoke_certificate", "serial": "0a", "reason": 1, "comment": "x" }),
+        serde_json::json!({ "action": "invite_operator", "name": "eve", "role": "admin" }),
         serde_json::json!({ "action": "set_role", "operator": "alice", "role": "admin" }),
     ] {
         let (status, err) = env.challenge(Some(&cookie), action).await;
@@ -554,4 +596,114 @@ async fn the_console_relays_no_decision_it_has_not_validated() {
     assert_eq!(env.state_of("tx-1").await.0, RequestState::Pending);
     let (status, done) = env.decide(Some(&cookie), path, &issued, &assertion).await;
     assert_eq!(status, StatusCode::OK, "{done}");
+}
+
+impl Env {
+    /// Un certificat de TSU émis par la CA de test, et son numéro de série
+    /// dans la forme canonique des corps signés (hexadécimal minuscule).
+    async fn certificate(&self, tx: &str) -> String {
+        let key = oe_hsm::testing::SoftwareToken::generate(2048);
+        let cert = self
+            .issuer
+            .issue(
+                &oe_hsm::SigningToken::public_key_der(&key).unwrap(),
+                "tsu.example.test",
+                &oe_ca_core::profile::tsa_signer(),
+                tx,
+            )
+            .await
+            .unwrap();
+        oe_ca_core::canonical_serial(cert.tbs_certificate().serial_number())
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect()
+    }
+
+    async fn status_of(&self, serial: &str) -> oe_castore::CertificateStatus {
+        let bytes: Vec<u8> = (0..serial.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&serial[i..i + 2], 16).unwrap())
+            .collect();
+        self.store.certificate(&bytes).await.unwrap().status
+    }
+}
+
+fn revoke(serial: &str) -> serde_json::Value {
+    serde_json::json!({ "action": "revoke_certificate", "serial": serial, "reason": 1, "comment": "clé exposée" })
+}
+
+/// Étape 4a : la première signature d'une révocation est enregistrée par
+/// `ca-server`, mais rien n'est révoqué avant le second `ca_operateur` (§8) ;
+/// la cible de la route est contrôlée comme pour les décisions.
+#[tokio::test]
+async fn one_ca_operator_alone_does_not_revoke() {
+    let mut env = env!();
+    env.operator_with_key("alice", Role::CaOperateur).await;
+    env.operator_with_key("bob", Role::CaOperateur).await;
+    let cookie = env.log_in("alice").await;
+    let serial = env.certificate("tx-rev-1").await;
+    let other = env.certificate("tx-rev-2").await;
+
+    let (status, issued) = env.challenge(Some(&cookie), revoke(&serial)).await;
+    assert_eq!(status, StatusCode::OK, "{issued}");
+    assert_eq!(issued["required_signatures"], 2, "{issued}");
+    let assertion = env.sign(&issued);
+
+    // Présentée pour un autre certificat : refusée, rien de consommé.
+    let (status, err) = env
+        .decide(
+            Some(&cookie),
+            &format!("/api/v1/certificates/{other}/revoke"),
+            &issued,
+            &assertion,
+        )
+        .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{err}");
+    assert_eq!(err["error"], "action_mismatch");
+
+    let path = format!("/api/v1/certificates/{serial}/revoke");
+    let (status, done) = env.decide(Some(&cookie), &path, &issued, &assertion).await;
+    assert_eq!(status, StatusCode::OK, "{done}");
+    assert_eq!(done["status"], "AWAITING_QUORUM", "{done}");
+    assert_eq!(done["signatures"], 1);
+    assert_eq!(done["required"], 2);
+    assert_eq!(done["signed_by"], "alice");
+    assert_eq!(
+        env.status_of(&serial).await,
+        oe_castore::CertificateStatus::Issued
+    );
+    assert_eq!(
+        env.status_of(&other).await,
+        oe_castore::CertificateStatus::Issued
+    );
+
+    // Un numéro de série hors de la forme canonique n'est pas relayé.
+    for bad in [
+        serial.to_uppercase(),
+        format!("0x{serial}"),
+        "zz".to_string(),
+    ] {
+        let (status, _) = env
+            .decide(
+                Some(&cookie),
+                &format!("/api/v1/certificates/{bad}/revoke"),
+                &issued,
+                &assertion,
+            )
+            .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{bad}");
+    }
+}
+
+/// La révocation est réservée aux `ca_operateur` : `ca-server` refuse d'en
+/// préparer une pour un `ra_operateur`, la console relaie le refus.
+#[tokio::test]
+async fn an_ra_operator_cannot_prepare_a_revocation() {
+    let mut env = env!();
+    env.operator_with_key("alice", Role::RaOperateur).await;
+    let cookie = env.log_in("alice").await;
+    let serial = env.certificate("tx-rev").await;
+    let (status, err) = env.challenge(Some(&cookie), revoke(&serial)).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{err}");
+    assert_eq!(env.actions_frozen().await, 0);
 }
