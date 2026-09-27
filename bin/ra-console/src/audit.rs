@@ -22,6 +22,10 @@ pub const EVENT_SESSION_CLOSED: &str = "ra.session_closed";
 /// l'empreinte du corps figé, pour rapprocher ce journal de celui de
 /// `ca-server`, qui fait foi.
 pub const EVENT_ACTION_CHALLENGE: &str = "ra.action_challenge";
+/// Une assertion d'opérateur relayée pour exécution (docs/WEBUI.md §4, étapes
+/// 5 à 7), avec la réponse de `ca-server` : qui a signé selon son registre,
+/// et le statut rendu.
+pub const EVENT_ACTION_RELAYED: &str = "ra.action_relayed";
 
 /// Même forme que `oe_ca_core::Recorder` / `oe_raflow::Recorder`, dupliquée
 /// plutôt que partagée (ce sont des traits d'un seul étage, la duplication

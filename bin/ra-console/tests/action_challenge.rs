@@ -1,5 +1,5 @@
-//! Préparation d'une action signée (docs/WEBUI.md §4 étapes 1 à 3, §15 étape
-//! 3a) de bout en bout : un navigateur factice connecté → `ra-console` → le
+//! Actions signées approve/reject (docs/WEBUI.md §4, §15 étape 3 : 3a
+//! préparation, 3b exécution) de bout en bout : un navigateur factice connecté → `ra-console` → le
 //! lien mTLS → le **vrai** service d'actions de `ca-server`, sur un vrai
 //! PostgreSQL. Ce que le test prouve : le challenge est émis pour l'opérateur
 //! de la session et pour personne d'autre, la console ne prépare que les
@@ -387,4 +387,171 @@ async fn ca_server_judges_the_role_not_the_console() {
     let (status, err) = env2.challenge(Some(&cookie), approve("tx-inconnue")).await;
     assert!(status.is_client_error(), "{status} {err}");
     assert_eq!(env2.actions_frozen().await, 0);
+}
+
+impl Env {
+    /// L'opérateur touche sa clé : l'assertion du challenge rendu par la console.
+    fn sign(&mut self, issued: &serde_json::Value) -> serde_json::Value {
+        let options: oe_webauthn::RequestChallengeResponse =
+            serde_json::from_value(serde_json::json!({ "publicKey": issued["webauthn"] })).unwrap();
+        serde_json::to_value(self.authn.do_authentication(origin(), options).unwrap()).unwrap()
+    }
+
+    async fn decide(
+        &self,
+        cookie: Option<&str>,
+        path: &str,
+        issued: &serde_json::Value,
+        assertion: &serde_json::Value,
+    ) -> (StatusCode, serde_json::Value) {
+        let (status, _, body) = self
+            .post(
+                path,
+                serde_json::json!({ "challenge_id": issued["challenge_id"], "assertion": assertion }),
+                cookie,
+                "application/json",
+            )
+            .await;
+        (status, body)
+    }
+
+    async fn state_of(&self, tx: &str) -> (RequestState, String) {
+        let r = self.store.request_by_transaction_id(tx).await.unwrap();
+        (r.state, r.operator)
+    }
+}
+
+fn reject(tx: &str) -> serde_json::Value {
+    serde_json::json!({ "action": "reject_request", "transaction_id": tx, "comment": "sujet non reconnu" })
+}
+
+#[tokio::test]
+async fn an_operator_approves_and_rejects_through_the_console() {
+    let mut env = env!();
+    env.operator_with_key("alice", Role::RaOperateur).await;
+    let cookie = env.log_in("alice").await;
+    env.pending_request("tx-1").await;
+    env.pending_request("tx-2").await;
+
+    let (_, issued) = env.challenge(Some(&cookie), approve("tx-1")).await;
+    let assertion = env.sign(&issued);
+    let (status, done) = env
+        .decide(
+            Some(&cookie),
+            "/api/v1/requests/tx-1/approve",
+            &issued,
+            &assertion,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{done}");
+    assert_eq!(done["transaction_id"], "tx-1");
+    assert_eq!(done["state"], "APPROVED");
+    // L'identité qui a décidé est celle du registre de ca-server.
+    assert_eq!(done["decided_by"], "alice");
+    assert_eq!(
+        env.state_of("tx-1").await,
+        (RequestState::Approved, "alice".to_string())
+    );
+
+    // Rejouer la même assertion ne décide rien de plus.
+    let (status, again) = env
+        .decide(
+            Some(&cookie),
+            "/api/v1/requests/tx-1/approve",
+            &issued,
+            &assertion,
+        )
+        .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{again}");
+    assert_eq!(again["error"], "already_used");
+
+    let (_, issued) = env.challenge(Some(&cookie), reject("tx-2")).await;
+    let assertion = env.sign(&issued);
+    let (status, done) = env
+        .decide(
+            Some(&cookie),
+            "/api/v1/requests/tx-2/reject",
+            &issued,
+            &assertion,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{done}");
+    assert_eq!(done["state"], "REJECTED");
+    assert_eq!(env.state_of("tx-2").await.0, RequestState::Rejected);
+}
+
+/// Une signature obtenue pour une demande ne décide jamais d'une autre, ni
+/// l'inverse de ce qui a été signé : `ca-server` compare la cible de la route
+/// au corps figé **avant** de rien consommer, si bien que la même assertion
+/// reste utilisable sur la bonne route.
+#[tokio::test]
+async fn a_signature_only_decides_what_was_signed() {
+    let mut env = env!();
+    env.operator_with_key("alice", Role::RaOperateur).await;
+    let cookie = env.log_in("alice").await;
+    env.pending_request("tx-a").await;
+    env.pending_request("tx-b").await;
+
+    let (_, issued) = env.challenge(Some(&cookie), approve("tx-a")).await;
+    let assertion = env.sign(&issued);
+
+    for path in [
+        "/api/v1/requests/tx-b/approve",
+        "/api/v1/requests/tx-a/reject",
+    ] {
+        let (status, err) = env.decide(Some(&cookie), path, &issued, &assertion).await;
+        assert_eq!(status, StatusCode::CONFLICT, "{path} {err}");
+        assert_eq!(err["error"], "action_mismatch", "{path}");
+    }
+    assert_eq!(env.state_of("tx-a").await.0, RequestState::Pending);
+    assert_eq!(env.state_of("tx-b").await.0, RequestState::Pending);
+
+    let (status, done) = env
+        .decide(
+            Some(&cookie),
+            "/api/v1/requests/tx-a/approve",
+            &issued,
+            &assertion,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{done}");
+    assert_eq!(env.state_of("tx-a").await.0, RequestState::Approved);
+    assert_eq!(env.state_of("tx-b").await.0, RequestState::Pending);
+}
+
+#[tokio::test]
+async fn the_console_relays_no_decision_it_has_not_validated() {
+    let mut env = env!();
+    env.operator_with_key("alice", Role::RaOperateur).await;
+    let cookie = env.log_in("alice").await;
+    env.pending_request("tx-1").await;
+    let (_, issued) = env.challenge(Some(&cookie), approve("tx-1")).await;
+    let assertion = env.sign(&issued);
+    let path = "/api/v1/requests/tx-1/approve";
+
+    // Sans session.
+    let (status, _) = env.decide(None, path, &issued, &assertion).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+    // Des corps que la console ne relaie pas : identifiant de challenge qui
+    // n'est pas un UUID, assertion absente, et un corps d'action glissé en plus.
+    for body in [
+        serde_json::json!({ "challenge_id": "pas-un-uuid", "assertion": assertion }),
+        serde_json::json!({ "challenge_id": issued["challenge_id"] }),
+        serde_json::json!({ "challenge_id": issued["challenge_id"], "assertion": assertion, "body": approve("tx-1") }),
+    ] {
+        let (status, _, err) = env
+            .post(path, body, Some(&cookie), "application/json")
+            .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{err}");
+    }
+    let (status, _, _) = env
+        .post(path, serde_json::json!({}), Some(&cookie), "text/plain")
+        .await;
+    assert_eq!(status, StatusCode::UNSUPPORTED_MEDIA_TYPE);
+
+    // Rien n'a été décidé, et l'assertion reste utilisable.
+    assert_eq!(env.state_of("tx-1").await.0, RequestState::Pending);
+    let (status, done) = env.decide(Some(&cookie), path, &issued, &assertion).await;
+    assert_eq!(status, StatusCode::OK, "{done}");
 }

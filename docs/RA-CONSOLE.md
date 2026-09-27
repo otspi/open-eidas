@@ -74,7 +74,29 @@ exécutera, son empreinte (`body_hash`) et les options WebAuthn à passer à la 
 - Chaque préparation est inscrite au journal de la console (`ra.action_challenge` :
   opérateur, action, `action_id`, `body_hash`, statut), rapprochable du journal de
   `ca-server`, qui fait foi.
-- L'exécution (relais de l'assertion signée) est l'étape 3b.
+
+## Exécution d'une décision signée (approuver, rejeter)
+
+`POST /api/v1/requests/{id}/approve` ou `/reject`, avec une session ouverte :
+`{"challenge_id": "…", "assertion": {…}}`, l'assertion étant la sortie brute de
+`navigator.credentials.get` sur les options du challenge. La console relaie à
+`ca-server` (`/internal/v1/actions`) l'identifiant du challenge et l'assertion —
+**jamais de corps** : `ca-server` exécute celui qu'il a figé (docs/WEBUI.md §4,
+étapes 5 à 7). Réponse : `{"transaction_id", "state": "APPROVED" | "REJECTED",
+"decided_by", "action_id"}`, où `decided_by` est l'opérateur **dont la clé a signé**,
+lu dans le registre de `ca-server`, pas celui de la session.
+
+- La console joint ce que la route promet (`expect` : l'action et la demande du
+  chemin). `ca-server` le compare au corps figé **avant** toute vérification ou
+  consommation, et refuse (`409 action_mismatch`) s'il diffère : une signature obtenue
+  pour une demande ne décide jamais d'une autre, ni l'inverse de ce qui a été signé,
+  et l'assertion reste utilisable sur la bonne route.
+- Une assertion déjà utilisée est refusée (`409 already_used`) : le rejeu est
+  impossible par construction.
+- Chaque relais est inscrit au journal de la console (`ra.action_relayed` : opérateur
+  de la session, action, demande, `action_id`, signataire selon `ca-server`, statut).
+- Le certificat n'est pas émis à ce moment : comme avec `ca-server ra approve`, il l'est
+  au prochain appel du demandeur à l'enrôlement.
 
 ## Variables d'environnement
 
@@ -110,8 +132,8 @@ exécutera, son empreinte (`body_hash`) et les options WebAuthn à passer à la 
 
 ## Ce qui n'existe pas encore
 
-L'exécution des actions signées (étape 3b : relais de l'assertion), la révocation, le
-workflow d'incident et le frontend : voir [WEBUI.md](WEBUI.md) §15 et `TODO.md`. La
+La révocation et le double contrôle (étape 4), la gestion du registre depuis la
+console, le workflow d'incident et le frontend : voir [WEBUI.md](WEBUI.md) §15 et `TODO.md`. La
 connexion, les sessions et la lecture (`/api/v1/requests`) existent, mais ne sont pas
 encore décrites ici. L'image, le chart Helm et le
 `docker-compose.yml` de la console non plus. Le certificat client (3 mois) se

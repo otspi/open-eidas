@@ -185,6 +185,48 @@ pub enum Error {
     Effect(String),
     #[error("registre bloqué, aucune action n'est exécutée : {0}")]
     Blocked(String),
+    #[error("l'action figée n'est pas celle attendue : {0}")]
+    Mismatch(String),
+}
+
+/// Ce que l'appelant croit faire exécuter (docs/WEBUI.md §5,
+/// `/requests/{id}/approve`) : le type d'action et sa cible. Comparé au corps
+/// figé **avant** toute vérification ou consommation, et refusé s'il diffère :
+/// une assertion obtenue pour la demande A ne peut pas être présentée pour la
+/// demande B. Ne peut que restreindre : ce qui s'exécute reste le corps figé.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Expect {
+    pub action: String,
+    #[serde(default)]
+    pub transaction_id: Option<String>,
+}
+
+impl Expect {
+    fn check(&self, action: &Action) -> Result<(), Error> {
+        if self.action != action.kind() {
+            return Err(Error::Mismatch(format!(
+                "attendu {}, figé {}",
+                self.action,
+                action.kind()
+            )));
+        }
+        let target = match action {
+            Action::ApproveRequest { transaction_id, .. }
+            | Action::RejectRequest { transaction_id, .. } => Some(transaction_id),
+            _ => None,
+        };
+        match (target, &self.transaction_id) {
+            (Some(frozen), Some(expected)) if frozen == expected => Ok(()),
+            (Some(_), None) => Err(Error::BadRequest(
+                "la demande visée doit être précisée".to_string(),
+            )),
+            (Some(frozen), Some(expected)) => Err(Error::Mismatch(format!(
+                "demande attendue {expected}, figée {frozen}"
+            ))),
+            (None, _) => Ok(()),
+        }
+    }
 }
 
 /// Un challenge émis, à présenter à l'opérateur.
@@ -619,6 +661,28 @@ impl Service {
         challenge_id: Uuid,
         assertion: &PublicKeyCredential,
     ) -> Result<Executed, Error> {
+        self.execute_inner(challenge_id, assertion, None).await
+    }
+
+    /// Comme [`Service::execute`], mais refuse, avant de rien vérifier ni
+    /// consommer, si le corps figé n'est pas celui que l'appelant attend
+    /// (voir [`Expect`]).
+    pub async fn execute_expecting(
+        &self,
+        challenge_id: Uuid,
+        assertion: &PublicKeyCredential,
+        expect: &Expect,
+    ) -> Result<Executed, Error> {
+        self.execute_inner(challenge_id, assertion, Some(expect))
+            .await
+    }
+
+    async fn execute_inner(
+        &self,
+        challenge_id: Uuid,
+        assertion: &PublicKeyCredential,
+        expect: Option<&Expect>,
+    ) -> Result<Executed, Error> {
         self.ensure_open()?;
         let now = self.now();
 
@@ -647,6 +711,13 @@ impl Service {
         if now > expires_at || now > action_expires_at {
             return Err(Error::Expired);
         }
+        let stored: Body =
+            serde_json::from_value(body).map_err(|e| Error::BadRequest(e.to_string()))?;
+        // Avant de retirer l'état de la cérémonie : une assertion présentée pour
+        // une autre cible ne consomme rien, le bon appel reste possible.
+        if let Some(expect) = expect {
+            expect.check(&stored.action)?;
+        }
 
         // Une seule tentative par cérémonie : l'état sort de la mémoire quoi
         // qu'il arrive ensuite.
@@ -671,8 +742,6 @@ impl Service {
             .operator(key.operator_id)
             .await?
             .ok_or_else(|| Error::Denied("opérateur inconnu".to_string()))?;
-        let stored: Body =
-            serde_json::from_value(body).map_err(|e| Error::BadRequest(e.to_string()))?;
         if operator.disabled || !stored.action.allowed_roles().contains(&operator.role) {
             return Err(Error::Denied(format!(
                 "le rôle {} ne peut pas signer {}",
@@ -896,5 +965,51 @@ impl Service {
             signatures,
             required,
         })
+    }
+}
+
+#[cfg(test)]
+mod expect_tests {
+    use super::*;
+
+    fn approve(tx: &str) -> Action {
+        Action::ApproveRequest {
+            transaction_id: tx.to_string(),
+            csr_fingerprint: None,
+            comment: "ok".to_string(),
+        }
+    }
+
+    fn expect(action: &str, tx: Option<&str>) -> Expect {
+        Expect {
+            action: action.to_string(),
+            transaction_id: tx.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn only_the_frozen_action_and_target_pass() {
+        assert!(expect("approve_request", Some("tx-a"))
+            .check(&approve("tx-a"))
+            .is_ok());
+        assert!(matches!(
+            expect("approve_request", Some("tx-b")).check(&approve("tx-a")),
+            Err(Error::Mismatch(_))
+        ));
+        assert!(matches!(
+            expect("reject_request", Some("tx-a")).check(&approve("tx-a")),
+            Err(Error::Mismatch(_))
+        ));
+        // Une décision sans cible précisée n'est pas une attente : refusée.
+        assert!(matches!(
+            expect("approve_request", None).check(&approve("tx-a")),
+            Err(Error::BadRequest(_))
+        ));
+        // Une action sans demande visée : seul le type compte.
+        let role = Action::SetRole {
+            operator: "alice".to_string(),
+            role: Role::Auditeur,
+        };
+        assert!(expect("set_role", None).check(&role).is_ok());
     }
 }
