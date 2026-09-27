@@ -9,11 +9,13 @@
 //! Sous-commandes : `ceremony`, `serve`, `ra list|approve|reject`, `revoke`,
 //! `authority revoke|publish-arl`,
 //! `operators bootstrap-admin|recover-admin|audit|reconcile`, `internal-cert server`, `conformance`,
-//! `healthcheck`, `verify-audit`.
+//! `healthcheck`, `verify-audit`, `audit cli-decisions`.
 
 use std::sync::Arc;
 
-use ca_server::{config, http, internal, internal_tls, registry_check, revoker, webauthn_models};
+use ca_server::{
+    cli_review, config, http, internal, internal_tls, registry_check, revoker, webauthn_models,
+};
 use clap::{Parser, Subcommand};
 use config::Config;
 use oe_hsm::SigningToken;
@@ -79,6 +81,11 @@ enum Command {
     Healthcheck,
     /// Vérifie l'intégrité de la chaîne du journal d'audit.
     VerifyAudit { path: Option<String> },
+    /// Revues fondées sur le journal chaîné.
+    Audit {
+        #[command(subcommand)]
+        action: AuditAction,
+    },
     /// Affiche la version (identique à `--version`, sous forme de
     /// sous-commande — reproduit `cmd/ca-server` (Go), qui n'a que celle-ci).
     Version,
@@ -105,6 +112,36 @@ enum AuthorityAction {
     /// Publie une nouvelle ARL, même vide : à relancer avant l'échéance de la
     /// précédente, au moins une fois par an (ETSI EN 319 411-1 `CSS-6.3.9-12`).
     PublishArl,
+}
+
+#[derive(Subcommand)]
+enum AuditAction {
+    /// Revue a posteriori des décisions prises par la voie de secours
+    /// (`authenticated_via: cli`, docs/WEBUI.md §20) : liste celles qui n'ont
+    /// pas encore été revues. Code de sortie 0 : rien à revoir ; 1 : des
+    /// décisions à revoir ; 2 : journal illisible ou rompu.
+    CliDecisions {
+        /// Relit à partir de cette date (RFC 3339), revues antérieures ou non.
+        #[arg(long)]
+        since: Option<String>,
+        /// Journal à lire (défaut : `OPENEIDAS_AUDIT_FILE`), par exemple la
+        /// copie répliquée hors de l'hôte. Incompatible avec `--acknowledge`.
+        #[arg(long)]
+        journal: Option<String>,
+        /// Sortie JSON sur la sortie standard.
+        #[arg(long)]
+        json: bool,
+        /// Consigne la revue au journal (`ra.cli_decisions_reviewed`) : les
+        /// décisions listées sont couvertes, la revue suivante repart d'ici.
+        #[arg(long, requires = "reviewer")]
+        acknowledge: bool,
+        /// Identité de la personne qui a relu (avec `--acknowledge`).
+        #[arg(long, requires = "acknowledge")]
+        reviewer: Option<String>,
+        /// Commentaire de la revue (obligatoire avec `--acknowledge`).
+        #[arg(trailing_var_arg = true)]
+        comment: Vec<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -1238,6 +1275,105 @@ async fn run_healthcheck() {
     println!("{}", body.trim());
 }
 
+fn audit_file_path() -> String {
+    std::env::var("OPENEIDAS_AUDIT_FILE")
+        .ok()
+        .filter(|p| !p.is_empty())
+        .unwrap_or_else(|| "/var/lib/open-eidas/state/ca-audit.log".to_string())
+}
+
+/// Voir `AuditAction::CliDecisions`. N'ouvre ni la base ni un token : le
+/// journal chaîné fait foi, et une copie répliquée suffit pour la lecture.
+fn run_audit_cli_decisions(
+    since: Option<String>,
+    journal: Option<String>,
+    json: bool,
+    acknowledge: bool,
+    reviewer: Option<String>,
+    comment: Vec<String>,
+) {
+    if acknowledge && journal.is_some() {
+        die(
+            "revue des décisions CLI",
+            "--acknowledge écrit dans le journal en service : incompatible avec --journal",
+        );
+    }
+    let comment = join_comment(&comment);
+    if acknowledge && comment.trim().is_empty() {
+        die(
+            "revue des décisions CLI",
+            "--acknowledge exige un commentaire (ce qui a été vérifié)",
+        );
+    }
+    let since = since.map(|s| {
+        time::OffsetDateTime::parse(&s, &time::format_description::well_known::Rfc3339)
+            .unwrap_or_else(|e| die("--since (RFC 3339 attendu)", e))
+    });
+    let path = journal.unwrap_or_else(audit_file_path);
+    let records = match oe_audit::read(&path) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("journal illisible ou rompu ({path}) : {e}");
+            eprintln!("Aucune revue sur un journal dont l'intégrité n'est pas garantie.");
+            std::process::exit(2);
+        }
+    };
+    let review = cli_review::review(&records, since).unwrap_or_else(|e| {
+        eprintln!("journal inexploitable ({path}) : {e}");
+        std::process::exit(2);
+    });
+
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&review).unwrap_or_default()
+        );
+    } else {
+        eprintln!(
+            "journal : {path} (enregistrements 1 à {}, dernière revue jusqu'au n° {})",
+            review.head, review.acknowledged_up_to
+        );
+        eprintln!(
+            "{} décision(s) prise(s) par la voie de secours à revoir",
+            review.decisions.len()
+        );
+        for d in &review.decisions {
+            let posix_id = d
+                .posix_id
+                .map(|u| u.to_string())
+                .unwrap_or_else(|| "?".to_string());
+            println!(
+                "n° {}\t{}\t{}\t{}\topérateur déclaré : {}\thôte : {} (uid {})\t{}",
+                d.seq, d.time, d.event, d.subject, d.operator, d.host, posix_id, d.comment
+            );
+        }
+    }
+
+    if acknowledge {
+        let reviewer = reviewer.unwrap_or_default();
+        if reviewer.trim().is_empty() {
+            die(
+                "revue des décisions CLI",
+                "--reviewer ne peut pas être vide",
+            );
+        }
+        let mut data = cli_review::acknowledgement(&review, &reviewer, &comment);
+        oe_ca_core::Via::Cli(oe_ca_core::SystemIdentity::current()).annotate(&mut data);
+        let log = oe_audit::Log::open(&path).unwrap_or_else(|e| die("journal d'audit", e));
+        log.append(cli_review::REVIEW_EVENT, json_to_audit_data(data))
+            .unwrap_or_else(|e| die("consignation de la revue", e));
+        eprintln!(
+            "revue consignée par {reviewer} jusqu'au n° {} ({} décision(s))",
+            review.head,
+            review.decisions.len()
+        );
+        return;
+    }
+    if !review.decisions.is_empty() {
+        std::process::exit(1);
+    }
+}
+
 async fn run_verify_audit(path: Option<String>) {
     let path = path
         .or_else(|| std::env::var("OPENEIDAS_AUDIT_FILE").ok())
@@ -1280,6 +1416,16 @@ async fn main() {
             comment,
         } => run_revoke(serial_hex, reason, operator, comment).await,
         Command::Authority { action } => run_authority(action).await,
+        Command::Audit { action } => match action {
+            AuditAction::CliDecisions {
+                since,
+                journal,
+                json,
+                acknowledge,
+                reviewer,
+                comment,
+            } => run_audit_cli_decisions(since, journal, json, acknowledge, reviewer, comment),
+        },
         Command::Operators { action } => match action {
             OperatorsAction::BootstrapAdmin { name, ttl_minutes } => {
                 run_operators_bootstrap_admin(name, ttl_minutes).await
