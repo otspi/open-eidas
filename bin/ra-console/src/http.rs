@@ -14,6 +14,7 @@ use axum::{Json, Router};
 use serde::Deserialize;
 use sqlx::PgPool;
 
+use crate::audit::{self, Recorder};
 use crate::ca_link::{CaLink, Relayed};
 use crate::login::{LoginError, LoginService};
 use crate::requests;
@@ -27,6 +28,7 @@ pub struct AppState {
     pub link: CaLink,
     pub login: LoginService,
     pub sessions: Sessions,
+    pub journal: Arc<dyn Recorder>,
 }
 
 pub fn router(state: Arc<AppState>) -> Router {
@@ -45,6 +47,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/v1/me", get(handle_me))
         .route("/api/v1/logout", post(handle_logout))
         .route("/api/v1/requests", get(handle_requests))
+        .route("/api/v1/webauthn/challenge", post(handle_action_challenge))
         .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
         .with_state(state)
 }
@@ -436,6 +439,75 @@ async fn handle_requests(
             )
         }
     }
+}
+
+/// Les actions que la console relaie à ce stade (docs/WEBUI.md §15, étape 3) :
+/// décider d'une demande d'enrôlement. La révocation (étape 4) et la gestion
+/// du registre suivront ; d'ici là, la console refuse de les préparer, même si
+/// `ca-server` saurait les exécuter.
+fn relayed_at_this_stage(action: &oe_actions::Action) -> bool {
+    matches!(
+        action,
+        oe_actions::Action::ApproveRequest { .. } | oe_actions::Action::RejectRequest { .. }
+    )
+}
+
+/// `POST /api/v1/webauthn/challenge` (docs/WEBUI.md §4 étapes 1 à 3, §5) :
+/// l'opérateur connecté demande à `ca-server` de figer une action et d'émettre
+/// le challenge qu'il signera. Le corps rendu est celui que `ca-server`
+/// exécutera, à afficher tel quel.
+///
+/// Ce que la console décide : que la session est valide, et **pour qui** le
+/// challenge est émis — l'opérateur de la session, jamais une valeur du
+/// navigateur. Ce qu'elle ne décide pas : le rôle suffisant, l'état de la
+/// demande, le corps final. `ca-server` en juge.
+async fn handle_action_challenge(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    if !is_json(&headers) {
+        return unsupported_media_type();
+    }
+    let who = match authenticate(&state, &headers).await {
+        Ok(a) => a,
+        Err(resp) => return resp,
+    };
+    // Relue dans l'énumération fermée d'`oe_actions`, puis resérialisée : un
+    // champ en trop (un `operator_hint` glissé par le navigateur, par exemple)
+    // ne franchit jamais la console.
+    let action: oe_actions::Action = match serde_json::from_slice(&body) {
+        Ok(a) => a,
+        Err(_) => return error(StatusCode::BAD_REQUEST, "bad_request", "action invalide"),
+    };
+    if !relayed_at_this_stage(&action) {
+        return error(
+            StatusCode::FORBIDDEN,
+            "action_not_available",
+            "cette action n'est pas encore proposée par la console",
+        );
+    }
+    let result = state
+        .link
+        .post(
+            "/internal/v1/challenge",
+            &serde_json::json!({ "body": action, "operator_hint": who.operator_id }),
+        )
+        .await;
+    if let Ok(r) = &result {
+        state.journal.append(
+            audit::EVENT_ACTION_CHALLENGE,
+            serde_json::json!({
+                "operator": who.operator,
+                "action": r.body.get("body").and_then(|b| b.get("action")),
+                "action_id": r.body.get("action_id"),
+                "body_hash": r.body.get("body_hash"),
+                "status": r.status,
+                "error": r.body.get("error"),
+            }),
+        );
+    }
+    relayed(result)
 }
 
 /// `POST /api/v1/logout` : révoque la session sans attendre son expiration.

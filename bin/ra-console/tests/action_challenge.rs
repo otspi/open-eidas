@@ -1,0 +1,390 @@
+//! Préparation d'une action signée (docs/WEBUI.md §4 étapes 1 à 3, §15 étape
+//! 3a) de bout en bout : un navigateur factice connecté → `ra-console` → le
+//! lien mTLS → le **vrai** service d'actions de `ca-server`, sur un vrai
+//! PostgreSQL. Ce que le test prouve : le challenge est émis pour l'opérateur
+//! de la session et pour personne d'autre, la console ne prépare que les
+//! actions de l'étape 3, et c'est `ca-server` qui juge du rôle.
+//!
+//! DSN dans `OE_CASTORE_TEST_DSN` ; test ignoré si elle n'est pas définie.
+
+mod common;
+
+use std::sync::Arc;
+
+use axum::body::Body;
+use axum::http::{Request, StatusCode};
+use common::{pki, tempdir::Dir, Pki};
+use http_body_util::BodyExt;
+use oe_actions::{NewCredential, Registry, Role, Service};
+use oe_castore::{Postgres, RequestState, Store};
+use oe_raflow::{Decider, DeciderOptions, Recorder};
+use oe_webauthn::{trusted_models, TrustedModel, Url, Uuid, Verifier};
+use ra_console::ca_link::CaLink;
+use ra_console::http::{router, AppState};
+use ra_console::login::LoginService;
+use sqlx::postgres::PgPoolOptions;
+use tower::ServiceExt;
+use webauthn_authenticator_rs::softtoken::{SoftToken, AAGUID};
+use webauthn_authenticator_rs::WebauthnAuthenticator;
+
+const HOST: &str = "console.example.com";
+const LOGIN_BEGIN: &str = "/api/v1/webauthn/login/begin";
+const LOGIN_FINISH: &str = "/api/v1/webauthn/login/finish";
+const CHALLENGE: &str = "/api/v1/webauthn/challenge";
+
+struct NullJournal;
+#[async_trait::async_trait]
+impl Recorder for NullJournal {
+    async fn append(&self, _: &str, _: serde_json::Value) -> Result<(), String> {
+        Ok(())
+    }
+}
+
+fn origin() -> Url {
+    Url::parse(&format!("https://{HOST}")).unwrap()
+}
+
+struct Env {
+    console: axum::Router,
+    registry: Registry,
+    store: Arc<dyn Store>,
+    verifier: Verifier,
+    authn: WebauthnAuthenticator<SoftToken>,
+    _dir: Dir,
+    _pki: Pki,
+}
+
+impl Env {
+    async fn new() -> Option<Env> {
+        let base = std::env::var("OE_CASTORE_TEST_DSN").ok()?;
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let name = format!("chal_{nanos}");
+        let admin = PgPoolOptions::new().connect(&base).await.unwrap();
+        sqlx::query(&format!("CREATE DATABASE {name}"))
+            .execute(&admin)
+            .await
+            .unwrap();
+        let dsn = format!("{}/{name}", base.rsplit_once('/').unwrap().0);
+        let store: Arc<dyn Store> = Arc::new(Postgres::open(&dsn).await.unwrap());
+        let registry = Registry::connect(&dsn).await.unwrap();
+
+        // Un seul modèle de clé de confiance, le même pour ca-server (qui
+        // vérifiera les assertions d'action) et pour la console (connexion).
+        let (token, root) = SoftToken::new(true).unwrap();
+        let root_pem = root.to_pem().unwrap();
+        let verifier = || {
+            Verifier::new(
+                HOST,
+                &origin(),
+                "test",
+                trusted_models(&[TrustedModel {
+                    root_pem: &root_pem,
+                    aaguid: AAGUID,
+                    description: "SoftToken (test)",
+                }])
+                .unwrap(),
+            )
+            .unwrap()
+        };
+
+        let service = Arc::new(Service::new(
+            registry.clone(),
+            verifier(),
+            store.clone(),
+            Decider::new(DeciderOptions {
+                store: store.clone(),
+                recorder: None,
+                clock: None,
+            }),
+            Arc::new(NullJournal),
+            Arc::new(time::OffsetDateTime::now_utc),
+        ));
+        let pki = pki().await;
+        let port = pki
+            .serve_router(ca_server::internal::router(service, 64 * 1024))
+            .await;
+        let dir = Dir::new();
+        let client = pki
+            .cert(&oe_ca_core::profile::internal_client(), "ra-console")
+            .await;
+        let link = CaLink::new(&pki.files(&dir, &client, port)).unwrap();
+
+        let pool = PgPoolOptions::new().connect(&dsn).await.unwrap();
+        let console = router(Arc::new(AppState {
+            pool: pool.clone(),
+            link,
+            login: LoginService::new(
+                registry.clone(),
+                verifier(),
+                b"secret-de-test-au-moins-16-octets".to_vec(),
+                Arc::new(ra_console::audit::NullRecorder),
+            ),
+            sessions: common::sessions(pool),
+            journal: Arc::new(ra_console::audit::NullRecorder),
+        }));
+
+        Some(Env {
+            console,
+            registry,
+            store,
+            verifier: verifier(),
+            authn: WebauthnAuthenticator::new(token),
+            _dir: dir,
+            _pki: pki,
+        })
+    }
+
+    /// Un opérateur actif avec une clé enregistrée, posé directement dans le
+    /// registre : l'enrôlement a ses propres tests (register_relay.rs).
+    async fn operator_with_key(&mut self, name: &str, role: Role) -> Uuid {
+        let now = time::OffsetDateTime::now_utc();
+        let id = self
+            .registry
+            .add_operator(name, role, "test", now)
+            .await
+            .unwrap();
+        let (options, state) = self.verifier.start_registration(id, name, None).unwrap();
+        let reg = self.authn.do_registration(origin(), options).unwrap();
+        let key = self.verifier.finish_registration(&reg, &state).unwrap();
+        self.registry
+            .add_credential(
+                NewCredential {
+                    operator_id: id,
+                    passkey: &key,
+                    aaguid: AAGUID,
+                    attestation_format: "packed",
+                    attestation_object: reg.response.attestation_object.as_ref(),
+                    label: "test",
+                    initiated_by: "test",
+                    confirmed_by: Some("test"),
+                },
+                now,
+            )
+            .await
+            .unwrap();
+        id
+    }
+
+    async fn post(
+        &self,
+        path: &str,
+        body: serde_json::Value,
+        cookie: Option<&str>,
+        content_type: &str,
+    ) -> (StatusCode, axum::http::HeaderMap, serde_json::Value) {
+        let mut req = Request::post(path).header("content-type", content_type);
+        if let Some(c) = cookie {
+            req = req.header("cookie", c);
+        }
+        let res = self
+            .console
+            .clone()
+            .oneshot(req.body(Body::from(body.to_string())).unwrap())
+            .await
+            .unwrap();
+        let status = res.status();
+        let headers = res.headers().clone();
+        let bytes = res.into_body().collect().await.unwrap().to_bytes();
+        (
+            status,
+            headers,
+            serde_json::from_slice(&bytes).unwrap_or_default(),
+        )
+    }
+
+    async fn challenge(
+        &self,
+        cookie: Option<&str>,
+        body: serde_json::Value,
+    ) -> (StatusCode, serde_json::Value) {
+        let (status, _, body) = self.post(CHALLENGE, body, cookie, "application/json").await;
+        (status, body)
+    }
+
+    async fn log_in(&mut self, name: &str) -> String {
+        let (_, _, begun) = self
+            .post(
+                LOGIN_BEGIN,
+                serde_json::json!({ "name": name }),
+                None,
+                "application/json",
+            )
+            .await;
+        let options: oe_webauthn::RequestChallengeResponse =
+            serde_json::from_value(serde_json::json!({ "publicKey": begun["webauthn"] })).unwrap();
+        let assertion = self.authn.do_authentication(origin(), options).unwrap();
+        let (status, headers, body) = self
+            .post(
+                LOGIN_FINISH,
+                serde_json::json!({ "challenge_id": begun["challenge_id"], "credential": assertion }),
+                None,
+                "application/json",
+            )
+            .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let set_cookie = headers.get("set-cookie").unwrap().to_str().unwrap();
+        set_cookie.split(';').next().unwrap().to_string()
+    }
+
+    async fn pending_request(&self, transaction_id: &str) {
+        self.store
+            .create_request(oe_castore::Request {
+                transaction_id: transaction_id.to_string(),
+                csr_fingerprint: format!("empreinte-{transaction_id}"),
+                csr_der: vec![0x30, 0x00],
+                profile: "tsa_signer".to_string(),
+                subject_cn: "tsu.example.test".to_string(),
+                state: RequestState::Pending,
+                created_at: time::OffsetDateTime::now_utc(),
+                decided_at: None,
+                operator: String::new(),
+                comment: String::new(),
+                issued_at: None,
+                certificate_serial: None,
+            })
+            .await
+            .unwrap();
+    }
+
+    async fn actions_frozen(&self) -> i64 {
+        sqlx::query_scalar("SELECT count(*) FROM actions")
+            .fetch_one(self.registry.pool())
+            .await
+            .unwrap()
+    }
+
+    /// Identifiants (base64url) des clés d'un opérateur, tels que l'option
+    /// `allowCredentials` d'un challenge les désigne.
+    async fn credential_ids(&self, operator: Uuid) -> Vec<String> {
+        sqlx::query_scalar("SELECT credential_id FROM webauthn_credentials WHERE operator_id = $1")
+            .bind(operator)
+            .fetch_all(self.registry.pool())
+            .await
+            .unwrap()
+    }
+}
+
+macro_rules! env {
+    () => {
+        match Env::new().await {
+            Some(e) => e,
+            None => {
+                eprintln!("OE_CASTORE_TEST_DSN non définie : test PostgreSQL ignoré");
+                return;
+            }
+        }
+    };
+}
+
+fn approve(tx: &str) -> serde_json::Value {
+    serde_json::json!({ "action": "approve_request", "transaction_id": tx, "comment": "identité vérifiée" })
+}
+
+fn allowed(challenge: &serde_json::Value) -> Vec<String> {
+    challenge["webauthn"]["allowCredentials"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["id"].as_str().unwrap().to_string())
+        .collect()
+}
+
+#[tokio::test]
+async fn a_logged_in_operator_gets_a_challenge_for_their_own_keys() {
+    let mut env = env!();
+    let alice = env.operator_with_key("alice", Role::RaOperateur).await;
+    let bob = env.operator_with_key("bob", Role::RaOperateur).await;
+    let cookie = env.log_in("alice").await;
+    env.pending_request("tx-1").await;
+
+    // Le navigateur glisse l'identifiant de bob : la console ne le relaie pas,
+    // le challenge vise les clés de la session (alice), pas celles de bob.
+    let mut body = approve("tx-1");
+    body["operator_hint"] = serde_json::json!(bob);
+    let (status, issued) = env.challenge(Some(&cookie), body).await;
+    assert_eq!(status, StatusCode::OK, "{issued}");
+    assert_eq!(issued["body"]["action"], "approve_request");
+    assert_eq!(issued["body"]["transaction_id"], "tx-1");
+    assert_eq!(issued["body_hash"].as_str().unwrap().len(), 64);
+    assert!(issued["challenge_id"].is_string() && issued["action_id"].is_string());
+    let keys = allowed(&issued);
+    assert_eq!(keys, env.credential_ids(alice).await, "{issued}");
+    assert!(env
+        .credential_ids(bob)
+        .await
+        .iter()
+        .all(|k| !keys.contains(k)));
+    assert_eq!(env.actions_frozen().await, 1);
+}
+
+#[tokio::test]
+async fn the_console_prepares_nothing_without_a_session_or_outside_step_3() {
+    let mut env = env!();
+    env.operator_with_key("alice", Role::CaOperateur).await;
+    let cookie = env.log_in("alice").await;
+    env.pending_request("tx-1").await;
+
+    // Sans session, ou avec une session inventée.
+    for c in [None, Some("session=n-importe-quoi")] {
+        let (status, err) = env.challenge(c, approve("tx-1")).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "{err}");
+    }
+
+    // Une action que ca-server saurait exécuter, mais que la console ne propose
+    // pas encore (révocation : étape 4 ; registre : plus tard).
+    for action in [
+        serde_json::json!({ "action": "revoke_certificate", "serial": "0a", "reason": 1, "comment": "x" }),
+        serde_json::json!({ "action": "set_role", "operator": "alice", "role": "admin" }),
+    ] {
+        let (status, err) = env.challenge(Some(&cookie), action).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{err}");
+        assert_eq!(err["error"], "action_not_available");
+    }
+
+    // Une action inconnue, ou un corps qui n'est pas une action.
+    for body in [
+        serde_json::json!({ "action": "delete_everything" }),
+        serde_json::json!({ "transaction_id": "tx-1" }),
+    ] {
+        let (status, err) = env.challenge(Some(&cookie), body).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{err}");
+    }
+
+    // Un corps qui ne se déclare pas JSON.
+    let (status, _, _) = env
+        .post(CHALLENGE, approve("tx-1"), Some(&cookie), "text/plain")
+        .await;
+    assert_eq!(status, StatusCode::UNSUPPORTED_MEDIA_TYPE);
+
+    assert_eq!(
+        env.actions_frozen().await,
+        0,
+        "rien n'a été figé côté ca-server"
+    );
+}
+
+/// Le rôle affiché par la console n'est pas une barrière (§3) : c'est
+/// `ca-server` qui refuse une approbation à un administrateur, et la console
+/// relaie son refus.
+#[tokio::test]
+async fn ca_server_judges_the_role_not_the_console() {
+    let mut env = env!();
+    env.operator_with_key("root", Role::Admin).await;
+    let cookie = env.log_in("root").await;
+    env.pending_request("tx-1").await;
+
+    let (status, err) = env.challenge(Some(&cookie), approve("tx-1")).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{err}");
+    assert_eq!(env.actions_frozen().await, 0);
+
+    // Et une demande qui n'existe pas n'est pas figée non plus.
+    let mut env2 = env!();
+    env2.operator_with_key("alice", Role::RaOperateur).await;
+    let cookie = env2.log_in("alice").await;
+    let (status, err) = env2.challenge(Some(&cookie), approve("tx-inconnue")).await;
+    assert!(status.is_client_error(), "{status} {err}");
+    assert_eq!(env2.actions_frozen().await, 0);
+}
