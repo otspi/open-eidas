@@ -84,7 +84,7 @@ pub(crate) fn authority_key_identifier(parent_ski: &[u8]) -> Result<Extension, C
 }
 
 /// `extendedKeyUsage` est posé à la main plutôt que via un type générique :
-/// ETSI EN 319 421 §7.7.2 exige de pouvoir le marquer critique, comme le
+/// ETSI EN 319 422 §6.4 (RFC 3161 §2.3) exige de pouvoir le marquer critique, comme le
 /// fait `internal/ca.go` (Go) en construisant l'extension lui-même plutôt
 /// qu'en passant par `x509.Certificate.ExtKeyUsage`.
 pub(crate) fn extended_key_usage(

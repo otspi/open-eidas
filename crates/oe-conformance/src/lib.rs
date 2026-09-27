@@ -21,23 +21,48 @@
 use std::collections::BTreeMap;
 use std::fmt;
 
-/// Identifie une clause normative précise, citée telle qu'elle apparaît dans
-/// la norme.
+/// Identifie une exigence précise : la norme, sa version, la clause et les
+/// identifiants d'exigence qu'elle numérote (constat D-3 de l'audit du
+/// 2026-09-25 : c'est la grille qu'un organisme d'évaluation suit).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Requirement {
     pub standard: &'static str,
+    /// Version et date de publication de la norme citée, telles qu'en tête
+    /// du texte (« V3.2.1 (2026-01) ») ; vide pour une RFC.
+    pub version: &'static str,
     pub clause: &'static str,
+    /// Identifiants d'exigence (`REQ-7.10-08`, `TIS-7.6.7-01`…), pour les
+    /// normes qui en numérotent (voir [`STANDARDS_WITH_IDS`]).
+    pub ids: &'static [&'static str],
     pub title: &'static str,
 }
 
+/// Normes dont chaque exigence porte un identifiant : une ligne de matrice
+/// qui les cite doit nommer les identifiants, pas seulement la clause.
+pub const STANDARDS_WITH_IDS: &[&str] =
+    &["ETSI EN 319 401", "ETSI EN 319 411-1", "ETSI EN 319 421"];
+
 impl fmt::Display for Requirement {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if self.clause.is_empty() {
-            write!(f, "{}", self.standard)
-        } else {
-            write!(f, "{} {}", self.standard, self.clause)
+        write!(f, "{}", self.standard)?;
+        if !self.clause.is_empty() {
+            write!(f, " {}", self.clause)?;
         }
+        if !self.ids.is_empty() {
+            write!(f, " ({})", self.ids.join(", "))?;
+        }
+        Ok(())
     }
+}
+
+/// Numéro de clause porté par un identifiant d'exigence : `7.10` pour
+/// `REQ-7.10-08`, `7.6.7` pour `TIS-7.6.7-01`.
+fn id_clause(id: &str) -> Option<&str> {
+    let mut parts = id.split('-');
+    let _prefix = parts.next()?;
+    let clause = parts.next()?;
+    parts.next()?;
+    Some(clause)
 }
 
 /// Distingue ce qui interdit une opération de ce qui doit seulement être
@@ -172,10 +197,36 @@ impl Matrix {
     pub fn validate(&self) -> Result<(), String> {
         let mut problems = Vec::new();
         let mut seen = std::collections::HashSet::new();
+        let mut versions: BTreeMap<&str, &str> = BTreeMap::new();
         for e in &self.0 {
             let key = e.requirement.to_string();
             if !seen.insert(key.clone()) {
                 problems.push(format!("{key}: exigence déclarée deux fois"));
+            }
+            let r = &e.requirement;
+            if r.standard.starts_with("ETSI") && r.version.is_empty() {
+                problems.push(format!("{key}: version de la norme non précisée"));
+            }
+            if let Some(previous) = versions.insert(r.standard, r.version) {
+                if previous != r.version {
+                    problems.push(format!(
+                        "{key}: {} citée en deux versions ({previous}, {})",
+                        r.standard, r.version
+                    ));
+                }
+            }
+            if STANDARDS_WITH_IDS.contains(&r.standard) && r.ids.is_empty() {
+                problems.push(format!("{key}: aucun identifiant d'exigence"));
+            }
+            // L'identifiant porte sa clause : la clause citée doit la contenir
+            // (c'est ainsi que 10 lignes citaient une clause erronée, D-3).
+            for id in r.ids {
+                match id_clause(id) {
+                    Some(c) if r.clause.split(", ").any(|cl| cl == format!("§{c}")) => {}
+                    _ => problems.push(format!(
+                        "{key}: l'identifiant {id} ne relève pas de la clause citée"
+                    )),
+                }
             }
             match e.status {
                 Status::Covered => {
@@ -244,7 +295,16 @@ pub fn render_markdown(m: &Matrix) -> String {
     b.push_str("- **hors périmètre logiciel** — exigence organisationnelle, qu'aucun code ne peut établir seul.\n\n");
 
     for standard in m.standards() {
-        b.push_str(&format!("## {standard}\n\n"));
+        let version =
+            m.0.iter()
+                .find(|e| e.requirement.standard == standard)
+                .map(|e| e.requirement.version)
+                .unwrap_or_default();
+        if version.is_empty() {
+            b.push_str(&format!("## {standard}\n\n"));
+        } else {
+            b.push_str(&format!("## {standard} {version}\n\n"));
+        }
         b.push_str("| Clause | Exigence | Statut | Mécanisme | Vérification / cible |\n");
         b.push_str("|---|---|---|---|---|\n");
         for e in &m.0 {
@@ -256,9 +316,18 @@ pub fn render_markdown(m: &Matrix) -> String {
             } else {
                 e.test.to_string()
             };
+            let clause = if e.requirement.ids.is_empty() {
+                cell(e.requirement.clause)
+            } else {
+                format!(
+                    "{} — {}",
+                    cell(e.requirement.clause),
+                    cell(&e.requirement.ids.join(", "))
+                )
+            };
             b.push_str(&format!(
                 "| {} | {} | {} | {} | {} |\n",
-                cell(e.requirement.clause),
+                clause,
                 cell(e.requirement.title),
                 cell(e.status.label()),
                 cell(e.mechanism),
@@ -304,7 +373,7 @@ pub const MAX_OCSP_LIFETIME: time::Duration = time::Duration::days(6 * 30);
 pub const MAX_ISSUING_CA_LIFETIME: time::Duration = time::Duration::days(15 * 365);
 pub const MAX_ROOT_CA_LIFETIME: time::Duration = time::Duration::days(25 * 365);
 
-/// ETSI EN 319 411-1 §6.3.2 : la durée de vie effective d'un certificat déjà
+/// ETSI EN 319 421 §7.6.5 (TIS-7.6.5-01) : la durée de vie effective d'un certificat déjà
 /// signé (pas celle que son profil visait) ne doit pas dépasser le plafond
 /// applicable à sa catégorie.
 pub fn check_certificate_lifetime(
@@ -335,7 +404,7 @@ const ADMITTED_SIGNATURE_ALGORITHM_OIDS: &[&str] = &[
     "1.2.840.113549.1.1.13", // sha512WithRSAEncryption
 ];
 
-/// ETSI TS 119 312 §6.1 : l'algorithme de signature d'un objet (certificat,
+/// ETSI TS 119 312 §7.3 : l'algorithme de signature d'un objet (certificat,
 /// CSR, CRL) doit figurer parmi les suites admises — SHA-1 et MD5 en sont
 /// exclus explicitement, jamais tolérés par omission.
 pub fn check_signature_algorithm(subject: &str, algorithm_oid: &str) -> Result<(), String> {
@@ -362,7 +431,7 @@ fn find_extension<'a>(
         .find(|e| e.extn_id == target)
 }
 
-/// ETSI EN 319 421 §7.7.2 : le certificat de l'unité d'horodatage relit et
+/// ETSI EN 319 422 §6 : le certificat de l'unité d'horodatage relit et
 /// re-contrôlé (pas seulement construit une fois à l'émission) doit porter
 /// CA:FALSE, un `extendedKeyUsage` critique contenant **seulement**
 /// id-kp-timeStamping, un `keyUsage` restreint à
@@ -622,200 +691,256 @@ pub fn check_internal_server_certificate(
 pub fn system_matrix() -> Matrix {
     Matrix(vec![
         Entry {
-            requirement: Requirement { standard: "ETSI EN 319 401", clause: "§7.4", title: "Gestion des clés du prestataire dans un module cryptographique" },
+            requirement: Requirement { standard: "ETSI EN 319 401", version: "V3.2.1 (2026-01)", clause: "§7.5", ids: &["REQ-7.5-01"], title: "Gestion des clés du prestataire dans un module cryptographique" },
             status: Status::Covered,
             mechanism: "Toutes les clés vivent dans un token PKCS#11 et n'en sortent jamais : oe-hsm::Pkcs11Token, validé contre un vrai token SoftHSM2 (crates/oe-hsm/tests/pkcs11_integration.rs).",
             test: "crates/oe-hsm/tests/pkcs11_integration.rs",
             target: "",
         },
         Entry {
-            requirement: Requirement { standard: "ETSI EN 319 401", clause: "§7.10", title: "Journalisation des événements et durée de conservation" },
+            requirement: Requirement { standard: "ETSI EN 319 401", version: "V3.2.1 (2026-01)", clause: "§7.10", ids: &["REQ-7.10-01", "REQ-7.10-07"], title: "Journalisation des événements et durée de conservation" },
             status: Status::Gap,
             mechanism: "Journal JSON Lines chaîné par SHA-256 (oe-audit), écrit avant chaque émission dans les deux services ; durée de conservation contrôlée à la configuration par oe_conformance::check_audit_retention, mais côté CA seulement (bin/ca-server::Config::load).",
             test: "crates/oe-audit/src/lib.rs (deux_ecrivains_partagent_la_meme_chaine), crates/oe-conformance/src/lib.rs (check_audit_retention_accepts_the_minimum, check_audit_retention_rejects_unconfigured_and_short_durations)",
-            target: "Contrôler aussi la durée de conservation au démarrage de tsa-server (docs/CPS.md B.3).",
+            target: "Constat J-3 (PR #52) : consigner la série du jeton et l'empreinte soumise ; contrôler aussi la durée de conservation au démarrage de tsa-server (docs/CPS.md B.3).",
         },
         Entry {
-            requirement: Requirement { standard: "ETSI EN 319 401", clause: "§7.9", title: "Intégrité démontrable des enregistrements d'audit" },
-            status: Status::Covered,
-            mechanism: "Chaînage par hachage vérifié intégralement à l'ouverture ; verrou de fichier partagé entre plusieurs écrivains d'un même processus : oe-audit::Log.",
+            requirement: Requirement { standard: "ETSI EN 319 401", version: "V3.2.1 (2026-01)", clause: "§7.10", ids: &["REQ-7.10-02", "REQ-7.10-08"], title: "Intégrité démontrable des enregistrements d'audit" },
+            status: Status::Gap,
+            mechanism: "Chaînage par hachage vérifié intégralement à l'ouverture ; verrou de fichier partagé entre plusieurs écrivains : oe-audit::Log. Le chaînage n'a pas de clé : une réécriture complète du fichier avec recalcul de la chaîne n'est pas détectée tant que la tête n'est pas ancrée hors du système.",
             test: "crates/oe-audit/src/lib.rs (deux_ecrivains_partagent_la_meme_chaine, verify_detects_modified_record, verify_detects_truncated_and_rewritten_tail)",
-            target: "",
+            target: "Constat J-1 : sceller périodiquement la tête de chaîne (TSU et TSA tierce) et en déposer une copie hors site, depuis les binaires en service.",
         },
         Entry {
-            requirement: Requirement { standard: "ETSI EN 319 401", clause: "§7.11", title: "Continuité d'activité et reprise après sinistre" },
+            requirement: Requirement { standard: "ETSI EN 319 401", version: "V3.2.1 (2026-01)", clause: "§7.11.1, §7.11.2", ids: &["REQ-7.11.1-01", "REQ-7.11.2-01"], title: "Copies de sauvegarde et plan de sauvegarde" },
             status: Status::Gap,
             mechanism: "Contreseing du journal par une TSA tierce (oe-crosstsa) et réplication WebDAV hors site (oe-replicate) écrits et testés contre un vrai serveur, mais appelés par aucun binaire : l'intégrité et la survie du journal reposent sur le contrôle d'accès et la sauvegarde de son volume.",
             test: "crates/oe-crosstsa/tests/against_local_server.rs (seals_a_digest_against_a_real_rfc3161_server), crates/oe-replicate/tests/against_local_server.rs (replicates_content_via_webdav_put)",
             target: "Constat J-1 : câbler dans tsa-server serve puis ca-server serve le scellement périodique (log.sealed), le contreseing tiers (log.cross_sealed) et la copie hors site (PR #49, #50 pour le stockage S3), testés de bout en bout sur le binaire ; dégrader /healthz sur échec prolongé.",
         },
         Entry {
-            requirement: Requirement { standard: "ETSI EN 319 401", clause: "§7.12", title: "Plan de cessation d'activité" },
+            requirement: Requirement { standard: "ETSI EN 319 401", version: "V3.2.1 (2026-01)", clause: "§7.12", ids: &["REQ-7.12-02", "REQ-7.12-10"], title: "Plan de cessation d'activité" },
             status: Status::OutOfScope,
             mechanism: "Procédure organisationnelle décrite dans docs/CA.md, indépendante du langage d'implémentation.",
             test: "",
             target: "Engagement juridique de l'association, dépôt auprès de l'organe de contrôle, séquestre des journaux.",
         },
         Entry {
-            requirement: Requirement { standard: "ETSI EN 319 411-1", clause: "§6.6.1", title: "Profil du certificat d'autorité de certification" },
+            requirement: Requirement { standard: "ETSI EN 319 401", version: "V3.2.1 (2026-01)", clause: "§6.1", ids: &["REQ-6.1-01", "REQ-6.1-03", "REQ-6.1-05"], title: "Politique de service et déclaration des pratiques publiées" },
+            status: Status::Gap,
+            mechanism: "docs/CPS.md porte un brouillon structuré, déjà indépendant du langage d'implémentation du service.",
+            test: "",
+            target: "Adoption formelle de docs/CPS.md par l'association (organisationnel, non affecté par le portage Rust).",
+        },
+        Entry {
+            requirement: Requirement { standard: "ETSI EN 319 411-1", version: "V1.5.1 (2025-04)", clause: "§6.6.1", ids: &["GEN-6.6.1-01"], title: "Profil du certificat d'autorité de certification" },
             status: Status::Covered,
             mechanism: "Cérémonie produisant une racine et une CA émettrice au profil contrôlé (CA:TRUE critique, keyCertSign+cRLSign, SKI/AKI) : oe_ca_core::ceremony::run_ceremony, chaîne revérifiée par openssl.",
             test: "crates/oe-ca-core/tests/issuance.rs (ceremony_is_idempotent, ceremony_rejects_mismatched_signer_on_replay, openssl_accepts_the_chain_and_honors_revocation)",
             target: "",
         },
         Entry {
-            requirement: Requirement { standard: "ETSI EN 319 411-1", clause: "§6.2.1", title: "Enregistrement et responsabilité de la décision d'émission" },
-            status: Status::Covered,
-            mechanism: "Aucune transition vers Approved n'existe sans identité d'opérateur : oe_raflow::Decider::approve/reject. L'identité est consignée en base et au journal d'audit.",
-            test: "crates/oe-raflow/tests/flow.rs (decide_without_operator_identity_is_refused, approve_then_resubmit_issues_a_certificate_signed_by_the_issuing_key)",
-            target: "",
-        },
-        Entry {
-            requirement: Requirement { standard: "ETSI EN 319 411-1", clause: "§6.3.1", title: "Authentification de la demande de certificat" },
-            status: Status::Covered,
-            mechanism: "HMAC-SHA256 sur la CSR DER, vérifié en temps constant, et vérification de l'auto-signature de la CSR (preuve de possession) : oe_raflow::Flow::submit.",
-            test: "crates/oe-raflow/tests/flow.rs (submit_without_valid_hmac_is_unauthenticated, submit_opens_a_pending_request_idempotently)",
-            target: "",
-        },
-        Entry {
-            requirement: Requirement { standard: "ETSI EN 319 411-1", clause: "§6.3.2", title: "Durée de vie du certificat plafonnée" },
-            status: Status::Covered,
-            mechanism: "oe_conformance::check_certificate_lifetime relit la validité du certificat réellement signé et la compare à un plafond indépendant du profil (MAX_END_ENTITY_LIFETIME/MAX_OCSP_LIFETIME) ; appelé via le champ Profile::check de oe_ca_core::Issuer::issue, comme profile.Check (Go).",
-            test: "crates/oe-conformance/src/lib.rs (check_certificate_lifetime_accepts_within_the_ceiling, check_certificate_lifetime_rejects_beyond_the_ceiling), crates/oe-conformance/tests/tsu_certificate.rs",
-            target: "",
-        },
-        Entry {
-            requirement: Requirement { standard: "ETSI EN 319 411-1", clause: "§6.3.9", title: "Motif de révocation consigné" },
-            status: Status::Covered,
-            mechanism: "Motif RFC 5280 obligatoire à la révocation (Issuer::revoke), persisté et repris dans chaque entrée de CRL avec son extension cRLReason.",
-            test: "crates/oe-ca-core/tests/issuance.rs (revoke_is_idempotent_and_keeps_first_reason, revoke_then_publish_crl_lists_the_certificate)",
-            target: "",
-        },
-        Entry {
-            requirement: Requirement { standard: "ETSI EN 319 411-1", clause: "§6.3.10", title: "Publication régulière de l'état de révocation" },
-            status: Status::Covered,
-            mechanism: "oe_ca_core::Issuer::publish_crl produit une CRL signée, republiable même vide ; bin/ca-server::http::Server republie à intervalle régulier et dégrade /healthz (503) dès que la CRL servie est périmée, plutôt que de se déclarer sain sans pouvoir dire ce qui est révoqué.",
-            test: "crates/oe-ca-core/tests/issuance.rs (revoke_then_publish_crl_lists_the_certificate), bin/ca-server/tests/crl_publication.rs (crl_is_republished_periodically, healthz_degrades_when_the_published_crl_is_stale)",
-            target: "",
-        },
-        Entry {
-            requirement: Requirement { standard: "RFC 6960", clause: "§2.1", title: "Service d'état de révocation interrogeable en ligne" },
-            status: Status::Covered,
-            mechanism: "Répondeur OCSP RFC 6960 s'appuyant sur la CRL publiée par la CA : oe_ocsp_core::Responder.",
-            test: "crates/oe-ocsp-core/tests/against_real_crl.rs (reports_good_status_for_a_non_revoked_certificate, reports_revoked_status_for_a_revoked_certificate)",
-            target: "",
-        },
-        Entry {
-            requirement: Requirement { standard: "ETSI EN 319 411-1", clause: "§6.5.1", title: "Cérémonie de génération des clés d'autorité" },
-            status: Status::Gap,
-            mechanism: "Cérémonie scriptée et idempotente (`ca-server ceremony`), produisant un procès-verbal consigné au journal d'audit (empreintes de clés, opérateur, date) : oe_ca_core::ceremony.",
-            test: "crates/oe-ca-core/tests/issuance.rs (every_authority_decision_is_recorded)",
-            target: "Cérémonie en double contrôle, sous témoin indépendant, sur HSM certifié, avec procès-verbal contresigné — écart organisationnel, pas seulement logiciel.",
-        },
-        Entry {
-            requirement: Requirement { standard: "ETSI EN 319 412-1", clause: "§4", title: "Structures communes du profil de certificat" },
+            requirement: Requirement { standard: "ETSI EN 319 411-1", version: "V1.5.1 (2025-04)", clause: "§6.6.1", ids: &["GEN-6.6.1-02"], title: "Certificats émis selon le profil applicable" },
             status: Status::Covered,
             mechanism: "Profils définis en structures Rust compilées, pas en configuration interprétée : oe_ca_core::profile. Contrôle de criticité (basicConstraints, keyUsage, EKU) posé à la main, vérifié par openssl.",
             test: "crates/oe-ca-core/tests/issuance.rs (openssl_accepts_the_chain_and_honors_revocation)",
             target: "",
         },
         Entry {
-            requirement: Requirement { standard: "ETSI EN 319 412-1", clause: "§4.1", title: "Numéro de série positif et imprévisible" },
+            requirement: Requirement { standard: "ETSI EN 319 411-1", version: "V1.5.1 (2025-04)", clause: "§6.3.2, §6.4.5", ids: &["REG-6.3.2-00B", "REG-6.4.5-03", "REG-6.4.5-04"], title: "Enregistrement et responsabilité de la décision d'émission" },
+            status: Status::Gap,
+            mechanism: "Aucune transition vers Approved n'existe sans identité d'opérateur : oe_raflow::Decider::approve/reject. L'identité est consignée en base et au journal d'audit.",
+            test: "crates/oe-raflow/tests/flow.rs (decide_without_operator_identity_is_refused, approve_then_resubmit_issues_a_certificate_signed_by_the_issuing_key)",
+            target: "Constat R-2 (PR #57) : approbation automatique désactivée par défaut dans le chart Helm, refusée avec production: true.",
+        },
+        Entry {
+            requirement: Requirement { standard: "ETSI EN 319 411-1", version: "V1.5.1 (2025-04)", clause: "§6.3.2", ids: &["REG-6.3.2-01"], title: "Authentification de la demande de certificat" },
+            status: Status::Gap,
+            mechanism: "HMAC-SHA256 sur la CSR DER, vérifié en temps constant, et vérification de l'auto-signature de la CSR (preuve de possession) : oe_raflow::Flow::submit.",
+            test: "crates/oe-raflow/tests/flow.rs (submit_without_valid_hmac_is_unauthenticated, submit_opens_a_pending_request_idempotently)",
+            target: "Constat R-3 : un secret, ou mieux une identité mTLS, par demandeur, liée aux profils qu'il peut demander ; ne révoquer au renouvellement que les certificats du même demandeur.",
+        },
+        Entry {
+            requirement: Requirement { standard: "ETSI EN 319 411-1", version: "V1.5.1 (2025-04)", clause: "§6.3.3", ids: &["GEN-6.3.3-02A"], title: "Numéro de série aléatoire" },
             status: Status::Covered,
             mechanism: "Numéro de série de 128 bits tiré sur rand::thread_rng et réservé de façon atomique (contrainte d'unicité en base) : oe_ca_core::Issuer::reserve_serial, oe_castore::Store::reserve_serial.",
             test: "crates/oe-castore/src/lib.rs (reserve_serial_twice_conflicts), crates/oe-castore/tests/postgres.rs (reserve_serial_twice_conflicts)",
             target: "",
         },
         Entry {
-            requirement: Requirement { standard: "RFC 5280", clause: "§4.2.1.1-4.2.1.2", title: "Identifiants de clé de sujet et d'autorité présents" },
+            requirement: Requirement { standard: "ETSI EN 319 411-1", version: "V1.5.1 (2025-04)", clause: "§6.4.5", ids: &["REV-6.4.5-09"], title: "Demandes de révocation et motif consignés" },
             status: Status::Covered,
-            mechanism: "subjectKeyIdentifier (SHA-1 de la clé, méthode 1) et authorityKeyIdentifier (pointant vers le SKI de l'émetteur) posés sans condition à l'émission et dans la cérémonie : oe_ca_core::extensions, oe_ca_core::signing::subject_key_id.",
-            test: "crates/oe-ca-core/tests/issuance.rs (issue_produces_a_certificate_signed_by_the_issuing_key, assert_ski_and_aki_present_and_linked)",
+            mechanism: "Motif RFC 5280 obligatoire à la révocation (Issuer::revoke), persisté et repris dans chaque entrée de CRL avec son extension cRLReason.",
+            test: "crates/oe-ca-core/tests/issuance.rs (revoke_is_idempotent_and_keeps_first_reason, revoke_then_publish_crl_lists_the_certificate)",
             target: "",
         },
         Entry {
-            requirement: Requirement { standard: "ETSI EN 319 421", clause: "§7.6", title: "Traçabilité de l'heure jusqu'à UTC et suspension en cas de dérive" },
+            requirement: Requirement { standard: "ETSI EN 319 411-1", version: "V1.5.1 (2025-04)", clause: "§6.3.9", ids: &["CSS-6.3.9-05", "CSS-6.3.9-06"], title: "Publication de la CRL au moins toutes les 24 heures, avec nextUpdate" },
+            status: Status::Covered,
+            mechanism: "oe_ca_core::Issuer::publish_crl produit une CRL signée, republiable même vide ; bin/ca-server::http::Server republie à intervalle régulier et dégrade /healthz (503) dès que la CRL servie est périmée, plutôt que de se déclarer sain sans pouvoir dire ce qui est révoqué.",
+            test: "crates/oe-ca-core/tests/issuance.rs (revoke_then_publish_crl_lists_the_certificate), bin/ca-server/tests/crl_publication.rs (crl_is_republished_periodically, healthz_degrades_when_the_published_crl_is_stale)",
+            target: "",
+        },
+        Entry {
+            requirement: Requirement { standard: "ETSI EN 319 411-1", version: "V1.5.1 (2025-04)", clause: "§6.3.9, §6.3.10", ids: &["CSS-6.3.9-12", "CSS-6.3.9-13", "CSS-6.3.10-01"], title: "Révocation d'une autorité et ARL" },
+            status: Status::Gap,
+            mechanism: "Aucune : la CA émettrice ne porte ni CDP ni AIA vers la racine, et la racine ne publie aucune ARL.",
+            test: "",
+            target: "Constat C-1 (PR #56) : CDP/AIA vers la racine, `ca-server authority revoke|publish-arl`, ARL servie, émission refusée par une émettrice révoquée.",
+        },
+        Entry {
+            requirement: Requirement { standard: "ETSI EN 319 411-1", version: "V1.5.1 (2025-04)", clause: "§6.6.3", ids: &["OVR-6.6.3-02"], title: "Statut OCSP d'un certificat jamais émis" },
+            status: Status::Gap,
+            mechanism: "Le répondeur OCSP ne connaît que la CRL : un numéro de série absent de la CRL est déclaré good, y compris jamais émis.",
+            test: "",
+            target: "Constat O-1 (PR #55) : publier les numéros émis avec la CRL et répondre unknown pour un numéro absent.",
+        },
+        Entry {
+            requirement: Requirement { standard: "ETSI EN 319 411-1", version: "V1.5.1 (2025-04)", clause: "§6.5.1", ids: &["GEN-6.5.1-04", "GEN-6.5.1-11", "GEN-6.5.1-13"], title: "Cérémonie de génération des clés d'autorité" },
+            status: Status::Gap,
+            mechanism: "Cérémonie scriptée et idempotente (`ca-server ceremony`), produisant un procès-verbal consigné au journal d'audit (empreintes de clés, opérateur, date) : oe_ca_core::ceremony.",
+            test: "crates/oe-ca-core/tests/issuance.rs (every_authority_decision_is_recorded)",
+            target: "Cérémonie en double contrôle, sous témoin indépendant, sur HSM certifié, avec procès-verbal contresigné — écart organisationnel, pas seulement logiciel.",
+        },
+        Entry {
+            requirement: Requirement { standard: "ETSI EN 319 411-1", version: "V1.5.1 (2025-04)", clause: "§6.5.5", ids: &["GEN-6.5.5-04", "CSS-6.5.5-06"], title: "Authentification multifacteur des comptes capables de provoquer une émission ou une révocation" },
+            status: Status::Gap,
+            mechanism: "Actions d'opérateur signées par WebAuthn (clé attestée, rôle lu dans le registre, quorum pour la révocation) : oe-actions, derrière le lien interne mTLS de ca-server. Le CLI de secours (ra approve|reject, revoke) reste ouvert sans second facteur.",
+            test: "",
+            target: "Constats R-1/R-2 : relayer les actions signées depuis ra-console (docs/WEBUI.md §15, étape 3) ; tracer et revoir la voie de secours CLI (PR #58, #59) ; approbation automatique désactivée par défaut (PR #57).",
+        },
+        Entry {
+            requirement: Requirement { standard: "ETSI EN 319 421", version: "V1.3.1 (2025-07)", clause: "§7.7.1, §7.7.2", ids: &["TIS-7.7.1-04", "TIS-7.7.1-07", "TIS-7.7.2-01", "TIS-7.7.2-06"], title: "Traçabilité de l'heure jusqu'à UTC et suspension en cas de dérive" },
             status: Status::Covered,
             mechanism: "Surveillance NTP multi-sources avec quorum, seuil de dérive (MaxOffset) et péremption (MaxAge) ; la politique enforce fait refuser chaque demande avec timeNotAvailable : oe_timesource::Monitor.",
             test: "crates/oe-timesource/src/lib.rs (now_refuses_untraceable_time_in_enforce_mode, now_allows_untraceable_time_in_monitor_mode, new_rejects_quorum_larger_than_source_count), crates/oe-tsa-core/src/lib.rs (test_timestamp_refuses_when_time_is_not_traceable)",
             target: "",
         },
         Entry {
-            requirement: Requirement { standard: "ETSI EN 319 421", clause: "§7.7.2", title: "Profil du certificat de l'unité d'horodatage" },
+            requirement: Requirement { standard: "ETSI EN 319 421", version: "V1.3.1 (2025-07)", clause: "§7.7.1, §7.7.2", ids: &["TIS-7.7.1-05", "TIS-7.7.1-06", "TIS-7.7.2-03"], title: "Exactitude de l'heure du jeton (1 seconde ou mieux)" },
+            status: Status::Gap,
+            mechanism: "genTime est tronqué à la seconde alors que la dérive tolérée atteint OPENEIDAS_TIME_MAX_OFFSET : l'écart réel peut dépasser l'exactitude annoncée.",
+            test: "",
+            target: "Constat T-1 (PR #53) : genTime à la milliseconde, et refus de démarrer si accuracy < max_offset + résolution.",
+        },
+        Entry {
+            requirement: Requirement { standard: "ETSI EN 319 421", version: "V1.3.1 (2025-07)", clause: "§7.7.2", ids: &["TIS-7.7.2-04", "TIS-7.7.2-05"], title: "Protection de l'horloge contre un changement non détecté" },
+            status: Status::Gap,
+            mechanism: "Plusieurs sources UTC(k) avec quorum et seuil de dérive (oe_timesource::Monitor), mais client NTP sans contrôle d'origine, de l'indicateur de seconde intercalaire ni NTS.",
+            test: "",
+            target: "Constat T-2 : contrôler l'origine et le LI des réponses NTP, envisager NTS (RFC 8915).",
+        },
+        Entry {
+            requirement: Requirement { standard: "ETSI EN 319 421", version: "V1.3.1 (2025-07)", clause: "§7.7.2", ids: &["TIS-7.7.2-07", "TIS-7.7.2-08", "TIS-7.7.2-09"], title: "Secondes intercalaires" },
+            status: Status::Gap,
+            mechanism: "Aucune : la seconde intercalaire n'est ni détectée ni consignée.",
+            test: "",
+            target: "Constat T-4 : détecter l'annonce (LI), consigner l'instant du changement au journal.",
+        },
+        Entry {
+            requirement: Requirement { standard: "ETSI EN 319 421", version: "V1.3.1 (2025-07)", clause: "§7.6.2", ids: &["TIS-7.6.2-03"], title: "Génération de la clé TSU dans le module cryptographique" },
+            status: Status::Gap,
+            mechanism: "La bi-clé est générée dans le token PKCS#11 (oe_hsm::Pkcs11Token::generate_rsa_key) et ne manipule qu'un SigningToken ; la clé privée n'est jamais extraite.",
+            test: "crates/oe-hsm/tests/pkcs11_integration.rs",
+            target: "Constat H-1 : vérifier au chargement que la clé a été générée dans le module (CKA_LOCAL, CKA_NEVER_EXTRACTABLE).",
+        },
+        Entry {
+            requirement: Requirement { standard: "ETSI EN 319 421", version: "V1.3.1 (2025-07)", clause: "§7.6.5", ids: &["TIS-7.6.5-01"], title: "Durée de vie du certificat de l'unité d'horodatage plafonnée" },
+            status: Status::Covered,
+            mechanism: "oe_conformance::check_certificate_lifetime relit la validité du certificat réellement signé et la compare à un plafond indépendant du profil (MAX_END_ENTITY_LIFETIME/MAX_OCSP_LIFETIME) ; appelé via le champ Profile::check de oe_ca_core::Issuer::issue, comme profile.Check (Go).",
+            test: "crates/oe-conformance/src/lib.rs (check_certificate_lifetime_accepts_within_the_ceiling, check_certificate_lifetime_rejects_beyond_the_ceiling), crates/oe-conformance/tests/tsu_certificate.rs",
+            target: "",
+        },
+        Entry {
+            requirement: Requirement { standard: "ETSI EN 319 421", version: "V1.3.1 (2025-07)", clause: "§7.6.7, §7.7.1", ids: &["TIS-7.6.7-01", "TIS-7.6.7-02", "TIS-7.6.7-04", "TIS-7.6.7-06", "TIS-7.6.7-07", "TIS-7.6.7-09", "TIS-7.7.1-09"], title: "Date d'expiration de la clé TSU, refus d'émettre au-delà" },
+            status: Status::Gap,
+            mechanism: "Validité du certificat TSU contrôlée au démarrage seulement ; aucune date d'expiration de clé définie.",
+            test: "",
+            target: "Constat T-3 (PR #54) : privateKeyUsagePeriod posé à l'émission, contrôlé à chaque signature ; nouvelle clé à chaque renouvellement.",
+        },
+        Entry {
+            requirement: Requirement { standard: "ETSI EN 319 421", version: "V1.3.1 (2025-07)", clause: "§7.13", ids: &["OVR-7.13-05"], title: "Identification des jetons affectés par une compromission" },
+            status: Status::Gap,
+            mechanism: "Le journal consigne genTime et la série du certificat TSU, pas celle du jeton : les jetons émis ne sont pas identifiables un par un.",
+            test: "",
+            target: "Constat J-3 (PR #52) : consigner la série du jeton, l'empreinte soumise et l'état de l'horloge.",
+        },
+        Entry {
+            requirement: Requirement { standard: "ETSI EN 319 422", version: "V1.1.1 (2016-03)", clause: "§6", ids: &[], title: "Profil du certificat de l'unité d'horodatage" },
             status: Status::Covered,
             mechanism: "oe_conformance::check_tsu_certificate (id-kp-timeStamping seul et critique, CA:FALSE, keyUsage restreint, durée de vie plafonnée) est appliquée à l'émission (Profile::check) ET re-contrôlée au démarrage de tsa-server (oe_tsa_core::Authority::new) — un certificat chargé depuis le disque peut venir d'ailleurs.",
             test: "crates/oe-conformance/tests/tsu_certificate.rs (accepts_a_certificate_issued_with_the_tsa_signer_profile, rejects_a_certificate_issued_with_the_ocsp_responder_profile)",
             target: "",
         },
         Entry {
-            requirement: Requirement { standard: "ETSI EN 319 421", clause: "§7.7.1", title: "Génération de la clé TSU dans le module cryptographique" },
-            status: Status::Covered,
-            mechanism: "La bi-clé est générée dans le token PKCS#11 (oe_hsm::Pkcs11Token::generate_rsa_key) et ne manipule qu'un SigningToken ; la clé privée n'est jamais extraite.",
-            test: "crates/oe-hsm/tests/pkcs11_integration.rs",
-            target: "",
-        },
-        Entry {
-            requirement: Requirement { standard: "ETSI EN 319 422", clause: "§5", title: "Profil du jeton d'horodatage" },
-            status: Status::Covered,
-            mechanism: "TSTInfo complet (politique, imprint, série, genTime UTC, précision), assemblé en CMS SignedData signé par le token ; le jeton est relu avant d'être consigné : oe_rfc3161_asn1, oe_tsa_core::Authority::timestamp.",
+            requirement: Requirement { standard: "ETSI EN 319 422", version: "V1.1.1 (2016-03)", clause: "§5.2", ids: &[], title: "Profil du jeton d'horodatage" },
+            status: Status::Gap,
+            mechanism: "TSTInfo complet (politique, imprint, série, genTime UTC, précision), assemblé en CMS SignedData signé par le token : oe_rfc3161_asn1, oe_tsa_core::Authority::timestamp.",
             test: "crates/oe-tsa-core/tests/end_to_end.rs (produces_tokens_accepted_by_openssl_for_every_granted_case_in_the_corpus)",
-            target: "",
+            target: "Constat T-1 (PR #53) : genTime avec fraction de seconde (§5.2.2), cohérent avec la précision annoncée.",
         },
         Entry {
-            requirement: Requirement { standard: "ETSI EN 319 422", clause: "§7", title: "Protocole d'horodatage RFC 3161 sur HTTP" },
+            requirement: Requirement { standard: "ETSI EN 319 422", version: "V1.1.1 (2016-03)", clause: "§7", ids: &[], title: "Protocole d'horodatage RFC 3161 sur HTTP" },
             status: Status::Covered,
             mechanism: "Endpoint /tsa acceptant application/timestamp-query, refus protocolaires rendus en TimeStampResp valides : oe_httpapi, bin/tsa-server.",
             test: "crates/oe-httpapi/tests/end_to_end.rs (serves_a_verifiable_token_over_http, vérification croisée openssl ts -verify)",
             target: "",
         },
         Entry {
-            requirement: Requirement { standard: "ETSI TS 119 312", clause: "§6.2", title: "Longueur de clé suffisante pour la durée de vie visée" },
+            requirement: Requirement { standard: "ETSI TS 119 312", version: "V2.1.1 (2026-06)", clause: "§8.4", ids: &[], title: "Longueur de clé suffisante pour la durée de vie visée" },
             status: Status::Covered,
             mechanism: "oe-config et bin/ca-server/src/config.rs imposent OPENEIDAS_KEY_BITS >= 3072 à la configuration (clé des autorités elles-mêmes) ; oe_raflow::parse_and_verify_csr applique la même exigence à la clé publique portée par une CSR soumise à l'enrôlement.",
             test: "crates/oe-config/src/lib.rs (load_fails_on_undersized_key_bits), crates/oe-raflow/tests/flow.rs (submit_rejects_a_csr_with_an_undersized_key)",
             target: "",
         },
         Entry {
-            requirement: Requirement { standard: "ETSI TS 119 312", clause: "§6.1", title: "Algorithme de signature et fonction de hachage admis" },
+            requirement: Requirement { standard: "ETSI TS 119 312", version: "V2.1.1 (2026-06)", clause: "§7.3", ids: &[], title: "Algorithme de signature et fonction de hachage admis" },
             status: Status::Covered,
             mechanism: "oe_conformance::check_signature_algorithm vérifie explicitement l'OID de signature d'un certificat contre la liste des suites admises (SHA-256/384/512 avec RSA), appelée via Profile::check à l'émission et à la re-vérification.",
             test: "crates/oe-conformance/src/lib.rs (check_signature_algorithm_accepts_sha256_with_rsa, check_signature_algorithm_rejects_sha1)",
             target: "",
         },
         Entry {
-            requirement: Requirement { standard: "ETSI TS 119 312", clause: "§5.1", title: "Fonction de hachage admise pour l'empreinte soumise" },
+            requirement: Requirement { standard: "ETSI TS 119 312", version: "V2.1.1 (2026-06)", clause: "§5.1", ids: &[], title: "Fonction de hachage admise pour l'empreinte soumise" },
             status: Status::Covered,
             mechanism: "oe_hsm::DigestAlg restreint la signature à SHA-256/384/512 ; une empreinte SHA-1 est refusée avec le failureInfo RFC 3161 badAlg : oe_tsa_core::Authority::timestamp.",
             test: "crates/oe-tsa-core/src/lib.rs (test_timestamp_rejects_sha1)",
             target: "",
         },
         Entry {
-            requirement: Requirement { standard: "RFC 5280", clause: "§5.1", title: "Liste de révocation signée, numérotée et datée" },
+            requirement: Requirement { standard: "RFC 6960", version: "", clause: "§2.1", ids: &[], title: "Service d'état de révocation interrogeable en ligne" },
             status: Status::Covered,
-            mechanism: "CRL régénérée avec cRLNumber, thisUpdate/nextUpdate et signature, republiée même vide : oe_ca_core::Issuer::publish_crl. La signature et le motif de révocation sont revérifiés par openssl.",
-            test: "crates/oe-ca-core/tests/issuance.rs (revoke_then_publish_crl_lists_the_certificate, openssl_accepts_the_chain_and_honors_revocation)",
+            mechanism: "Répondeur OCSP RFC 6960 s'appuyant sur la CRL publiée par la CA : oe_ocsp_core::Responder.",
+            test: "crates/oe-ocsp-core/tests/against_real_crl.rs (reports_good_status_for_a_non_revoked_certificate, reports_revoked_status_for_a_revoked_certificate)",
             target: "",
         },
         Entry {
-            requirement: Requirement { standard: "RFC 6960", clause: "§4.2.2.2", title: "Profil du certificat de signature du répondeur OCSP" },
+            requirement: Requirement { standard: "RFC 6960", version: "", clause: "§4.2.2.2", ids: &[], title: "Profil du certificat de signature du répondeur OCSP" },
             status: Status::Covered,
             mechanism: "Profil ocsp_responder (id-pkix-ocsp-nocheck, pas de CDP/AIA, durée de vie courte) appliqué à l'émission, re-contrôlé après signature par oe_conformance::check_ocsp_responder_certificate (Profile::check).",
             test: "crates/oe-ca-core/tests/issuance.rs (revoke_then_publish_crl_lists_the_certificate, qui émet avec ce profil), crates/oe-conformance/tests/tsu_certificate.rs (rejects_a_certificate_issued_with_the_ocsp_responder_profile, qui prouve que check_ocsp_responder_certificate distingue bien ce profil de tsa_signer)",
             target: "",
         },
         Entry {
-            requirement: Requirement { standard: "ETSI EN 319 403-1", clause: "§7", title: "Évaluation par un organisme d'évaluation de la conformité accrédité" },
+            requirement: Requirement { standard: "RFC 5280", version: "", clause: "§4.2.1.1-4.2.1.2", ids: &[], title: "Identifiants de clé de sujet et d'autorité présents" },
+            status: Status::Covered,
+            mechanism: "subjectKeyIdentifier (SHA-1 de la clé, méthode 1) et authorityKeyIdentifier (pointant vers le SKI de l'émetteur) posés sans condition à l'émission et dans la cérémonie : oe_ca_core::extensions, oe_ca_core::signing::subject_key_id.",
+            test: "crates/oe-ca-core/tests/issuance.rs (issue_produces_a_certificate_signed_by_the_issuing_key, assert_ski_and_aki_present_and_linked)",
+            target: "",
+        },
+        Entry {
+            requirement: Requirement { standard: "RFC 5280", version: "", clause: "§5.1", ids: &[], title: "Liste de révocation signée, numérotée et datée" },
+            status: Status::Covered,
+            mechanism: "CRL régénérée avec cRLNumber, thisUpdate/nextUpdate et signature, republiée même vide : oe_ca_core::Issuer::publish_crl. La signature et le motif de révocation sont revérifiés par openssl.",
+            test: "crates/oe-ca-core/tests/issuance.rs (revoke_then_publish_crl_lists_the_certificate, openssl_accepts_the_chain_and_honors_revocation)",
+            target: "",
+        },
+        Entry {
+            requirement: Requirement { standard: "ETSI EN 319 403-1", version: "V2.3.1 (2020-06)", clause: "§7", ids: &[], title: "Évaluation par un organisme d'évaluation de la conformité accrédité" },
             status: Status::OutOfScope,
             mechanism: "Le dépôt est intégralement public ; cette matrice fournit le point d'entrée d'un audit, indépendamment du langage d'implémentation.",
             test: "",
             target: "Audit par un organisme accrédité (LSTI, Apave), puis inscription à la liste de confiance nationale.",
-        },
-        Entry {
-            requirement: Requirement { standard: "ETSI EN 319 401", clause: "§6.1", title: "Politique de service et déclaration des pratiques publiées" },
-            status: Status::Gap,
-            mechanism: "docs/CPS.md porte un brouillon structuré, déjà indépendant du langage d'implémentation du service.",
-            test: "",
-            target: "Adoption formelle de docs/CPS.md par l'association (organisationnel, non affecté par le portage Rust).",
         },
     ])
 }
@@ -905,7 +1030,9 @@ mod tests {
         let bad = Matrix(vec![Entry {
             requirement: Requirement {
                 standard: "X",
+                version: "",
                 clause: "1",
+                ids: &[],
                 title: "t",
             },
             status: Status::Covered,
@@ -914,5 +1041,67 @@ mod tests {
             target: "",
         }]);
         assert!(bad.validate().is_err());
+    }
+
+    fn covered(requirement: Requirement) -> Entry {
+        Entry {
+            requirement,
+            status: Status::Covered,
+            mechanism: "m",
+            test: "t",
+            target: "",
+        }
+    }
+
+    const OK: Requirement = Requirement {
+        standard: "ETSI EN 319 401",
+        version: "V3.2.1 (2026-01)",
+        clause: "§7.10",
+        ids: &["REQ-7.10-08"],
+        title: "t",
+    };
+
+    /// Constat D-3 : une ligne sans version, sans identifiant (pour une norme
+    /// qui en numérote), avec un identifiant d'une autre clause, ou une norme
+    /// citée en deux versions, rend la matrice incohérente.
+    #[test]
+    fn detects_missing_versions_ids_and_mismatched_clauses() {
+        assert!(Matrix(vec![covered(OK)]).validate().is_ok());
+
+        let no_version = Requirement { version: "", ..OK };
+        let err = Matrix(vec![covered(no_version)]).validate().unwrap_err();
+        assert!(err.contains("version"), "{err}");
+
+        let no_ids = Requirement { ids: &[], ..OK };
+        let err = Matrix(vec![covered(no_ids)]).validate().unwrap_err();
+        assert!(err.contains("aucun identifiant"), "{err}");
+
+        // La faute d'origine : §7.9 cité pour une exigence du §7.10.
+        let wrong_clause = Requirement {
+            clause: "§7.9",
+            ..OK
+        };
+        let err = Matrix(vec![covered(wrong_clause)]).validate().unwrap_err();
+        assert!(err.contains("ne relève pas de la clause"), "{err}");
+
+        let other_version = Requirement {
+            version: "V3.1.1 (2024-06)",
+            ids: &["REQ-7.10-02"],
+            ..OK
+        };
+        let err = Matrix(vec![covered(OK), covered(other_version)])
+            .validate()
+            .unwrap_err();
+        assert!(err.contains("deux versions"), "{err}");
+
+        // Une RFC ne porte ni version ETSI ni identifiant.
+        let rfc = Requirement {
+            standard: "RFC 5280",
+            version: "",
+            clause: "§5.1",
+            ids: &[],
+            title: "t",
+        };
+        assert!(Matrix(vec![covered(rfc)]).validate().is_ok());
     }
 }

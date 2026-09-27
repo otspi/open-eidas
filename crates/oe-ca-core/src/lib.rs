@@ -384,7 +384,7 @@ impl Issuer {
     }
 
     async fn reserve_serial(&self, profile: &str) -> Result<SerialNumber, CaError> {
-        const SERIAL_BYTES: usize = 16; // 128 bits, ETSI EN 319 412-1 §4.1.
+        const SERIAL_BYTES: usize = 16; // 128 bits, ETSI EN 319 411-1 GEN-6.3.3-02A.
         const ATTEMPTS: u32 = 5;
         for _ in 0..ATTEMPTS {
             let mut bytes = [0u8; SERIAL_BYTES];

@@ -277,7 +277,7 @@ couvertes par une CP/CPS générique de CA.
 | Algorithmes d'empreinte acceptés | SHA-256, SHA-384, SHA-512 — SHA-1 refusé (`badAlg`) |
 | Ordonnancement (`ordering`) | Non garanti entre jetons |
 
-### B.2 Traçabilité de l'heure (ETSI EN 319 421 §7.6)
+### B.2 Traçabilité de l'heure (ETSI EN 319 421 §7.7.1, §7.7.2)
 
 | | |
 |---|---|

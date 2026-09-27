@@ -1,7 +1,7 @@
 //! Client SNTP minimal (RFC 4330 / RFC 5905, mode client, sans authentification).
 //!
 //! Le plan de migration recommande d'écrire ce client plutôt que d'aligner une
-//! dépendance tierce sur les exigences ETSI EN 319 421 §7.6 : le protocole
+//! dépendance tierce sur les exigences ETSI EN 319 421 §7.7.2 : le protocole
 //! côté client est simple (une requête, une réponse, 48 octets), et l'écrire
 //! ici réduit la surface de confiance et le rend directement auditable.
 

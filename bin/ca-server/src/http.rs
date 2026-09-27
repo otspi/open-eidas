@@ -469,7 +469,9 @@ async fn handle_conformance(State(server): State<Arc<Server>>) -> impl IntoRespo
         .map(|e| {
             serde_json::json!({
                 "norme": e.requirement.standard,
+                "version": e.requirement.version,
                 "clause": e.requirement.clause,
+                "identifiants": e.requirement.ids,
                 "exigence": e.requirement.title,
                 "statut": e.status.label(),
                 "mecanisme": e.mechanism,

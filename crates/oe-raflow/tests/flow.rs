@@ -127,7 +127,7 @@ async fn submit_without_valid_hmac_is_unauthenticated() {
     assert!(matches!(err, Err(RaflowError::Unauthenticated)));
 }
 
-/// ETSI TS 119 312 §6.2 : une CSR authentifiée et correctement signée, mais
+/// ETSI TS 119 312 §8.4 : une CSR authentifiée et correctement signée, mais
 /// dont la clé publique est trop courte, doit tout de même être refusée —
 /// l'authentification HMAC prouve l'identité du demandeur, pas que sa clé
 /// est acceptable.
@@ -141,7 +141,7 @@ async fn submit_rejects_a_csr_with_an_undersized_key() {
         .await;
     assert!(
         err.is_err(),
-        "une clé RSA de 2048 bits doit être refusée (< 3072 bits, ETSI TS 119 312 §6.2)"
+        "une clé RSA de 2048 bits doit être refusée (< 3072 bits, ETSI TS 119 312 §8.4)"
     );
 }
 

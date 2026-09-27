@@ -18,7 +18,7 @@
 //!     automatique, pas d'auto-approbation, pas de chemin dérobé ;
 //!   - [`Decider::approve`]/[`Decider::reject`] exigent l'identité de
 //!     l'opérateur, consignée en base et au journal d'audit (ETSI EN
-//!     319 411-1 §6.2.1).
+//!     319 411-1 §6.3.2, §6.4.5).
 //!
 //! **Écart assumé** : `Decider` ne détient jamais la clé de l'autorité —
 //! approuver, c'est décider, pas signer (à l'identique du Go : la commande
@@ -110,7 +110,7 @@ fn verify_hmac(csr_der: &[u8], secret: &str, signature_hex: &str) -> Result<(), 
         .map_err(|_| RaflowError::Unauthenticated)
 }
 
-/// ETSI TS 119 312 §6.2 : longueur de clé RSA minimale, la même exigence
+/// ETSI TS 119 312 §8.4 : longueur de clé RSA minimale, la même exigence
 /// qu'`OPENEIDAS_CA_KEY_BITS`/`OPENEIDAS_KEY_BITS` imposent déjà à la
 /// configuration des autorités elles-mêmes — appliquée ici à la clé
 /// publique portée par la demande d'un tiers, que la configuration ne
@@ -213,7 +213,7 @@ impl Decider {
 
     /// Fait passer une demande de PENDING à APPROVED. C'est la SEULE
     /// transition qui y mène, et elle exige l'identité de l'opérateur :
-    /// c'est ce qui rend la décision imputable (ETSI EN 319 411-1 §6.2.1).
+    /// c'est ce qui rend la décision imputable (ETSI EN 319 411-1 §6.4.5, REG-6.4.5-04).
     pub async fn approve(
         &self,
         transaction_id: &str,

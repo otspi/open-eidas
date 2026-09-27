@@ -16,7 +16,7 @@ non-régression contre l'implémentation d'origine.
   certificat TSU de test, dérivés d'une graine fixe (`math/rand` seedé). Ce
   n'est **pas** un secret : ne jamais réutiliser ce matériel hors de ce
   corpus. La fenêtre de validité du certificat est relative à l'instant de
-  génération (elle ne peut pas être figée : ETSI EN 319 411-1 §6.3.2 plafonne
+  génération (elle ne peut pas être figée : ETSI EN 319 421 §7.6.5 plafonne
   la durée de vie d'un certificat TSU à 28080h).
 - Un répertoire par cas (`<nom>/`) :
   - `request.der` — `TimeStampReq` DER.

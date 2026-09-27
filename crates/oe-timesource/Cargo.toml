@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Surveillance NTP multi-sources conforme ETSI EN 319 421 §7.6 (portage de internal/timesource)."
+description = "Surveillance NTP multi-sources conforme ETSI EN 319 421 §7.7.2 (portage de internal/timesource)."
 
 [lints]
 workspace = true

@@ -84,7 +84,7 @@ cérémonie destinée à la qualification exige, en plus :
   conservé en coffre, ressorti uniquement pour renouveler la CA émettrice.
 
 Ces points sont portés comme écarts dans la matrice
-(ETSI EN 319 401 §7.4, EN 319 411-1 §6.5.1).
+(ETSI EN 319 401 §7.5, EN 319 411-1 §6.5.1).
 
 ## 3. Profils émis
 
@@ -288,7 +288,7 @@ Deux propriétés structurent la machine à états
   d'éligibilité, ni auto-approbation, ni contournement — c'est exactement ce
   qu'OpenXPKI faisait silencieusement, et que ce moteur supprime ;
 - **toute décision exige une identité d'opérateur**, consignée en base et au
-  journal (ETSI EN 319 411-1 §6.2.1). La contrainte est portée par le schéma
+  journal (ETSI EN 319 411-1 §6.3.2, §6.4.5). La contrainte est portée par le schéma
   PostgreSQL autant que par le code : une décision anonyme est refusée par la
   base elle-même.
 
