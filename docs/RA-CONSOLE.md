@@ -66,9 +66,9 @@ exécutera, son empreinte (`body_hash`) et les options WebAuthn à passer à la 
   (`operator_hint`) vient de la session, jamais du navigateur. L'action est relue dans
   l'énumération fermée d'`oe_actions` puis resérialisée : un champ en trop ne franchit
   pas la console.
-- Seules l'approbation et le rejet d'une demande sont préparés à ce stade (§15, étape
-  3) ; toute autre action est refusée (`403 action_not_available`) sans solliciter
-  `ca-server`.
+- Sont préparés à ce stade l'approbation et le rejet d'une demande (§15, étape 3) et
+  la révocation d'un certificat (`revoke_certificate`, étape 4) ; toute autre action
+  est refusée (`403 action_not_available`) sans solliciter `ca-server`.
 - Le rôle et l'état de la demande sont jugés par `ca-server` (un administrateur ne peut
   pas approuver) ; la console relaie son refus.
 - Chaque préparation est inscrite au journal de la console (`ra.action_challenge` :
@@ -97,6 +97,23 @@ lu dans le registre de `ca-server`, pas celui de la session.
   de la session, action, demande, `action_id`, signataire selon `ca-server`, statut).
 - Le certificat n'est pas émis à ce moment : comme avec `ca-server ra approve`, il l'est
   au prochain appel du demandeur à l'enrôlement.
+
+## Révocation d'un certificat (première signature)
+
+`POST /api/v1/certificates/{serial}/revoke`, avec une session ouverte et la même forme
+de corps qu'une décision (`{"challenge_id", "assertion"}`), le challenge ayant été
+préparé pour `{"action": "revoke_certificate", "serial": "…", "reason": …,
+"comment": "…"}`. Le numéro de série est en hexadécimal minuscule, sans préfixe (la
+forme canonique du corps figé) ; toute autre forme est refusée avant relais.
+
+- La révocation exige, par la politique de `ca-server`, **deux `ca_operateur`
+  distincts** (docs/WEBUI.md §8). La première signature est enregistrée par
+  `ca-server` et **rien n'est révoqué** : réponse `{"status": "AWAITING_QUORUM",
+  "signatures": 1, "required": 2, "action_id", "signed_by"}`. La signature suivante
+  (co-signature) arrive avec l'étape 4b.
+- La cible est contrôlée par `ca-server` comme pour une décision (`expect` porte le
+  numéro de série) : une signature ne révoque jamais un autre certificat.
+- Un `ra_operateur` ne peut pas préparer de révocation : `ca-server` refuse.
 
 ## Variables d'environnement
 
@@ -132,8 +149,8 @@ lu dans le registre de `ca-server`, pas celui de la session.
 
 ## Ce qui n'existe pas encore
 
-La révocation et le double contrôle (étape 4), la gestion du registre depuis la
-console, le workflow d'incident et le frontend : voir [WEBUI.md](WEBUI.md) §15 et `TODO.md`. La
+La co-signature et la liste des actions en attente (étape 4b), la gestion du registre
+depuis la console, le workflow d'incident et le frontend : voir [WEBUI.md](WEBUI.md) §15 et `TODO.md`. La
 connexion, les sessions et la lecture (`/api/v1/requests`) existent, mais ne sont pas
 encore décrites ici. L'image, le chart Helm et le
 `docker-compose.yml` de la console non plus. Le certificat client (3 mois) se
