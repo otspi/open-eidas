@@ -485,15 +485,19 @@ fn minimal_positive_int(v: u64) -> Result<Int, der::Error> {
 /// d'`ErrorResponse` (Go) : la couche HTTP (jalon J7) décide quand
 /// l'invoquer.
 pub fn error_response(failure: FailureInfo) -> Result<Vec<u8>, der::Error> {
+    // `PKIFailureInfo` est une liste de bits nommés : en DER, les bits nuls de
+    // fin sont retirés, et le nombre de bits inutilisés du dernier octet est
+    // porté par `BitString` lui-même — ne pas l'ajouter aux octets, sinon il
+    // est encodé deux fois et le bit lu n'est plus le bon.
     let bit = failure_info_bit(failure);
-    let mut bits = vec![0u8; (bit / 8) + 2];
-    bits[0] = 7 - (bit % 8) as u8; // nombre de bits inutilisés dans le dernier octet
-    bits[1 + bit / 8] = 0x80 >> (bit % 8);
+    let mut bytes = vec![0u8; bit / 8 + 1];
+    bytes[bit / 8] = 0x80 >> (bit % 8);
+    let unused = 7 - (bit % 8) as u8;
     let resp = TimeStampResp {
         status: oe_rfc3161_asn1::PkiStatusInfo {
             status: Int::new(&[2])?, // PKIStatus rejection(2)
             status_string: None,
-            fail_info: Some(der::asn1::BitString::from_bytes(&bits)?),
+            fail_info: Some(der::asn1::BitString::new(unused, bytes)?),
         },
         time_stamp_token: None,
     };
@@ -515,7 +519,7 @@ fn failure_info_bit(f: FailureInfo) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use der::Decode;
+    use der::{Decode, Encode};
     use oe_hsm::testing::SoftwareToken;
     use std::path::PathBuf;
 
@@ -608,6 +612,73 @@ mod tests {
             TsaError::Rejection(r) => assert_eq!(r.failure, FailureInfo::UnacceptedPolicy),
             other => panic!("un refus était attendu, obtenu: {other}"),
         }
+    }
+
+    /// Le bit du `failInfo` est celui de RFC 3161 §2.4.2, encodé en DER
+    /// minimal. Un octet « bits inutilisés » encodé deux fois faisait lire
+    /// timeNotAvailable (bit 14) comme les bits 7 et 22 : le client ne pouvait
+    /// plus savoir pourquoi sa demande était refusée.
+    #[test]
+    fn error_response_encodes_the_rfc3161_failure_bit() {
+        let cases = [
+            (FailureInfo::BadAlg, &[0x03, 0x02, 0x07, 0x80][..]),
+            (FailureInfo::BadRequest, &[0x03, 0x02, 0x05, 0x20][..]),
+            (FailureInfo::BadDataFormat, &[0x03, 0x02, 0x02, 0x04][..]),
+            (
+                FailureInfo::TimeNotAvailable,
+                &[0x03, 0x03, 0x01, 0x00, 0x02][..],
+            ),
+            (
+                FailureInfo::UnacceptedPolicy,
+                &[0x03, 0x03, 0x00, 0x00, 0x01][..],
+            ),
+            (
+                FailureInfo::UnacceptedExtension,
+                &[0x03, 0x04, 0x07, 0x00, 0x00, 0x80][..],
+            ),
+            (
+                FailureInfo::SystemFailure,
+                &[0x03, 0x05, 0x06, 0x00, 0x00, 0x00, 0x40][..],
+            ),
+        ];
+        for (failure, expected) in cases {
+            let der = error_response(failure).unwrap();
+            let resp = TimeStampResp::from_der(&der).unwrap();
+            let fail_info = resp.status.fail_info.expect("failInfo absent");
+            assert_eq!(fail_info.to_der().unwrap(), expected, "{failure:?}");
+        }
+    }
+
+    /// Vérification croisée par un tiers : openssl nomme la raison du refus.
+    #[test]
+    fn openssl_reads_the_failure_reason() {
+        if std::process::Command::new("openssl")
+            .arg("version")
+            .output()
+            .is_err()
+        {
+            eprintln!("openssl indisponible : vérification croisée ignorée");
+            return;
+        }
+        let path = std::env::temp_dir().join(format!("oe-tsa-failinfo-{}.tsr", std::process::id()));
+        for (failure, reason) in [
+            (
+                FailureInfo::TimeNotAvailable,
+                "time source is not available",
+            ),
+            (FailureInfo::BadAlg, "unrecognized or unsupported algorithm"),
+            (FailureInfo::UnacceptedPolicy, "policy is not supported"),
+        ] {
+            std::fs::write(&path, error_response(failure).unwrap()).unwrap();
+            let out = std::process::Command::new("openssl")
+                .args(["ts", "-reply", "-text", "-in"])
+                .arg(&path)
+                .output()
+                .unwrap();
+            let text = String::from_utf8_lossy(&out.stdout);
+            assert!(text.contains(reason), "{failure:?} : {text}");
+        }
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
