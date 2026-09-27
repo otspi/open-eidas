@@ -72,12 +72,15 @@ async fn main() {
     // L'opérateur et sa clé, comme en production mais sans passer par
     // l'enregistrement relayé (qui a ses propres tests).
     let now = time::OffsetDateTime::now_utc();
-    // Trois opérateurs : alice décide des demandes (étape 6b), bob et carol
-    // révoquent à deux (étape 6c, double contrôle).
+    // alice décide des demandes (étape 6b), bob et carol révoquent à deux
+    // (étape 6c, double contrôle).
     let people = [
         ("alice", Role::RaOperateur),
         ("bob", Role::CaOperateur),
         ("carol", Role::CaOperateur),
+        // Registre (6e) : root administre, dave voit son rôle changer et sa clé révoquée.
+        ("root", Role::Admin),
+        ("dave", Role::RaOperateur),
     ];
     let reg_verifier = verifier();
     // Le SoftToken s'enregistre dans ce fichier à sa fermeture : c'est ainsi que

@@ -173,6 +173,14 @@ construction : [`bin/ra-console/web/`](../bin/ra-console/web/README.md).
 - **Salle de quorum (6c)** : les actions en attente, leur corps figé et leur empreinte,
   qui a déjà signé ; la co-signature est désactivée pour qui a déjà signé (« le double
   contrôle requiert un opérateur distinct » — `ca-server` la refuserait de toute façon).
+- **Opérateurs (6e)** : `GET /api/v1/operators` (lecture seule : opérateurs, leurs clés,
+  clés en attente avec leur **empreinte recalculée par `oe_actions::key_fingerprint`**,
+  la fonction même de `ca-server`). L'écran liste le registre ; un administrateur y
+  invite (le **jeton s'affiche une seule fois**, à transmettre par un canal distinct),
+  confirme une clé en attente après avoir **déclaré avoir comparé l'empreinte hors
+  bande** (§10), révoque une clé (motif obligatoire) et change un rôle (le rôle `admin`
+  exige un second administrateur, en salle de quorum). Pour les autres rôles, ces
+  boutons sont désactivés — affichage seulement, `ca-server` juge.
 - L'explorateur d'audit suit (6d, après #51).
 ## Gestion du registre des opérateurs
 
