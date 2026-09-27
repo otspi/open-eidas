@@ -324,3 +324,61 @@ dialog.signature textarea {
   font-size: 13px;
   word-spacing: 0.4em;
 }
+
+/* --- 6c : navigation, certificats, salle de quorum (UI-UX §2.2, §3.2) --- */
+
+button.nav {
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border-color: transparent;
+}
+button.nav[aria-current="true"] {
+  background: var(--bg-surface-elevated);
+  border-color: var(--border-subtle);
+  box-shadow: inset 3px 0 0 var(--border-focus);
+}
+button.danger {
+  background: #dc2626;
+  border-color: #dc2626;
+  color: #ffffff;
+  font-weight: 600;
+}
+button.danger:hover {
+  background: #ef4444;
+}
+.badge.valid {
+  background: #064e3b;
+  color: #34d399;
+  border: 1px solid #059669;
+}
+select {
+  font: inherit;
+  color: var(--text-main);
+  background: var(--bg-canvas);
+  border: 1px solid var(--border-subtle);
+  border-radius: 4px;
+  padding: 8px;
+  margin: 8px 0 16px;
+  width: 100%;
+}
+.quorum {
+  display: grid;
+  gap: 16px;
+}
+.card {
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-left: 3px dashed #d97706;
+  border-radius: 6px;
+  padding: 16px;
+}
+.card pre {
+  background: var(--bg-canvas);
+  border: 1px solid var(--border-subtle);
+  border-radius: 4px;
+  padding: 12px;
+  overflow: auto;
+  max-height: 200px;
+  font-size: 12px;
+}

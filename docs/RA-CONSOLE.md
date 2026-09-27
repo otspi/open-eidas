@@ -194,7 +194,16 @@ construction : [`bin/ra-console/web/`](../bin/ra-console/web/README.md).
   empreinte SHA-256, avant tout geste sur la clé. Une erreur laisse la modale ouverte ;
   un challenge consommé ou expiré est redemandé au besoin. Échap annule, sauf pendant
   la cérémonie matérielle.
-- Révocation, salle de quorum et audit suivent (étapes 6c et suivantes).
+- **Certificats et révocation (6c)** : `GET /api/v1/certificates?status=issued|revoked`
+  (lecture seule de la table de `ca-server`, numéro de série sous la forme canonique
+  qu'attend la révocation). L'écran liste les certificats actifs ; « Révoquer… » demande
+  un motif RFC 5280 parmi ceux qu'admet `ca-server` (1, 3, 4, 5, 9) et une
+  justification obligatoire, puis la modale de signature. La première signature part
+  en salle de quorum.
+- **Salle de quorum (6c)** : les actions en attente, leur corps figé et leur empreinte,
+  qui a déjà signé ; la co-signature est désactivée pour qui a déjà signé (« le double
+  contrôle requiert un opérateur distinct » — `ca-server` la refuserait de toute façon).
+- L'explorateur d'audit suit (6d, après #51).
 
 ## Variables d'environnement
 

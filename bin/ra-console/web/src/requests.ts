@@ -15,13 +15,9 @@ interface EnrollmentRequest {
   created_at: string;
 }
 
-export interface RequestsView {
-  element: HTMLElement;
-  /// Retire les raccourcis clavier quand la vue est quittée.
-  dispose: () => void;
-}
+import type { View } from "./view";
 
-export function requestsView(onDecided: () => void): RequestsView {
+export function requestsView(onDecided: () => void): View {
   let rows: EnrollmentRequest[] = [];
   let selected = 0;
 
@@ -122,7 +118,7 @@ export function requestsView(onDecided: () => void): RequestsView {
       },
       route: `/api/v1/requests/${encodeURIComponent(r.transaction_id)}/${kind}`,
     });
-    if (ok) {
+    if (ok !== null) {
       notice.textContent = approving ? `Demande ${r.transaction_id} approuvée.` : `Demande ${r.transaction_id} rejetée.`;
       await load();
       onDecided();
