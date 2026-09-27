@@ -3401,9 +3401,12 @@ name = "tsa-server"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "base64 0.22.1",
  "clap",
  "der 0.8.2",
  "oe-audit",
+ "oe-ca-core",
+ "oe-castore",
  "oe-certs",
  "oe-config",
  "oe-conformance",
@@ -3412,6 +3415,7 @@ dependencies = [
  "oe-httpapi",
  "oe-timesource",
  "oe-tsa-core",
+ "reqwest",
  "serde_json",
  "time",
  "tokio",

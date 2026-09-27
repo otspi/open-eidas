@@ -120,3 +120,32 @@ fn commands_that_sign_still_require_the_pin_and_the_public_address() {
         assert!(err.contains("OPENEIDAS_PKI_PUBLIC_URL"), "{args:?} : {err}");
     }
 }
+
+/// ETSI TS 119 312 §8.4 (constat D-2 : preuve sur le binaire) : une clé
+/// d'autorité de moins de 3072 bits est refusée avant tout, y compris par une
+/// commande qui n'ouvre aucun token.
+#[test]
+fn undersized_ca_keys_are_refused_by_the_binary() {
+    for (bits, refused) in [("2048", true), ("3072", false)] {
+        let out = Command::new(env!("CARGO_BIN_EXE_ca-server"))
+            .args(["ra", "list"])
+            // Sans DSN : une clé admise échoue ensuite sur la base, ce qui
+            // prouve que le contrôle de longueur est passé.
+            .env_remove("OPENEIDAS_DB_DSN")
+            .env("OPENEIDAS_CA_KEY_BITS", bits)
+            .output()
+            .expect("lancement de ca-server");
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(!out.status.success(), "{bits} : {stderr}");
+        assert_eq!(
+            stderr.contains("OPENEIDAS_DB_DSN"),
+            !refused,
+            "{bits} : {stderr}"
+        );
+        assert_eq!(
+            stderr.contains("ETSI TS 119 312 impose au moins 3072 bits"),
+            refused,
+            "{bits} : {stderr}"
+        );
+    }
+}
