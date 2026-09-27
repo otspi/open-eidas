@@ -5,13 +5,11 @@
 //! (`Clock`, équivalent du moniteur `oe-timesource`, jalon J4) pour produire
 //! et signer un jeton d'horodatage réel.
 //!
-//! **Écart assumé face à `internal/conformance`** : la vérification du
-//! profil du certificat TSU (`conformance.CheckTSUCertificate`, EN 319 421
-//! §7.7.2) n'est pas encore portée (`oe-conformance` la déclare `Gap`,
-//! jalon J3) — `Authority::new` ne la reproduit donc pas encore. Ce qui est
-//! bien vérifié ici : la correspondance clé publique du token ↔ certificat,
-//! et la fenêtre de validité temporelle du certificat, comme dans `tsa.New`
-//! (Go).
+//! `Authority::new` vérifie la correspondance clé publique du token ↔
+//! certificat, la fenêtre de validité temporelle du certificat, comme dans
+//! `tsa.New` (Go), et le profil du certificat TSU
+//! (`oe_conformance::check_tsu_certificate`, portage de
+//! `conformance.CheckTSUCertificate`).
 
 use std::sync::Arc;
 

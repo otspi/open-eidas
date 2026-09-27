@@ -381,12 +381,12 @@ l'URL, le serveur qui publie et le répondeur OCSP qui va chercher la CRL.
 |---|---|---|
 | Vol de la clé de la CA émettrice | La clé ne quitte jamais le token PKCS#11 ; seul le conteneur `ca` y accède | SoftHSM2 est logiciel : qui obtient le volume et le PIN obtient la clé. Un HSM certifié lève ce point |
 | Vol du secret HMAC d'enrôlement | Il authentifie le demandeur, il ne décide pas : toute demande reste soumise à approbation | Une clé volée permet de déposer des demandes, pas d'en faire émettre |
-| Compromission d'un opérateur RA | Chaque décision est consignée avec son auteur ; le journal est chaîné, scellé et répliqué hors site | Un opérateur seul peut approuver : il n'y a pas de double validation |
+| Compromission d'un opérateur RA | Chaque décision est consignée avec son auteur dans le journal chaîné | Un opérateur seul peut approuver : il n'y a pas de double validation. Le journal n'est ni scellé ni répliqué hors site (écart J-1) : un accès en écriture à son volume permet de le réécrire |
 | Numéro de série prédit ou rejoué | 128 bits sur `crypto/rand`, unicité portée par la clé primaire du registre | — |
 | Certificat non conforme émis | Le DER produit est relu et re-contrôlé avant d'être enregistré ; l'émission est annulée sinon | — |
 | CRL ancienne rejouée pour masquer une révocation | `CRLNumber` strictement croissant, servi par une séquence PostgreSQL ; le répondeur OCSP refuse de répondre plutôt que de servir un statut obsolète | — |
-| Altération du journal d'audit | Chaînage par hachage vérifié à l'ouverture ; un journal altéré empêche le démarrage | — |
-| Perte de l'instance | Registre PostgreSQL sauvegardable, journal répliqué hors site à chaque scellement | Sauvegarde et restauration non encore testées de bout en bout |
+| Altération du journal d'audit | Chaînage par hachage vérifié à l'ouverture ; un journal altéré empêche le démarrage | Chaînage sans clé : une réécriture complète avec recalcul de la chaîne n'est pas détectée tant que la tête n'est pas scellée hors du système (écart J-1) |
+| Perte de l'instance | Registre PostgreSQL sauvegardable | Journal non répliqué hors site (écart J-1) ; sauvegarde et restauration non encore testées de bout en bout |
 
 ## 8. Continuité et cessation d'activité
 
@@ -398,8 +398,8 @@ Ce qui doit être sauvegardé, et suffit à reconstituer l'autorité :
    définitivement perdue ;
 2. la **base PostgreSQL** — registre des certificats, demandes, historique des
    CRL ;
-3. le **journal d'audit** (volume `castate`), déjà répliqué hors site à chaque
-   scellement.
+3. le **journal d'audit** (volume `castate`) — pas encore répliqué hors site
+   (écart J-1) : à sauvegarder avec le reste.
 
 État actuel : instance unique, sauvegarde non automatisée. C'est un écart
 documenté ; la cible est une redondance active/active, une sauvegarde
