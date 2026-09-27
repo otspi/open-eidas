@@ -63,6 +63,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/v1/certificates/{serial}/revoke", post(handle_revoke))
         .route("/api/v1/quorum", get(handle_quorum))
         .route("/api/v1/quorum/{action_id}/sign", post(handle_quorum_sign))
+        .merge(crate::registry_routes::routes())
         .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
         .with_state(state)
 }
@@ -102,7 +103,7 @@ async fn handle_health(State(state): State<Arc<AppState>>) -> Response {
 }
 
 /// `{"error": "<code>", "message": "..."}` (docs/WEBUI.md §5), sans trace interne.
-fn error(status: StatusCode, code: &str, message: &str) -> Response {
+pub(crate) fn error(status: StatusCode, code: &str, message: &str) -> Response {
     (
         status,
         Json(serde_json::json!({ "error": code, "message": message })),
@@ -260,7 +261,7 @@ struct LoginFinish {
 /// Un nom d'opérateur : ce qu'un humain saisit, pas un identifiant technique.
 /// Une longueur bornée suffit à écarter un corps abusif avant toute requête ;
 /// le reste (existe ou non) ne se voit jamais dans la réponse (§16).
-fn looks_like_a_name(s: &str) -> bool {
+pub(crate) fn looks_like_a_name(s: &str) -> bool {
     !s.is_empty() && s.chars().count() <= 256
 }
 
@@ -456,16 +457,22 @@ async fn handle_requests(
     }
 }
 
-/// Les actions que la console relaie à ce stade (docs/WEBUI.md §15, étapes 3
-/// et 4) : décider d'une demande d'enrôlement, révoquer un certificat. La
-/// gestion du registre suivra ; d'ici là, la console refuse de la préparer,
-/// même si `ca-server` saurait l'exécuter.
+/// Les actions que la console relaie (docs/WEBUI.md §5, §15 étapes 3 et 4) :
+/// décider d'une demande d'enrôlement, révoquer un certificat, et gérer le
+/// registre des opérateurs (inviter, confirmer ou révoquer une clé, changer un
+/// rôle). L'énumération d'`oe_actions` est fermée : il n'en existe pas d'autre
+/// aujourd'hui ; une action ajoutée plus tard n'est pas relayée tant qu'elle
+/// n'est pas nommée ici.
 fn relayed_at_this_stage(action: &oe_actions::Action) -> bool {
     matches!(
         action,
         oe_actions::Action::ApproveRequest { .. }
             | oe_actions::Action::RejectRequest { .. }
             | oe_actions::Action::RevokeCertificate { .. }
+            | oe_actions::Action::InviteOperator { .. }
+            | oe_actions::Action::ConfirmKey { .. }
+            | oe_actions::Action::RevokeKey { .. }
+            | oe_actions::Action::SetRole { .. }
     )
 }
 
@@ -629,7 +636,7 @@ async fn handle_reject(
 ///
 /// L'`Err` est la réponse à rendre telle quelle (voir [`authenticate`]).
 #[allow(clippy::result_large_err)]
-async fn relay_assertion(
+pub(crate) async fn relay_assertion(
     state: &AppState,
     headers: &HeaderMap,
     body: &[u8],
@@ -800,7 +807,14 @@ async fn handle_quorum_sign(
         oe_actions::Action::RevokeCertificate { serial, .. } => {
             expect["serial"] = serde_json::json!(serial);
         }
-        _ => {}
+        oe_actions::Action::ConfirmKey { credential_id, .. }
+        | oe_actions::Action::RevokeKey { credential_id, .. } => {
+            expect["credential_id"] = serde_json::json!(credential_id);
+        }
+        oe_actions::Action::SetRole { operator, .. } => {
+            expect["operator"] = serde_json::json!(operator);
+        }
+        oe_actions::Action::InviteOperator { .. } => {}
     }
     match relay_assertion(&state, &headers, &body, expect).await {
         Ok(r) => Json(quorum_status(&r.body)).into_response(),
@@ -817,7 +831,7 @@ fn action_kind(action: &oe_actions::Action) -> String {
 }
 
 /// La forme du §5 pour une action à plusieurs signatures.
-fn quorum_status(body: &serde_json::Value) -> serde_json::Value {
+pub(crate) fn quorum_status(body: &serde_json::Value) -> serde_json::Value {
     let executed = body.get("status").and_then(|s| s.as_str()) == Some("executed");
     serde_json::json!({
         "action_id": body.get("action_id"),

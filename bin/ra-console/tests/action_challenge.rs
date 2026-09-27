@@ -44,8 +44,20 @@ fn origin() -> Url {
     Url::parse(&format!("https://{HOST}")).unwrap()
 }
 
+/// Le journal de la console, relu par les tests : un jeton d'invitation ne
+/// doit jamais y figurer.
+#[derive(Default)]
+struct ConsoleJournal(std::sync::Mutex<Vec<String>>);
+
+impl ra_console::audit::Recorder for ConsoleJournal {
+    fn append(&self, event: &str, data: serde_json::Value) {
+        self.0.lock().unwrap().push(format!("{event} {data}"));
+    }
+}
+
 struct Env {
     console: axum::Router,
+    journal: Arc<ConsoleJournal>,
     registry: Registry,
     store: Arc<dyn Store>,
     issuer: Arc<oe_ca_core::Issuer>,
@@ -154,6 +166,7 @@ impl Env {
         let link = CaLink::new(&pki.files(&dir, &client, port)).unwrap();
 
         let pool = PgPoolOptions::new().connect(&dsn).await.unwrap();
+        let journal = Arc::new(ConsoleJournal::default());
         let console = router(Arc::new(AppState {
             pool: pool.clone(),
             link,
@@ -164,11 +177,12 @@ impl Env {
                 Arc::new(ra_console::audit::NullRecorder),
             ),
             sessions: common::sessions(pool),
-            journal: Arc::new(ra_console::audit::NullRecorder),
+            journal: journal.clone(),
         }));
 
         Some(Env {
             console,
+            journal,
             registry,
             store,
             issuer,
@@ -375,15 +389,15 @@ async fn the_console_prepares_nothing_without_a_session_or_outside_step_3() {
         assert_eq!(status, StatusCode::UNAUTHORIZED, "{err}");
     }
 
-    // Une action que ca-server saurait exécuter, mais que la console ne propose
-    // pas encore (gestion du registre : après l'étape 4).
+    // La gestion du registre est relayée, mais réservée aux administrateurs :
+    // c'est ca-server qui refuse à un ca_operateur, sans rien figer.
     for action in [
-        serde_json::json!({ "action": "invite_operator", "name": "eve", "role": "admin" }),
-        serde_json::json!({ "action": "set_role", "operator": "alice", "role": "admin" }),
+        serde_json::json!({ "action": "invite_operator", "name": "eve", "role": "auditeur" }),
+        serde_json::json!({ "action": "set_role", "operator": "alice", "role": "auditeur" }),
     ] {
         let (status, err) = env.challenge(Some(&cookie), action).await;
         assert_eq!(status, StatusCode::FORBIDDEN, "{err}");
-        assert_eq!(err["error"], "action_not_available");
+        assert_eq!(err["error"], "denied");
     }
 
     // Une action inconnue, ou un corps qui n'est pas une action.
@@ -942,4 +956,271 @@ async fn the_console_lists_issued_certificates() {
         .get("/api/v1/certificates", "session=n-importe-quoi")
         .await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
+}
+
+// --- Gestion du registre depuis la console (invitation, clés, rôles) ---
+
+impl Env {
+    /// Prépare `action`, la signe, et la relaie sur `path` : rend la réponse.
+    async fn sign_and_send(
+        &mut self,
+        cookie: &str,
+        action: serde_json::Value,
+        path: &str,
+    ) -> (StatusCode, serde_json::Value) {
+        let (status, issued) = self.challenge(Some(cookie), action).await;
+        assert_eq!(status, StatusCode::OK, "{issued}");
+        let assertion = self.sign(&issued);
+        self.decide(Some(cookie), path, &issued, &assertion).await
+    }
+
+    async fn role_of(&self, name: &str) -> String {
+        sqlx::query_scalar("SELECT role FROM operators WHERE name = $1")
+            .bind(name)
+            .fetch_one(self.registry.pool())
+            .await
+            .unwrap()
+    }
+
+    async fn key_revoked(&self, credential_id: &str) -> bool {
+        sqlx::query_scalar(
+            "SELECT revoked_at IS NOT NULL FROM webauthn_credentials WHERE credential_id = $1",
+        )
+        .bind(credential_id)
+        .fetch_one(self.registry.pool())
+        .await
+        .unwrap()
+    }
+
+    /// Une seconde clé pour un opérateur existant, posée dans le registre.
+    async fn second_key(&mut self, operator: Uuid, name: &str) -> String {
+        let before = self.credential_ids(operator).await;
+        let now = time::OffsetDateTime::now_utc();
+        let (options, state) = self
+            .verifier
+            .start_registration(operator, name, None)
+            .unwrap();
+        let reg = self.authn.do_registration(origin(), options).unwrap();
+        let key = self.verifier.finish_registration(&reg, &state).unwrap();
+        self.registry
+            .add_credential(
+                NewCredential {
+                    operator_id: operator,
+                    passkey: &key,
+                    aaguid: AAGUID,
+                    attestation_format: "packed",
+                    attestation_object: reg.response.attestation_object.as_ref(),
+                    label: "secours",
+                    initiated_by: "test",
+                    confirmed_by: Some("test"),
+                },
+                now,
+            )
+            .await
+            .unwrap();
+        self.credential_ids(operator)
+            .await
+            .into_iter()
+            .find(|k| !before.contains(k))
+            .unwrap()
+    }
+}
+
+/// Un administrateur invite un opérateur par la console : le jeton n'est rendu
+/// qu'une fois, dans la réponse, et ne figure dans aucun journal de la console.
+/// L'invité enregistre sa clé par le relais existant ; l'administrateur la
+/// confirme en signant son empreinte, transmise hors bande (§10).
+#[tokio::test]
+async fn an_admin_invites_and_confirms_an_operator_through_the_console() {
+    let mut env = env!();
+    env.operator_with_key("root", Role::Admin).await;
+    let admin = env.log_in("root").await;
+
+    let invite =
+        serde_json::json!({ "action": "invite_operator", "name": "eve", "role": "ra_operateur" });
+    let (status, done) = env.sign_and_send(&admin, invite, "/api/v1/operators").await;
+    assert_eq!(status, StatusCode::OK, "{done}");
+    assert_eq!(done["status"], "EXECUTED", "{done}");
+    let token = done["result"]["invite_token"].as_str().unwrap().to_string();
+    assert!(token.len() > 30);
+    assert_eq!(env.role_of("eve").await, "ra_operateur");
+    let journal = env.journal.0.lock().unwrap().join("\n");
+    assert!(journal.contains("ra.action_relayed"), "{journal}");
+    assert!(
+        !journal.contains(&token),
+        "le jeton est journalisé : {journal}"
+    );
+
+    // L'invitée enregistre sa clé : elle attend la confirmation d'un tiers.
+    let (_, _, begun) = env
+        .post(
+            "/api/v1/webauthn/register/begin",
+            serde_json::json!({ "token": token }),
+            None,
+            "application/json",
+        )
+        .await;
+    let options: oe_webauthn::CreationChallengeResponse =
+        serde_json::from_value(serde_json::json!({ "publicKey": begun["webauthn"] })).unwrap();
+    let credential = env.authn.do_registration(origin(), options).unwrap();
+    let (status, _, pending) = env
+        .post(
+            "/api/v1/webauthn/register/finish",
+            serde_json::json!({ "ceremony_id": begun["ceremony_id"], "credential": credential }),
+            None,
+            "application/json",
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{pending}");
+    assert_eq!(pending["status"], "pending_confirmation", "{pending}");
+    let credential_id = pending["credential_id"].as_str().unwrap().to_string();
+
+    let confirm = serde_json::json!({
+        "action": "confirm_key",
+        "credential_id": credential_id,
+        "key_fingerprint": pending["key_fingerprint"],
+    });
+    let (status, done) = env
+        .sign_and_send(
+            &admin,
+            confirm,
+            &format!("/api/v1/credentials/{credential_id}/confirm"),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{done}");
+    assert_eq!(done["status"], "EXECUTED", "{done}");
+    // La clé est active : l'invitée peut se connecter.
+    let eve = env.log_in("eve").await;
+    assert!(eve.starts_with("session="));
+}
+
+/// Révocation d'une clé : la cible de la route est contrôlée par ca-server.
+/// Les deux clés appartiennent au même opérateur et l'action est la même :
+/// seul l'identifiant de la clé distingue, c'est bien lui qui est comparé.
+#[tokio::test]
+async fn a_key_revocation_only_revokes_the_signed_key() {
+    let mut env = env!();
+    env.operator_with_key("root", Role::Admin).await;
+    let carol = env.operator_with_key("carol", Role::RaOperateur).await;
+    let k1 = env.credential_ids(carol).await.remove(0);
+    let k2 = env.second_key(carol, "carol").await;
+    assert_ne!(k1, k2);
+    let admin = env.log_in("root").await;
+
+    let (_, issued) = env
+        .challenge(
+            Some(&admin),
+            serde_json::json!({ "action": "revoke_key", "credential_id": k1, "reason": "perdue" }),
+        )
+        .await;
+    let assertion = env.sign(&issued);
+    let (status, err) = env
+        .decide(
+            Some(&admin),
+            &format!("/api/v1/credentials/{k2}/revoke"),
+            &issued,
+            &assertion,
+        )
+        .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{err}");
+    assert_eq!(err["error"], "action_mismatch");
+    assert!(!env.key_revoked(&k1).await && !env.key_revoked(&k2).await);
+
+    let (status, done) = env
+        .decide(
+            Some(&admin),
+            &format!("/api/v1/credentials/{k1}/revoke"),
+            &issued,
+            &assertion,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{done}");
+    assert_eq!(done["status"], "EXECUTED");
+    assert!(env.key_revoked(&k1).await);
+    assert!(!env.key_revoked(&k2).await);
+
+    // Un identifiant de clé hors de la forme base64url n'est pas relayé.
+    let (status, _) = env
+        .decide(
+            Some(&admin),
+            "/api/v1/credentials/cl%C3%A9%20invalide/revoke",
+            &issued,
+            &assertion,
+        )
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+/// Changement de rôle : la cible (l'opérateur, par son nom) est contrôlée ;
+/// élever au rôle admin exige deux administrateurs (co-signature par la salle
+/// d'attente).
+#[tokio::test]
+async fn role_changes_target_the_signed_operator_and_admin_needs_two() {
+    let mut env = env!();
+    env.operator_with_key("root", Role::Admin).await;
+    env.operator_with_key("root2", Role::Admin).await;
+    env.operator_with_key("carol", Role::RaOperateur).await;
+    env.operator_with_key("dave", Role::RaOperateur).await;
+    let admin = env.log_in("root").await;
+
+    // Même action, même rôle : seul l'opérateur visé distingue.
+    let (_, issued) = env
+        .challenge(
+            Some(&admin),
+            serde_json::json!({ "action": "set_role", "operator": "carol", "role": "auditeur" }),
+        )
+        .await;
+    let assertion = env.sign(&issued);
+    let (status, err) = env
+        .decide(
+            Some(&admin),
+            "/api/v1/operators/dave/role",
+            &issued,
+            &assertion,
+        )
+        .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{err}");
+    assert_eq!(err["error"], "action_mismatch");
+    let (status, done) = env
+        .decide(
+            Some(&admin),
+            "/api/v1/operators/carol/role",
+            &issued,
+            &assertion,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{done}");
+    assert_eq!(env.role_of("carol").await, "auditeur");
+    assert_eq!(env.role_of("dave").await, "ra_operateur");
+
+    // Élever dave au rôle admin : une signature ne suffit pas.
+    let (status, done) = env
+        .sign_and_send(
+            &admin,
+            serde_json::json!({ "action": "set_role", "operator": "dave", "role": "admin" }),
+            "/api/v1/operators/dave/role",
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{done}");
+    assert_eq!(done["status"], "AWAITING_QUORUM", "{done}");
+    assert_eq!(env.role_of("dave").await, "ra_operateur");
+    let action_id = done["action_id"].as_str().unwrap().to_string();
+
+    let second = env.log_in("root2").await;
+    let (status, issued) = env
+        .challenge(Some(&second), serde_json::json!({ "action_id": action_id }))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{issued}");
+    let assertion = env.sign(&issued);
+    let (status, done) = env
+        .decide(
+            Some(&second),
+            &format!("/api/v1/quorum/{action_id}/sign"),
+            &issued,
+            &assertion,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{done}");
+    assert_eq!(done["status"], "EXECUTED", "{done}");
+    assert_eq!(env.role_of("dave").await, "admin");
 }

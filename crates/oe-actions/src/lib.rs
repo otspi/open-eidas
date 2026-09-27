@@ -209,6 +209,13 @@ pub struct Expect {
     /// présenté doit avoir été émis pour elle.
     #[serde(default)]
     pub action_id: Option<Uuid>,
+    /// Clé visée par une confirmation ou une révocation de clé.
+    #[serde(default)]
+    pub credential_id: Option<String>,
+    /// Opérateur visé par un changement de rôle (par son nom, celui du corps
+    /// figé).
+    #[serde(default)]
+    pub operator: Option<String>,
 }
 
 impl Expect {
@@ -226,32 +233,50 @@ impl Expect {
                 action.kind()
             )));
         }
-        // La cible que porte le corps figé, et celle que l'appelant attend pour
-        // ce type d'action ; l'autre champ d'attente doit rester vide.
-        let (frozen, expected, other) = match action {
+        // La cible que porte le corps figé, par le nom du champ d'attente qui
+        // la désigne. Une invitation n'a pas de cible (l'opérateur n'existe pas
+        // encore) : seul le type compte.
+        let frozen: Option<(&str, &String)> = match action {
             Action::ApproveRequest { transaction_id, .. }
             | Action::RejectRequest { transaction_id, .. } => {
-                (Some(transaction_id), &self.transaction_id, &self.serial)
+                Some(("transaction_id", transaction_id))
             }
-            Action::RevokeCertificate { serial, .. } => {
-                (Some(serial), &self.serial, &self.transaction_id)
+            Action::RevokeCertificate { serial, .. } => Some(("serial", serial)),
+            Action::ConfirmKey { credential_id, .. } | Action::RevokeKey { credential_id, .. } => {
+                Some(("credential_id", credential_id))
             }
-            _ => (None, &None, &None),
+            Action::SetRole { operator, .. } => Some(("operator", operator)),
+            Action::InviteOperator { .. } => None,
         };
-        if other.is_some() {
-            return Err(Error::BadRequest(
-                "cible sans rapport avec ce type d'action".to_string(),
-            ));
+        let targets = [
+            ("transaction_id", &self.transaction_id),
+            ("serial", &self.serial),
+            ("credential_id", &self.credential_id),
+            ("operator", &self.operator),
+        ];
+        // Tout autre champ d'attente doit rester vide.
+        for (name, value) in targets {
+            if value.is_some() && frozen.map(|(f, _)| f) != Some(name) {
+                return Err(Error::BadRequest(
+                    "cible sans rapport avec ce type d'action".to_string(),
+                ));
+            }
         }
-        match (frozen, expected) {
-            (Some(frozen), Some(expected)) if frozen == expected => Ok(()),
-            (Some(_), None) => Err(Error::BadRequest(
+        let Some((field, frozen)) = frozen else {
+            return Ok(());
+        };
+        let expected = targets
+            .iter()
+            .find(|(name, _)| *name == field)
+            .and_then(|(_, v)| v.as_ref());
+        match expected {
+            Some(expected) if expected == frozen => Ok(()),
+            None => Err(Error::BadRequest(
                 "la cible visée doit être précisée".to_string(),
             )),
-            (Some(frozen), Some(expected)) => Err(Error::Mismatch(format!(
+            Some(expected) => Err(Error::Mismatch(format!(
                 "cible attendue {expected}, figée {frozen}"
             ))),
-            (None, _) => Ok(()),
         }
     }
 }
@@ -1013,6 +1038,8 @@ mod expect_tests {
             transaction_id: tx.map(str::to_string),
             serial: None,
             action_id: None,
+            credential_id: None,
+            operator: None,
         }
     }
 
@@ -1034,12 +1061,67 @@ mod expect_tests {
             expect("approve_request", None).check(&approve("tx-a"), Uuid::nil()),
             Err(Error::BadRequest(_))
         ));
-        // Une action sans demande visée : seul le type compte.
+        // Une invitation n'a pas de cible : seul le type compte.
+        let invite = Action::InviteOperator {
+            name: "eve".to_string(),
+            role: Role::Auditeur,
+            ttl_minutes: 60,
+        };
+        assert!(expect("invite_operator", None)
+            .check(&invite, Uuid::nil())
+            .is_ok());
+
+        // Changement de rôle : la cible est l'opérateur, par son nom.
         let role = Action::SetRole {
             operator: "alice".to_string(),
             role: Role::Auditeur,
         };
-        assert!(expect("set_role", None).check(&role, Uuid::nil()).is_ok());
+        let for_operator = |o: &str| Expect {
+            operator: Some(o.to_string()),
+            ..expect("set_role", None)
+        };
+        assert!(for_operator("alice").check(&role, Uuid::nil()).is_ok());
+        assert!(matches!(
+            for_operator("bob").check(&role, Uuid::nil()),
+            Err(Error::Mismatch(_))
+        ));
+        assert!(matches!(
+            expect("set_role", None).check(&role, Uuid::nil()),
+            Err(Error::BadRequest(_))
+        ));
+
+        // Clés : la cible est l'identifiant de la clé.
+        let revoke_key = Action::RevokeKey {
+            credential_id: "k1".to_string(),
+            reason: "perdue".to_string(),
+        };
+        let for_key = |k: &str, action: &str| Expect {
+            credential_id: Some(k.to_string()),
+            ..expect(action, None)
+        };
+        assert!(for_key("k1", "revoke_key")
+            .check(&revoke_key, Uuid::nil())
+            .is_ok());
+        assert!(matches!(
+            for_key("k2", "revoke_key").check(&revoke_key, Uuid::nil()),
+            Err(Error::Mismatch(_))
+        ));
+        let confirm = Action::ConfirmKey {
+            credential_id: "k1".to_string(),
+            key_fingerprint: "AA".to_string(),
+        };
+        assert!(for_key("k1", "confirm_key")
+            .check(&confirm, Uuid::nil())
+            .is_ok());
+        // Une cible d'un autre type (opérateur sur une clé) est refusée.
+        let mixed = Expect {
+            operator: Some("alice".to_string()),
+            ..for_key("k1", "revoke_key")
+        };
+        assert!(matches!(
+            mixed.check(&revoke_key, Uuid::nil()),
+            Err(Error::BadRequest(_))
+        ));
 
         // Révocation : la cible est le numéro de série, jamais une demande.
         let revoke = Action::RevokeCertificate {
@@ -1052,6 +1134,8 @@ mod expect_tests {
             transaction_id: None,
             serial: Some(s.to_string()),
             action_id: None,
+            credential_id: None,
+            operator: None,
         };
         assert!(by_serial("0a1b").check(&revoke, Uuid::nil()).is_ok());
         assert!(matches!(
