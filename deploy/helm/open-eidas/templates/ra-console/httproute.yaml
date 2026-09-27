@@ -1,0 +1,25 @@
+{{- if and .Values.raConsole.enabled .Values.raConsole.gateway.enabled }}
+# Exposition aux navigateurs des opérateurs, par une Gateway INTERNE. L'hôte doit
+# être celui de ca.internal.webauthn.origin : WebAuthn lie chaque clé à cette
+# origine exacte.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: {{ include "open-eidas.fullname" . }}-ra-console
+  labels:
+    {{- include "open-eidas.componentLabels" (dict "context" . "component" "ra-console") | nindent 4 }}
+spec:
+  parentRefs:
+    - name: {{ .Values.raConsole.gateway.name }}
+      namespace: {{ .Values.raConsole.gateway.namespace }}
+  hostnames:
+    - {{ .Values.raConsole.gateway.host | quote }}
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      backendRefs:
+        - name: {{ include "open-eidas.fullname" . }}-ra-console
+          port: {{ .Values.raConsole.service.port }}
+{{- end }}

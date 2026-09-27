@@ -212,3 +212,22 @@ rendu : un lien interne à moitié configuré n'est pas déployé.
 - name: OPENEIDAS_WEBAUTHN_MODELS_FILE
   value: /etc/open-eidas/webauthn/models.json
 {{- end -}}
+
+{{/*
+Hôte et port de PostgreSQL : le StatefulSet intégré, ou la base externe.
+*/}}
+{{- define "open-eidas.postgresHost" -}}
+{{- if .Values.postgres.external.enabled -}}
+{{- .Values.postgres.external.host -}}
+{{- else -}}
+{{- printf "%s-postgres" (include "open-eidas.fullname" .) -}}
+{{- end -}}
+{{- end -}}
+
+{{- define "open-eidas.postgresPort" -}}
+{{- if .Values.postgres.external.enabled -}}
+{{- .Values.postgres.external.port | int -}}
+{{- else -}}
+5432
+{{- end -}}
+{{- end -}}

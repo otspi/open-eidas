@@ -1,0 +1,20 @@
+# Valeurs de vérification du rendu de ra-console (job CI helm-lint) : le lien
+# interne de la CA, sa Relying Party WebAuthn et un modèle de clé factice. Pas
+# une configuration de déploiement.
+ca:
+  internal:
+    enabled: true
+    webauthn:
+      rpId: console.example.test
+      origin: https://console.example.test
+    models:
+      - description: "Modèle factice (vérification du rendu)"
+        aaguid: "00000000-0000-0000-0000-000000000000"
+        rootPem: |
+          -----BEGIN CERTIFICATE-----
+          MIIB
+          -----END CERTIFICATE-----
+raConsole:
+  enabled: true
+  gateway:
+    enabled: true

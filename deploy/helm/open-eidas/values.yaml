@@ -224,6 +224,53 @@ ca:
     namespace: ingress
     host: pki.open-eidas.example
 
+# Console d'exploitation RA/CA (bin/ra-console, docs/WEBUI.md §16-17,
+# docs/RA-CONSOLE.md). DÉSACTIVÉE par défaut : elle exige le lien interne de la
+# CA (ca.internal.enabled, refusé au rendu sinon), dont elle réutilise la
+# configuration WebAuthn et la liste blanche de modèles de clés — une seule
+# Relying Party, pas deux réglages qui pourraient diverger.
+raConsole:
+  enabled: false
+  image:
+    repository: ghcr.io/open-eidas/open-eidas-ra-console
+    tag: "latest"
+  service:
+    port: 8330
+  # Purge des sessions et challenges expirés (secondes).
+  purgeIntervalSeconds: 60
+  # Délai d'attente de l'approbation du certificat client `internal_client` au
+  # premier démarrage, par tentative (secondes).
+  enrollTimeoutSeconds: 600
+  # Exposition au navigateur des opérateurs, par une Gateway INTERNE (jamais
+  # une Gateway publique : la console est le composant le plus exposé, §16).
+  # L'hôte doit correspondre à ca.internal.webauthn.origin.
+  gateway:
+    enabled: false
+    name: internal-gateway
+    namespace: ingress
+    host: console.open-eidas.example
+  # Seul le namespace de la Gateway ci-dessus atteint la console ; en sortie,
+  # seuls le DNS, PostgreSQL et la CA (API publique et port interne).
+  networkPolicy:
+    enabled: true
+  # Application des droits du rôle PostgreSQL en lecture seule
+  # (crates/oe-castore/sql/ra_console_grants.sql, copié dans files/ du chart)
+  # par un Job, hook post-install/post-upgrade : les identifiants
+  # d'administration de la base n'entrent jamais dans le pod de la console.
+  # Le compte postgres.user doit pouvoir créer un rôle (CREATEROLE) : c'est le
+  # cas du StatefulSet intégré ; pour une base externe, à vérifier.
+  grantsJob:
+    timeoutSeconds: 900
+  resources:
+    requests: { cpu: 20m, memory: 32Mi }
+    limits: { cpu: 500m, memory: 128Mi }
+  persistence:
+    # Clé et certificat client du lien interne, certificat de la CA, journal
+    # d'audit chaîné de la console.
+    state:
+      size: 256Mi
+      storageClassName: ""
+
 postgres:
   image:
     repository: postgres
@@ -251,7 +298,8 @@ postgres:
 # Nom d'un Secret existant à utiliser à la place de celui généré par
 # templates/secrets/generated.yaml (motif `lookup`, voir ce fichier). Doit
 # contenir les mêmes clés (postgres-password, tsa-pin, ocsp-pin,
-# ca-root-pin, ca-issuing-pin, webdav-password, enroll-hmac-key) : c'est le
+# ca-root-pin, ca-issuing-pin, webdav-password, enroll-hmac-key, et, avec
+# raConsole.enabled, ra-console-db-password et ra-console-decoy-secret) : c'est le
 # mécanisme prévu pour committer ces secrets scellés (kubeseal) dans un dépôt
 # de déploiement plutôt que de les laisser générer sur le cluster.
 secrets:

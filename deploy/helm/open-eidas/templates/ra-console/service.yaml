@@ -1,0 +1,15 @@
+{{- if .Values.raConsole.enabled -}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "open-eidas.fullname" . }}-ra-console
+  labels:
+    {{- include "open-eidas.componentLabels" (dict "context" . "component" "ra-console") | nindent 4 }}
+spec:
+  selector:
+    {{- include "open-eidas.componentSelectorLabels" (dict "context" . "component" "ra-console") | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ .Values.raConsole.service.port }}
+      targetPort: http
+{{- end }}

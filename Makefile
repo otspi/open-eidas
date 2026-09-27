@@ -42,6 +42,9 @@ helm-lint: ## Vérifie le chart Helm (lint + rendu complet)
 	helm lint deploy/helm/open-eidas
 	helm template open-eidas deploy/helm/open-eidas > /dev/null
 	! helm template open-eidas deploy/helm/open-eidas --set production=true --set ca.autoApprove.enabled=true > /dev/null 2>&1
+	helm template open-eidas deploy/helm/open-eidas -f deploy/helm/open-eidas/ci/ra-console-values.yaml > /dev/null
+	! helm template open-eidas deploy/helm/open-eidas -f deploy/helm/open-eidas/ci/ra-console-values.yaml --set ca.internal.enabled=false > /dev/null 2>&1
+	diff -u crates/oe-castore/sql/ra_console_grants.sql deploy/helm/open-eidas/files/ra_console_grants.sql
 
 logs: ## Suit les journaux de la TSA
 	docker compose logs -f tsa
