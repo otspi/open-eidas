@@ -23,4 +23,5 @@ pub mod quorum;
 pub mod registry_routes;
 pub mod requests;
 pub mod session;
+pub mod web;
 pub mod webauthn_models;
