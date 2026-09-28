@@ -35,7 +35,26 @@ impl Recorder for NullRecorder {
     fn append(&self, _event: &str, _data: serde_json::Value) {}
 }
 
-pub struct AuditRecorder(pub Arc<oe_audit::Log>);
+/// Copie best-effort du journal sur un stockage objet compatible S3, auto-hébergé
+/// (docs/WEBUI.md §7, §15 étape 2b-C) : `None` si `OPENEIDAS_S3_ENDPOINT` n'est pas
+/// configuré. À la différence de `ca-server` (preuve légale de la PKI, bloquant), le
+/// journal de `ra-console` reste best-effort par décision déjà prise ci-dessus —
+/// l'envoi S3 suit la même règle, jamais de blocage de connexion/déconnexion pour lui.
+pub struct AuditRecorder {
+    log: Arc<oe_audit::Log>,
+    path: String,
+    s3: Option<(Arc<oe_s3::Client>, String)>,
+}
+
+impl AuditRecorder {
+    pub fn new(
+        log: Arc<oe_audit::Log>,
+        path: String,
+        s3: Option<(Arc<oe_s3::Client>, String)>,
+    ) -> Self {
+        Self { log, path, s3 }
+    }
+}
 
 impl Recorder for AuditRecorder {
     fn append(&self, event: &str, data: serde_json::Value) {
@@ -48,8 +67,27 @@ impl Recorder for AuditRecorder {
                 Some(m)
             }
         };
-        if let Err(e) = self.0.append(event, data) {
-            tracing::error!(erreur = %e, evenement = event, "journal d'audit : échec d'écriture");
+        if let Err(e) = self.log.append(event, data) {
+            tracing::error!(erreur = %e, evenement = event, "journal d'audit : échec d'écriture locale");
+            return;
+        }
+        // L'envoi S3 n'attend jamais l'appelant (connexion/déconnexion) : détaché,
+        // son échec ne se voit que dans les logs du service, jamais dans la réponse.
+        if let Some((client, key)) = self.s3.clone() {
+            let path = self.path.clone();
+            let event = event.to_string();
+            tokio::spawn(async move {
+                let bytes = match std::fs::read(&path) {
+                    Ok(b) => b,
+                    Err(e) => {
+                        tracing::error!(erreur = %e, evenement = event, "journal d'audit : relecture pour l'envoi S3 impossible");
+                        return;
+                    }
+                };
+                if let Err(e) = client.put(&key, bytes).await {
+                    tracing::error!(erreur = %e, evenement = event, "journal d'audit : échec de l'envoi S3");
+                }
+            });
         }
     }
 }

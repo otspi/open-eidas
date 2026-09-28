@@ -18,6 +18,41 @@ pub struct Config {
     /// Journal chaîné propre à `ra-console` (docs/WEBUI.md §7, §15 étape 2b-A) :
     /// jamais celui de `ca-server`, une chaîne distincte.
     pub audit_file: String,
+    /// Copie best-effort du journal sur un stockage objet compatible S3, auto-hébergé
+    /// (docs/WEBUI.md §7, §15 étape 2b-C) : `None` si non configuré. À la différence de
+    /// `ca-server`, un échec (local ou S3) ne bloque jamais connexion/déconnexion —
+    /// décision déjà prise pour ce journal (voir `ra_console::audit::Recorder`), non
+    /// remise en cause par l'ajout de S3.
+    pub s3: Option<S3Config>,
+}
+
+/// Mêmes champs que `ca_server::config::S3Config` (même stockage S3-compatible
+/// auto-hébergé, mêmes variables `OPENEIDAS_S3_*` — chaque service lit son propre
+/// environnement, `OPENEIDAS_S3_KEY` distingue les deux journaux dans le même
+/// compartiment) ; dupliqué plutôt que partagé, comme `ra_console::audit::Recorder`.
+#[derive(Debug, Clone)]
+pub struct S3Config {
+    pub endpoint: String,
+    pub bucket: String,
+    pub region: String,
+    pub access_key: String,
+    pub secret_key: String,
+    pub key: String,
+}
+
+fn s3_config() -> Result<Option<S3Config>, String> {
+    let endpoint = optional("OPENEIDAS_S3_ENDPOINT", "");
+    if endpoint.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(S3Config {
+        endpoint,
+        bucket: required("OPENEIDAS_S3_BUCKET")?,
+        region: optional("OPENEIDAS_S3_REGION", "us-east-1"),
+        access_key: required("OPENEIDAS_S3_ACCESS_KEY")?,
+        secret_key: required("OPENEIDAS_S3_SECRET_KEY")?,
+        key: optional("OPENEIDAS_S3_KEY", "ra-console/audit.log"),
+    }))
 }
 
 /// Vérification des connexions (docs/WEBUI.md §15, étape 1c, §16) : `ra-console`
@@ -117,6 +152,7 @@ impl Config {
                 "OPENEIDAS_RA_AUDIT_FILE",
                 "/var/lib/open-eidas/state/ra-console-audit.log",
             ),
+            s3: s3_config()?,
         })
     }
 

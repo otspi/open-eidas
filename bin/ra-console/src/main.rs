@@ -40,6 +40,27 @@ fn die(context: &str, err: impl std::fmt::Display) -> ! {
     std::process::exit(1);
 }
 
+/// Construit le journal (local, et S3 best-effort si configuré, docs/WEBUI.md
+/// §7, §15 étape 2b-C).
+fn open_recorder(cfg: &Config) -> AuditRecorder {
+    let log = Arc::new(
+        oe_audit::Log::open(&cfg.audit_file).unwrap_or_else(|e| die("journal d'audit", e)),
+    );
+    let s3 = cfg.s3.as_ref().map(|c| {
+        let client = oe_s3::Client::new(oe_s3::Options {
+            endpoint: c.endpoint.clone(),
+            bucket: c.bucket.clone(),
+            region: c.region.clone(),
+            access_key: c.access_key.clone(),
+            secret_key: c.secret_key.clone(),
+            timeout: std::time::Duration::from_secs(30),
+        })
+        .unwrap_or_else(|e| die("client S3 du journal", e));
+        (Arc::new(client), c.key.clone())
+    });
+    AuditRecorder::new(log, cfg.audit_file.clone(), s3)
+}
+
 fn bind_addr(listen: &str) -> String {
     match listen.strip_prefix(':') {
         Some(port) => format!("0.0.0.0:{port}"),
@@ -81,11 +102,9 @@ async fn run_serve() {
         oe_webauthn::Verifier::new(&cfg.webauthn.rp_id, &origin, &cfg.webauthn.rp_name, models)
             .unwrap_or_else(|e| die("configuration WebAuthn", e));
 
-    // Son propre journal chaîné (docs/WEBUI.md §7, §15 étape 2b-A) : jamais
-    // celui de ca-server, une chaîne distincte.
-    let journal: Arc<dyn ra_console::audit::Recorder> = Arc::new(AuditRecorder(Arc::new(
-        oe_audit::Log::open(&cfg.audit_file).unwrap_or_else(|e| die("journal d'audit", e)),
-    )));
+    // Son propre journal chaîné (docs/WEBUI.md §7, §15 étape 2b-A/2b-C) : jamais
+    // celui de ca-server, une chaîne distincte, copiée best-effort sur S3 si configuré.
+    let journal: Arc<dyn ra_console::audit::Recorder> = Arc::new(open_recorder(&cfg));
 
     let login = LoginService::new(
         oe_actions::Registry::new(pool.clone()),

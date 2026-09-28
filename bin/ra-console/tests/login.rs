@@ -79,9 +79,12 @@ impl Env {
         };
         let verifier = Verifier::new("console.example.com", &origin(), "test", models()).unwrap();
         let audit_file = std::env::temp_dir().join(format!("{name}.ra-audit.log"));
-        let journal: Arc<dyn ra_console::audit::Recorder> = Arc::new(
-            ra_console::audit::AuditRecorder(Arc::new(oe_audit::Log::open(&audit_file).unwrap())),
-        );
+        let journal: Arc<dyn ra_console::audit::Recorder> =
+            Arc::new(ra_console::audit::AuditRecorder::new(
+                Arc::new(oe_audit::Log::open(&audit_file).unwrap()),
+                audit_file.to_string_lossy().into_owned(),
+                None,
+            ));
         let login = LoginService::new(
             registry.clone(),
             Verifier::new("console.example.com", &origin(), "test", models()).unwrap(),
