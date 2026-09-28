@@ -197,7 +197,43 @@ fn bind_addr(listen: &str) -> String {
 /// Relie le journal d'audit aux deux points d'injection qui en dépendent
 /// (`oe-ca-core` et `oe-raflow`) — mêmes noms d'événement que le binaire Go,
 /// qui partage lui aussi un seul journal chaîné entre ces deux sources.
-struct AuditRecorder(Arc<oe_audit::Log>);
+///
+/// Le fichier local reste la source de vérité (verrou, relecture, chaînage) ;
+/// s'il est configuré, un stockage S3-compatible auto-hébergé (docs/WEBUI.md
+/// §7, §15 étape 2b) en reçoit une copie à chaque écriture — le journal
+/// entier, S3 ne connaissant pas d'ajout partiel. Bloquant, comme
+/// `oe_ca_core::Recorder`/`oe_raflow::Recorder` : un échec de l'envoi propage
+/// une erreur, rien n'est considéré journalisé tant qu'il n'a pas atteint S3.
+#[derive(Clone)]
+struct AuditRecorder {
+    log: Arc<oe_audit::Log>,
+    /// Chemin du fichier local : relu en entier après chaque écriture pour
+    /// l'envoi S3 (le contenu exact qui vient d'être scellé, verrou compris).
+    path: String,
+    s3: Option<(Arc<oe_s3::Client>, String)>,
+}
+
+/// Construit le journal (local, et S3 si configuré) pour une commande.
+fn open_recorder(cfg: &Config) -> AuditRecorder {
+    let log = Arc::new(open_journal(cfg));
+    let s3 = cfg.s3.as_ref().map(|c| {
+        let client = oe_s3::Client::new(oe_s3::Options {
+            endpoint: c.endpoint.clone(),
+            bucket: c.bucket.clone(),
+            region: c.region.clone(),
+            access_key: c.access_key.clone(),
+            secret_key: c.secret_key.clone(),
+            timeout: std::time::Duration::from_secs(30),
+        })
+        .unwrap_or_else(|e| die("client S3 du journal", e));
+        (Arc::new(client), c.key.clone())
+    });
+    AuditRecorder {
+        log,
+        path: cfg.audit_file.clone(),
+        s3,
+    }
+}
 
 fn json_to_audit_data(data: serde_json::Value) -> Option<oe_audit::Data> {
     match data {
@@ -211,21 +247,38 @@ fn json_to_audit_data(data: serde_json::Value) -> Option<oe_audit::Data> {
     }
 }
 
+impl AuditRecorder {
+    async fn append_and_replicate(
+        &self,
+        event: &str,
+        data: serde_json::Value,
+    ) -> Result<(), String> {
+        self.log
+            .append(event, json_to_audit_data(data))
+            .map_err(|e| e.to_string())?;
+        if let Some((client, key)) = &self.s3 {
+            let bytes = std::fs::read(&self.path)
+                .map_err(|e| format!("relecture du journal pour l'envoi S3 : {e}"))?;
+            client
+                .put(key, bytes)
+                .await
+                .map_err(|e| format!("envoi S3 du journal : {e}"))?;
+        }
+        Ok(())
+    }
+}
+
 #[async_trait::async_trait]
 impl oe_ca_core::Recorder for AuditRecorder {
     async fn append(&self, event: &str, data: serde_json::Value) -> Result<(), String> {
-        self.0
-            .append(event, json_to_audit_data(data))
-            .map_err(|e| e.to_string())
+        self.append_and_replicate(event, data).await
     }
 }
 
 #[async_trait::async_trait]
 impl oe_raflow::Recorder for AuditRecorder {
     async fn append(&self, event: &str, data: serde_json::Value) -> Result<(), String> {
-        self.0
-            .append(event, json_to_audit_data(data))
-            .map_err(|e| e.to_string())
+        self.append_and_replicate(event, data).await
     }
 }
 
@@ -299,7 +352,6 @@ async fn run_ceremony() {
     }
 
     let store = open_store(&cfg).await;
-    let journal = Arc::new(open_journal(&cfg));
 
     let root_token = open_root_key(&cfg);
     let root_signer: Arc<dyn SigningToken + Send + Sync> =
@@ -308,7 +360,7 @@ async fn run_ceremony() {
     let issuing_signer: Arc<dyn SigningToken + Send + Sync> =
         Arc::new(oe_hsm::SyncToken::new(issuing_token));
 
-    let recorder: Arc<dyn oe_ca_core::Recorder> = Arc::new(AuditRecorder(journal));
+    let recorder: Arc<dyn oe_ca_core::Recorder> = Arc::new(open_recorder(&cfg));
     let h = oe_ca_core::ceremony::run_ceremony(oe_ca_core::ceremony::CeremonyOptions {
         root_signer,
         issuing_signer,
@@ -500,12 +552,12 @@ async fn run_serve() {
     let cfg = Config::load().unwrap_or_else(|e| die("configuration invalide", &e));
 
     let store: Arc<dyn oe_castore::Store> = Arc::new(open_store(&cfg).await);
-    let journal = Arc::new(open_journal(&cfg));
-    let recorder: Arc<dyn oe_ca_core::Recorder> = Arc::new(AuditRecorder(journal.clone()));
+    let audit = open_recorder(&cfg);
+    let recorder: Arc<dyn oe_ca_core::Recorder> = Arc::new(audit.clone());
 
     let issuer = Arc::new(build_issuer(&cfg, store.clone(), recorder).await);
 
-    let flow_recorder: Arc<dyn oe_raflow::Recorder> = Arc::new(AuditRecorder(journal.clone()));
+    let flow_recorder: Arc<dyn oe_raflow::Recorder> = Arc::new(audit.clone());
     let internal_service = if cfg.internal_listen.is_empty() {
         None
     } else {
@@ -525,29 +577,17 @@ async fn run_serve() {
     let internal_store = store.clone();
     let flow = build_flow(&cfg, store.clone(), issuer.clone(), flow_recorder);
 
-    let _ = journal.append(
-        oe_audit::EVENT_OPENED,
-        Some(oe_audit::Data::from_iter([
-            (
-                "version".to_string(),
-                serde_json::Value::String(env!("CARGO_PKG_VERSION").to_string()),
-            ),
-            (
-                "role".to_string(),
-                serde_json::Value::String("ca-server".to_string()),
-            ),
-            (
-                "emettrice".to_string(),
-                serde_json::Value::String(
-                    issuer.certificate().tbs_certificate().subject().to_string(),
-                ),
-            ),
-            (
-                "public_url".to_string(),
-                serde_json::Value::String(cfg.public_url.clone()),
-            ),
-        ])),
-    );
+    let _ = audit
+        .append_and_replicate(
+            oe_audit::EVENT_OPENED,
+            serde_json::json!({
+                "version": env!("CARGO_PKG_VERSION"),
+                "role": "ca-server",
+                "emettrice": issuer.certificate().tbs_certificate().subject().to_string(),
+                "public_url": cfg.public_url.clone(),
+            }),
+        )
+        .await;
 
     let mut server = http::Server::new(issuer.clone(), flow, env!("CARGO_PKG_VERSION").to_string());
     if let Some((_, guard, _)) = &internal_service {
@@ -680,8 +720,7 @@ async fn run_decide(
     tracing_subscriber::fmt::init();
     let cfg = Config::load_without_hsm().unwrap_or_else(|e| die("configuration invalide", &e));
     let store: Arc<dyn oe_castore::Store> = Arc::new(open_store(&cfg).await);
-    let journal = Arc::new(open_journal(&cfg));
-    let recorder: Arc<dyn oe_raflow::Recorder> = Arc::new(AuditRecorder(journal));
+    let recorder: Arc<dyn oe_raflow::Recorder> = Arc::new(open_recorder(&cfg));
     let decider = oe_raflow::Decider::new(oe_raflow::DeciderOptions {
         store,
         recorder: Some(recorder),
@@ -705,8 +744,7 @@ async fn run_revoke(serial_hex: String, reason: i32, operator: String, comment: 
         .unwrap_or_else(|e| die("numéro de série illisible", e));
 
     let store: Arc<dyn oe_castore::Store> = Arc::new(open_store(&cfg).await);
-    let journal = Arc::new(open_journal(&cfg));
-    let recorder: Arc<dyn oe_ca_core::Recorder> = Arc::new(AuditRecorder(journal));
+    let recorder: Arc<dyn oe_ca_core::Recorder> = Arc::new(open_recorder(&cfg));
     let issuer = build_issuer(&cfg, store, recorder).await;
 
     let comment = join_comment(&comment);
@@ -736,8 +774,7 @@ async fn run_operators_bootstrap_admin(name: String, ttl_minutes: i64) {
     let registry = oe_actions::Registry::connect(&cfg.dsn)
         .await
         .unwrap_or_else(|e| die("ouverture du registre des opérateurs", e));
-    let journal = Arc::new(open_journal(&cfg));
-    let recorder = AuditRecorder(journal);
+    let recorder = open_recorder(&cfg);
 
     let invite = oe_actions::bootstrap_admin(
         &registry,
@@ -784,16 +821,9 @@ async fn run_internal_cert_server(dns: String) {
         .unwrap_or_else(|e| die("demande de certificat", e));
 
     let store: Arc<dyn oe_castore::Store> = Arc::new(open_store(&cfg).await);
-    let journal = Arc::new(open_journal(&cfg));
-    let issuer = Arc::new(
-        build_issuer(
-            &cfg,
-            store.clone(),
-            Arc::new(AuditRecorder(journal.clone())),
-        )
-        .await,
-    );
-    let flow = build_flow(&cfg, store, issuer, Arc::new(AuditRecorder(journal)));
+    let audit = open_recorder(&cfg);
+    let issuer = Arc::new(build_issuer(&cfg, store.clone(), Arc::new(audit.clone())).await);
+    let flow = build_flow(&cfg, store, issuer, Arc::new(audit));
     let result = flow
         .submit(
             &csr_der,
@@ -855,7 +885,7 @@ async fn run_operators_reconcile(
         std::process::exit(2);
     });
     // Les résolutions s'écrivent dans le même journal que celui qu'on a relu.
-    let recorder = AuditRecorder(Arc::new(open_journal(&cfg)));
+    let recorder = open_recorder(&cfg);
 
     let outcome = oe_actions::reconcile(
         &registry,
@@ -1001,8 +1031,7 @@ async fn run_operators_recover_admin(
     let registry = oe_actions::Registry::connect(&cfg.dsn)
         .await
         .unwrap_or_else(|e| die("ouverture du registre des opérateurs", e));
-    let journal = Arc::new(open_journal(&cfg));
-    let recorder = AuditRecorder(journal);
+    let recorder = open_recorder(&cfg);
 
     if let Err(e) = verify_token_pin(&cfg, &pin) {
         // Un refus est aussi un événement : quelqu'un a essayé. Best-effort :

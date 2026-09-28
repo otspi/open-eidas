@@ -318,6 +318,7 @@ dependencies = [
  "oe-enroll",
  "oe-hsm",
  "oe-raflow",
+ "oe-s3",
  "oe-webauthn",
  "rand 0.8.8",
  "reqwest",

@@ -18,6 +18,9 @@ path = "src/main.rs"
 oe-hsm = { path = "../../crates/oe-hsm" }
 oe-certs = { path = "../../crates/oe-certs" }
 oe-castore = { path = "../../crates/oe-castore", features = ["postgres"] }
+# Copie du journal sur un stockage objet compatible S3, auto-hébergé
+# (docs/WEBUI.md §7, §15 étape 2b) : jamais AWS, décision de l'association.
+oe-s3 = { path = "../../crates/oe-s3" }
 oe-ca-core = { path = "../../crates/oe-ca-core" }
 oe-raflow = { path = "../../crates/oe-raflow" }
 oe-actions = { path = "../../crates/oe-actions" }

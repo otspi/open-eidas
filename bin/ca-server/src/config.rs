@@ -49,6 +49,12 @@ pub struct Config {
     pub crl_grace: time::Duration,
 
     pub audit_file: String,
+    /// Copie du journal sur un stockage objet compatible S3, auto-hébergé
+    /// (docs/WEBUI.md §7, §15 étape 2b) : `None` si non configuré, le journal
+    /// reste alors purement local — rétrocompatible, aucune commande n'exige
+    /// S3. Configuré, un échec de l'envoi bloque l'écriture qui en dépend
+    /// (`oe_ca_core::Recorder`/`oe_raflow::Recorder` sont bloquants).
+    pub s3: Option<S3Config>,
 
     /// Adresse du lien interne (`/internal/v1/*`, docs/WEBUI.md §17). Vide :
     /// pas de lien interne, `ca-server` ne sert que le port public.
@@ -65,6 +71,46 @@ pub struct Config {
     pub internal_tls_key_file: String,
     /// Fréquence du contrôle du registre contre le journal (docs/WEBUI.md §21).
     pub registry_check_interval: Duration,
+}
+
+/// Stockage objet compatible S3, auto-hébergé (MinIO, Garage, Ceph… jamais
+/// AWS ni un service géré, décision de l'association — voir `oe-s3`).
+pub struct S3Config {
+    pub endpoint: String,
+    pub bucket: String,
+    pub region: String,
+    pub access_key: String,
+    pub secret_key: String,
+    /// Clé de l'objet qui reçoit le journal entier à chaque écriture (S3 ne
+    /// connaît pas d'ajout partiel), par ex. `ca-server/audit.log`.
+    pub key: String,
+}
+
+/// `None` si aucune des variables `OPENEIDAS_S3_*` n'est renseignée (le
+/// journal reste purement local) ; sinon, toutes sont exigées ensemble — une
+/// configuration à moitié faite est plus dangereuse qu'absente.
+fn s3_config() -> Result<Option<S3Config>, String> {
+    let endpoint = env_str("OPENEIDAS_S3_ENDPOINT", "");
+    if endpoint.is_empty() {
+        return Ok(None);
+    }
+    let required = |key: &str| -> Result<String, String> {
+        let v = env_str(key, "");
+        if v.is_empty() {
+            return Err(format!(
+                "{key} est obligatoire dès qu'OPENEIDAS_S3_ENDPOINT est configuré"
+            ));
+        }
+        Ok(v)
+    };
+    Ok(Some(S3Config {
+        endpoint,
+        bucket: required("OPENEIDAS_S3_BUCKET")?,
+        region: env_str("OPENEIDAS_S3_REGION", "us-east-1"),
+        access_key: required("OPENEIDAS_S3_ACCESS_KEY")?,
+        secret_key: required("OPENEIDAS_S3_SECRET_KEY")?,
+        key: env_str("OPENEIDAS_S3_KEY", "ca-server/audit.log"),
+    }))
 }
 
 fn env_str(key: &str, fallback: &str) -> String {
@@ -245,6 +291,7 @@ impl Config {
                 "OPENEIDAS_AUDIT_FILE",
                 "/var/lib/open-eidas/state/ca-audit.log",
             ),
+            s3: s3_config()?,
             internal_listen: env_str("OPENEIDAS_INTERNAL_LISTEN", ""),
             webauthn_rp_id: env_str("OPENEIDAS_WEBAUTHN_RP_ID", ""),
             webauthn_origin: env_str("OPENEIDAS_WEBAUTHN_ORIGIN", ""),
