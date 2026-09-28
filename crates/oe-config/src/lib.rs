@@ -33,6 +33,8 @@ pub enum ConfigError {
     KeyBitsTooSmall(i64),
     #[error("OID invalide: {0:?}")]
     InvalidOid(String),
+    #[error("OPENEIDAS_POLICY_OID={0:?} appartient à l'arc de test : refusé quand OPENEIDAS_PRODUCTION est activé")]
+    TestPolicyOidInProduction(String),
     #[error("algorithme de signature non supporté: {0:?} (sha256, sha384 ou sha512)")]
     UnsupportedDigest(String),
     #[error("OPENEIDAS_PIN est obligatoire (code PIN du token PKCS#11)")]
@@ -69,6 +71,8 @@ pub struct Config {
     pub audit_replica_timeout: Duration,
 
     pub policy_oid: ObjectIdentifier,
+    /// Mode production : refuse de démarrer avec un OID de politique de test.
+    pub production: bool,
     pub accuracy: Duration,
     pub signing_digest: SigningDigest,
 
@@ -110,6 +114,14 @@ impl Config {
             return Err(ConfigError::KeyBitsTooSmall(key_bits));
         }
 
+        let policy_oid = parse_oid(&env_str("OPENEIDAS_POLICY_OID", "1.3.6.1.4.1.99999.1.1.1"))?;
+        let production = env_bool("OPENEIDAS_PRODUCTION", false)?;
+        if production && is_test_oid(&policy_oid) {
+            return Err(ConfigError::TestPolicyOidInProduction(oid_to_string(
+                &policy_oid,
+            )));
+        }
+
         Ok(Config {
             listen: env_str("OPENEIDAS_LISTEN", ":8318"),
             shutdown_timeout: Duration::from_secs(15),
@@ -148,7 +160,8 @@ impl Config {
                 Duration::from_secs(30),
             )?,
 
-            policy_oid: parse_oid(&env_str("OPENEIDAS_POLICY_OID", "1.3.6.1.4.1.99999.1.1.1"))?,
+            policy_oid,
+            production,
             accuracy: env_duration("OPENEIDAS_ACCURACY", Duration::from_secs(1))?,
             signing_digest: parse_digest(&env_str("OPENEIDAS_SIGNING_DIGEST", "sha256"))?,
 
@@ -187,6 +200,27 @@ fn split_list(s: &str) -> Vec<String> {
         .filter(|item| !item.is_empty())
         .map(str::to_string)
         .collect()
+}
+
+/// Préfixe des numéros d'entreprise privés : `1.3.6.1.4.1.<PEN>`.
+const PEN_PREFIX: [u64; 6] = [1, 3, 6, 1, 4, 1];
+/// Numéro d'entreprise historiquement utilisé pour le banc d'essai, non attribué à OTSPI.
+const LEGACY_TEST_PEN: u64 = 99999;
+/// Sous-arc réservé au test et au staging sous le numéro d'entreprise d'OTSPI
+/// (`<PEN>.9`, voir docs/cadrage/oid-arc.md du dépôt de gouvernance).
+const TEST_SUB_ARC: u64 = 9;
+
+/// Indique si l'OID appartient à un arc de test : l'ancien numéro d'essai `99999`, ou le
+/// sous-arc `9` de tout numéro d'entreprise.
+pub fn is_test_oid(oid: &[u64]) -> bool {
+    if oid.len() < 8 || oid[..6] != PEN_PREFIX {
+        return false;
+    }
+    oid[6] == LEGACY_TEST_PEN || oid[7] == TEST_SUB_ARC
+}
+
+fn oid_to_string(oid: &[u64]) -> String {
+    oid.iter().map(u64::to_string).collect::<Vec<_>>().join(".")
 }
 
 fn parse_oid(s: &str) -> Result<ObjectIdentifier, ConfigError> {
@@ -346,6 +380,38 @@ mod tests {
         assert_eq!(cfg.accuracy, Duration::from_secs(1));
         assert_eq!(cfg.time_max_offset, Duration::from_millis(500));
         assert_eq!(cfg.cors_allowed_origin, None);
+        clear_env();
+    }
+
+    #[test]
+    fn test_oid_detection() {
+        assert!(is_test_oid(&[1, 3, 6, 1, 4, 1, 99999, 1, 1, 1]));
+        assert!(is_test_oid(&[1, 3, 6, 1, 4, 1, 12345, 9, 1, 1, 1]));
+        assert!(!is_test_oid(&[1, 3, 6, 1, 4, 1, 12345, 1, 1, 1]));
+        assert!(!is_test_oid(&[0, 4, 0, 2023, 1, 1]));
+        assert!(!is_test_oid(&[1, 3, 6, 1, 4, 1]));
+    }
+
+    #[test]
+    #[serial]
+    fn load_refuses_test_oid_in_production() {
+        clear_env();
+        env::set_var("OPENEIDAS_PIN", "1234");
+        env::set_var("OPENEIDAS_PRODUCTION", "true");
+        let err = Config::load().unwrap_err();
+        assert!(matches!(err, ConfigError::TestPolicyOidInProduction(_)));
+        clear_env();
+    }
+
+    #[test]
+    #[serial]
+    fn load_accepts_production_oid_in_production() {
+        clear_env();
+        env::set_var("OPENEIDAS_PIN", "1234");
+        env::set_var("OPENEIDAS_PRODUCTION", "true");
+        env::set_var("OPENEIDAS_POLICY_OID", "1.3.6.1.4.1.12345.1.1.1");
+        let cfg = Config::load().unwrap();
+        assert!(cfg.production);
         clear_env();
     }
 
