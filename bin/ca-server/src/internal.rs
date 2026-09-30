@@ -46,6 +46,11 @@ struct ExecuteRequest {
     /// Sortie brute de `navigator.credentials.get`. Aucun corps d'action :
     /// c'est celui figé à l'émission du challenge qui s'exécute.
     assertion: PublicKeyCredential,
+    /// Ce que l'appelant croit faire exécuter (type et cible), comparé au corps
+    /// figé avant toute vérification : ne peut que faire refuser, jamais changer
+    /// ce qui s'exécute.
+    #[serde(default)]
+    expect: Option<oe_actions::Expect>,
 }
 
 #[derive(Deserialize)]
@@ -101,6 +106,7 @@ fn failure(e: Error) -> Response {
         Error::Verification(_) => (StatusCode::UNAUTHORIZED, "signature_rejected"),
         Error::Journal(_) => (StatusCode::SERVICE_UNAVAILABLE, "journal_unavailable"),
         Error::Blocked(_) => (StatusCode::SERVICE_UNAVAILABLE, "registry_blocked"),
+        Error::Mismatch(_) => (StatusCode::CONFLICT, "action_mismatch"),
         Error::Db(_) | Error::Effect(_) => {
             tracing::error!(erreur = %e, "action interne en échec");
             return error(
@@ -160,7 +166,15 @@ async fn handle_actions(State(service): State<Arc<Service>>, body: Bytes) -> Res
         Ok(r) => r,
         Err(e) => return bad_json(e),
     };
-    match service.execute(req.challenge_id, &req.assertion).await {
+    let done = match &req.expect {
+        Some(expect) => {
+            service
+                .execute_expecting(req.challenge_id, &req.assertion, expect)
+                .await
+        }
+        None => service.execute(req.challenge_id, &req.assertion).await,
+    };
+    match done {
         // L'identité vient du registre de `ca-server`, jamais de l'appelant.
         Ok(done) => Json(serde_json::json!({
             "action_id": done.action_id,
