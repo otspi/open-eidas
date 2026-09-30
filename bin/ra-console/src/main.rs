@@ -128,6 +128,7 @@ async fn run_serve() {
             login,
             sessions,
             journal,
+            s3: cfg.s3.clone(),
         }),
         console,
     );

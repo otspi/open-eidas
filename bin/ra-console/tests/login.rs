@@ -115,6 +115,7 @@ impl Env {
             link,
             login,
             journal: Arc::new(ra_console::audit::NullRecorder),
+            s3: None,
         }));
         Some(Env {
             console,

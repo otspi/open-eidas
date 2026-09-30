@@ -50,6 +50,7 @@ async fn healthz_needs_both_the_database_and_the_link() {
         login: common::login_service(pool.clone()),
         sessions: common::sessions(pool.clone()),
         journal: Arc::new(ra_console::audit::NullRecorder),
+        s3: None,
     }));
     let (status, body) = get(&app).await;
     assert_eq!(status, axum::http::StatusCode::OK, "{body}");
@@ -69,6 +70,7 @@ async fn healthz_needs_both_the_database_and_the_link() {
         login: common::login_service(pool.clone()),
         sessions: common::sessions(pool),
         journal: Arc::new(ra_console::audit::NullRecorder),
+        s3: None,
     }));
     let (status, body) = get(&app).await;
     assert_eq!(

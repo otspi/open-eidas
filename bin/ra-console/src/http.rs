@@ -15,7 +15,9 @@ use serde::Deserialize;
 use sqlx::PgPool;
 
 use crate::audit::{self, Recorder};
+use crate::audit_search;
 use crate::ca_link::{CaLink, Relayed};
+use crate::config::S3Config;
 use crate::login::{LoginError, LoginService};
 use crate::session::{Authenticated, SessionError, Sessions, COOKIE_NAME, SESSION_TTL};
 use crate::{certificates, operators, quorum, requests};
@@ -29,6 +31,9 @@ pub struct AppState {
     pub login: LoginService,
     pub sessions: Sessions,
     pub journal: Arc<dyn Recorder>,
+    /// `None` si non configuré : `/api/v1/audit/search` (étape 2b-D) refuse
+    /// alors plutôt que de ne vérifier qu'une moitié des deux journaux.
+    pub s3: Option<S3Config>,
 }
 
 /// L'application complète servie par `ra-console` : l'API ([`router`]), le
@@ -65,6 +70,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/v1/quorum", get(handle_quorum))
         .route("/api/v1/quorum/{action_id}/sign", post(handle_quorum_sign))
         .merge(crate::registry_routes::routes())
+        .route("/api/v1/audit/search", get(handle_audit_search))
         .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
         .with_state(state)
 }
@@ -890,6 +896,84 @@ async fn handle_certificates(
         Ok(list) => Json(list).into_response(),
         Err(e) => {
             tracing::error!(erreur = %e, "certificates : base indisponible");
+            error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "unavailable",
+                "service indisponible",
+            )
+        }
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AuditSearchQuery {
+    serial: Option<String>,
+    from: Option<String>,
+    to: Option<String>,
+}
+
+/// `Response` est volontairement l'`Err` (`clippy::result_large_err`) : c'est
+/// justement la réponse 400 à renvoyer telle quelle à l'appelant, la boxer
+/// n'apporterait rien ici (même raison que `authenticate`, ci-dessus).
+#[allow(clippy::result_large_err)]
+fn parse_date(raw: &Option<String>, field: &str) -> Result<Option<time::OffsetDateTime>, Response> {
+    match raw {
+        None => Ok(None),
+        Some(v) => time::OffsetDateTime::parse(v, &time::format_description::well_known::Rfc3339)
+            .map(Some)
+            .map_err(|_| {
+                error(
+                    StatusCode::BAD_REQUEST,
+                    "bad_request",
+                    &format!("{field} : date RFC 3339 attendue"),
+                )
+            }),
+    }
+}
+
+/// `GET /api/v1/audit/search?serial=&from=&to=` (docs/WEBUI.md §7, §15 étape
+/// 2b-D) : relit et vérifie les deux journaux chaînés (`ca-server`,
+/// `ra-console`) depuis S3. Même rôle minimal documenté qu'ailleurs
+/// (`auditeur`), même affichage seulement (§3) : toute session authentifiée
+/// suffit, la route ne modifie jamais rien.
+///
+/// Sans S3 configuré, `ra-console` n'a aucun moyen d'atteindre le journal de
+/// `ca-server` : la route refuse plutôt que de ne vérifier qu'une moitié des
+/// deux chaînes (décision explicite, cohérente avec « chain_verified: false
+/// doit bloquer l'affichage », §7).
+async fn handle_audit_search(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(q): Query<AuditSearchQuery>,
+) -> Response {
+    if let Err(resp) = authenticate(&state, &headers).await {
+        return resp;
+    }
+    let Some(s3) = &state.s3 else {
+        return error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "unavailable",
+            "stockage S3 non configuré : audit/search ne peut vérifier les deux journaux sans lui",
+        );
+    };
+    let from = match parse_date(&q.from, "from") {
+        Ok(v) => v,
+        Err(resp) => return resp,
+    };
+    let to = match parse_date(&q.to, "to") {
+        Ok(v) => v,
+        Err(resp) => return resp,
+    };
+    let query = audit_search::Query {
+        serial: q.serial,
+        from,
+        to,
+    };
+    match audit_search::search(s3, &query).await {
+        Ok(report) => Json(report).into_response(),
+        Err(e) => {
+            tracing::error!(erreur = %e, "audit/search : stockage S3 indisponible");
             error(
                 StatusCode::SERVICE_UNAVAILABLE,
                 "unavailable",

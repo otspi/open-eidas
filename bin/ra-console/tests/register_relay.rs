@@ -113,6 +113,7 @@ impl Env {
             login: common::login_service(pool.clone()),
             sessions: common::sessions(pool),
             journal: Arc::new(ra_console::audit::NullRecorder),
+            s3: None,
         }));
 
         Some(Env {
@@ -355,6 +356,7 @@ async fn an_unreachable_ca_server_gives_a_generic_bad_gateway() {
         login: common::login_service(pool.clone()),
         sessions: common::sessions(pool),
         journal: Arc::new(ra_console::audit::NullRecorder),
+        s3: None,
     }));
 
     let res = console
