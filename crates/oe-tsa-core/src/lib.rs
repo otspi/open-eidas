@@ -13,7 +13,7 @@
 
 use std::sync::Arc;
 
-use der::asn1::{GeneralizedTime, Int, ObjectIdentifier};
+use der::asn1::{Int, ObjectIdentifier};
 use der::{Decode, Encode};
 use sha2::{Digest, Sha256, Sha384, Sha512};
 use spki::AlgorithmIdentifierOwned;
@@ -329,14 +329,22 @@ impl Authority {
                 hashed_message: req.message_imprint.hashed_message.clone(),
             },
             serial_number: Int::new(&serial)?,
-            gen_time: GeneralizedTime::from_date_time(der::DateTime::new(
-                gen_time.year() as u16,
-                gen_time.month() as u8,
-                gen_time.day(),
-                gen_time.hour(),
-                gen_time.minute(),
-                gen_time.second(),
-            )?),
+            // `GenTime::encode` — pas `der::asn1::GeneralizedTime`, qui suit le
+            // profil RFC 5280 et interdit les fractions de seconde (constat
+            // T-1 de l'audit du 2026-09-25 : EN 319 422 §5.2.2 exige au
+            // contraire la précision nécessaire à l'exactitude déclarée).
+            gen_time: oe_rfc3161_asn1::gen_time::encode(
+                &oe_rfc3161_asn1::gen_time::Parts {
+                    year: gen_time.year() as u16,
+                    month: gen_time.month() as u8,
+                    day: gen_time.day(),
+                    hour: gen_time.hour(),
+                    minute: gen_time.minute(),
+                    second: gen_time.second(),
+                    nanosecond: gen_time.nanosecond(),
+                },
+                GEN_TIME_FRACTION_DIGITS,
+            )?,
             accuracy: build_accuracy(self.opts.accuracy)?,
             ordering: false,
             nonce: req.nonce.clone(),
@@ -432,6 +440,13 @@ fn minimal_positive_integer(bytes: &[u8; 20]) -> Vec<u8> {
     out.extend_from_slice(significant);
     out
 }
+
+/// Précision de `genTime` (constat T-1 de l'audit du 2026-09-25, EN 319 422
+/// §5.2.2) : la milliseconde, minimum recommandé par l'audit — largement
+/// suffisant face à l'exactitude annoncée d'1 s (`OPENEIDAS_ACCURACY`), et
+/// à la dérive tolérée (`OPENEIDAS_TIME_MAX_OFFSET`), toutes deux vérifiées
+/// à la configuration (`oe_config::Config::load`, `accuracy_covers_drift`).
+const GEN_TIME_FRACTION_DIGITS: u8 = 3;
 
 /// Convertit une durée en `Accuracy` (secondes/millis/micros), en reproduisant
 /// la troncature successive de `populateTSTInfo` (Go).
@@ -563,6 +578,18 @@ mod tests {
         }
     }
 
+    /// Constat T-1 de l'audit du 2026-09-25 : une horloge à précision
+    /// sub-seconde connue, pour prouver que `genTime` porte bien la
+    /// fraction (pas seulement que le service continue de fonctionner).
+    struct FractionalClock;
+    impl Clock for FractionalClock {
+        fn now(&self) -> Result<time::OffsetDateTime, String> {
+            time::OffsetDateTime::now_utc()
+                .replace_nanosecond(123_456_789)
+                .map_err(|e| e.to_string())
+        }
+    }
+
     struct BrokenClock;
     impl Clock for BrokenClock {
         fn now(&self) -> Result<time::OffsetDateTime, String> {
@@ -653,6 +680,28 @@ mod tests {
             2,
             "deux jetons doivent produire deux séries distinctes au journal"
         );
+    }
+
+    /// Constat T-1 de l'audit du 2026-09-25 (EN 319 422 §5.2.2) : `genTime`
+    /// doit porter la fraction de seconde nécessaire à l'exactitude
+    /// déclarée, pas être tronqué à la seconde.
+    #[test]
+    fn gen_time_carries_the_sub_second_fraction() {
+        let authority = new_test_authority(Arc::new(FractionalClock));
+        let req_der = read_corpus_request("granted-sha256-with-cert");
+        let req = TimeStampReq::from_der(&req_der).unwrap();
+        let gen_time = FractionalClock.now().unwrap();
+
+        let tst_info = authority.build_tst_info(&req, gen_time).unwrap();
+
+        let raw = std::str::from_utf8(tst_info.gen_time.value()).unwrap();
+        assert!(
+            raw.contains('.'),
+            "genTime ne porte aucune fraction : {raw:?}"
+        );
+        assert!(raw.ends_with('Z'));
+        // 123_456_789 ns tronqué à 3 chiffres (millisecondes, GEN_TIME_FRACTION_DIGITS).
+        assert!(raw.ends_with(".123Z"), "{raw:?}");
     }
 
     fn read_corpus_request(case: &str) -> Vec<u8> {

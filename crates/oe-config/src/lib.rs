@@ -31,6 +31,19 @@ pub enum ConfigError {
     InvalidBool { key: &'static str, value: String },
     #[error("OPENEIDAS_KEY_BITS={0}: ETSI TS 119 312 impose au moins 3072 bits pour RSA")]
     KeyBitsTooSmall(i64),
+    /// Constat T-1 de l'audit du 2026-09-25 (EN 319 421 `TIS-7.7.1-05/-06`,
+    /// `TIS-7.7.2-03`) : sans cette garde, l'écart entre `genTime` et l'UTC
+    /// peut dépasser l'exactitude annoncée sans que rien ne le détecte.
+    #[error(
+        "OPENEIDAS_ACCURACY={accuracy:?} trop serrée face à OPENEIDAS_TIME_MAX_OFFSET={max_offset:?} \
+         (résolution de genTime {resolution:?}) : l'exactitude annoncée doit couvrir au moins \
+         la dérive tolérée plus la résolution du jeton (EN 319 421 TIS-7.7.1-05/-06, TIS-7.7.2-03)"
+    )]
+    AccuracyTooTight {
+        accuracy: Duration,
+        max_offset: Duration,
+        resolution: Duration,
+    },
     #[error("OID invalide: {0:?}")]
     InvalidOid(String),
     #[error("OPENEIDAS_POLICY_OID={0:?} appartient à l'arc de test : refusé quand OPENEIDAS_PRODUCTION est activé")]
@@ -122,6 +135,23 @@ impl Config {
             )));
         }
 
+        let accuracy = env_duration("OPENEIDAS_ACCURACY", Duration::from_secs(1))?;
+        let time_max_offset =
+            env_duration("OPENEIDAS_TIME_MAX_OFFSET", Duration::from_millis(500))?;
+        // Résolution de `genTime` (millisecondes, voir
+        // `oe_tsa_core::GEN_TIME_FRACTION_DIGITS`) : l'exactitude annoncée ne
+        // veut rien dire si elle est plus fine que ce que le jeton peut même
+        // exprimer, ni si la dérive tolérée peut à elle seule la dépasser
+        // (constat T-1 de l'audit du 2026-09-25).
+        let gen_time_resolution = Duration::from_millis(1);
+        if accuracy < time_max_offset + gen_time_resolution {
+            return Err(ConfigError::AccuracyTooTight {
+                accuracy,
+                max_offset: time_max_offset,
+                resolution: gen_time_resolution,
+            });
+        }
+
         Ok(Config {
             listen: env_str("OPENEIDAS_LISTEN", ":8318"),
             shutdown_timeout: Duration::from_secs(15),
@@ -162,7 +192,7 @@ impl Config {
 
             policy_oid,
             production,
-            accuracy: env_duration("OPENEIDAS_ACCURACY", Duration::from_secs(1))?,
+            accuracy,
             signing_digest: parse_digest(&env_str("OPENEIDAS_SIGNING_DIGEST", "sha256"))?,
 
             time_policy: env_str("OPENEIDAS_TIME_POLICY", "enforce").parse()?,
@@ -171,7 +201,7 @@ impl Config {
                 "ntp.obspm.fr,ptbtime1.ptb.de",
             )),
             time_min_sources: env_int("OPENEIDAS_TIME_MIN_SOURCES", 2)?,
-            time_max_offset: env_duration("OPENEIDAS_TIME_MAX_OFFSET", Duration::from_millis(500))?,
+            time_max_offset,
             time_max_age: env_duration("OPENEIDAS_TIME_MAX_AGE", Duration::from_secs(3600))?,
             time_poll: env_duration("OPENEIDAS_TIME_POLL", Duration::from_secs(300))?,
             time_timeout: env_duration("OPENEIDAS_TIME_TIMEOUT", Duration::from_secs(5))?,
@@ -363,6 +393,22 @@ mod tests {
         env::set_var("OPENEIDAS_KEY_BITS", "2048");
         let err = Config::load().unwrap_err();
         assert!(matches!(err, ConfigError::KeyBitsTooSmall(2048)));
+        clear_env();
+    }
+
+    /// Constat T-1 de l'audit du 2026-09-25 : une exactitude annoncée plus
+    /// serrée que la dérive tolérée (plus la résolution de `genTime`) ne
+    /// veut rien dire — le démarrage doit refuser, pas laisser passer une
+    /// annonce que le service ne peut pas tenir.
+    #[test]
+    #[serial]
+    fn load_fails_when_accuracy_does_not_cover_the_tolerated_drift() {
+        clear_env();
+        env::set_var("OPENEIDAS_PIN", "1234");
+        env::set_var("OPENEIDAS_ACCURACY", "500ms");
+        env::set_var("OPENEIDAS_TIME_MAX_OFFSET", "500ms");
+        let err = Config::load().unwrap_err();
+        assert!(matches!(err, ConfigError::AccuracyTooTight { .. }), "{err}");
         clear_env();
     }
 

@@ -14,11 +14,12 @@
 //!
 //! Grammaire de référence : RFC 3161 §2.4.1-2.4.2.
 
-use der::asn1::{BitString, GeneralizedTime, Int, ObjectIdentifier, OctetString};
+use der::asn1::{BitString, Int, ObjectIdentifier, OctetString};
 use der::{Any, Sequence, ValueOrd};
 use spki::AlgorithmIdentifierOwned;
 use x509_cert::ext::Extensions;
 
+pub mod gen_time;
 pub mod token;
 
 /// `MessageImprint ::= SEQUENCE { hashAlgorithm AlgorithmIdentifier, hashedMessage OCTET STRING }`
@@ -98,7 +99,13 @@ pub struct TstInfo {
     pub policy: ObjectIdentifier,
     pub message_imprint: MessageImprint,
     pub serial_number: Int,
-    pub gen_time: GeneralizedTime,
+    /// `Any`, pas `der::asn1::GeneralizedTime` : ce dernier suit le profil
+    /// RFC 5280 (certificats), qui **interdit** les fractions de seconde —
+    /// RFC 3161 ne reprend pas cette restriction pour `TSTInfo.genTime`, et
+    /// EN 319 422 §5.2.2 exige justement la fraction nécessaire à
+    /// l'exactitude déclarée (constat T-1 de l'audit du 2026-09-25). Voir
+    /// [`gen_time`].
+    pub gen_time: Any,
     #[asn1(optional = "true")]
     pub accuracy: Option<Accuracy>,
     #[asn1(default = "bool_false")]
