@@ -140,7 +140,7 @@ kubectl -n open-eidas exec deploy/open-eidas-ca -c ca -- \
 
 `ca-server` peut exposer, sur un **second port** (`ca.service.internalPort`,
 8321), les routes `/internal/v1/*` par lesquelles la console d'exploitation
-(`ra-console`, pas encore déployable) fait exécuter des actions signées par des
+(`ra-console`, section suivante) fait exécuter des actions signées par des
 opérateurs ([docs/WEBUI.md](../../../docs/WEBUI.md) §16-17). Désactivé par
 défaut : un port qui accepte des actions privilégiées ne s'ouvre que sur
 décision explicite.
@@ -185,6 +185,61 @@ et n'est lu qu'au démarrage : le renouveler demande de supprimer `server.pem`
 puis de redémarrer le pod. Le certificat **client** de `ra-console` se demande
 côté `ra-console`, jamais approuvé par elle-même.
 
+## Console d'exploitation `ra-console` (optionnelle)
+
+La console RA/CA ([docs/RA-CONSOLE.md](../../../docs/RA-CONSOLE.md)) : connexion
+des opérateurs par clé FIDO2, décisions d'enrôlement et révocations signées,
+relayées à `ca-server` par le lien interne. **Désactivée par défaut** ; elle exige
+le lien interne ci-dessus, dont elle **réutilise** la configuration WebAuthn et la
+liste blanche de modèles (une seule Relying Party). Le rendu **échoue** si
+`raConsole.enabled` est posé sans `ca.internal.enabled`.
+
+```yaml
+ca:
+  internal:
+    enabled: true
+    webauthn: { rpId: console.open-eidas.example, origin: https://console.open-eidas.example }
+    models: [...]
+raConsole:
+  enabled: true
+  gateway:              # Gateway INTERNE : jamais une Gateway publique
+    enabled: true
+    name: internal-gateway
+    namespace: ingress
+    host: console.open-eidas.example   # = l'hôte de ca.internal.webauthn.origin
+```
+
+Ce que ça ajoute :
+
+- un `Deployment` (une instance, volume d'état `ReadWriteOnce` : clé et certificat
+  client, certificat de la CA, journal d'audit de la console), son `Service` et, si
+  `raConsole.gateway.enabled`, une `HTTPRoute` ;
+- une `NetworkPolicy` : en entrée, le seul namespace de la Gateway ; en sortie, le
+  DNS, PostgreSQL et la CA (API publique et port interne). Sans Gateway, rien
+  n'entre par le réseau du cluster (`kubectl port-forward` reste possible) ;
+- un **Job** (hook `post-install`/`post-upgrade`) qui applique les droits du rôle
+  PostgreSQL en lecture seule `openeidas_ra_console`
+  (`files/ra_console_grants.sql`, copie vérifiée par la CI de
+  `crates/oe-castore/sql/ra_console_grants.sql`) et lui donne son mot de passe. Un
+  Job plutôt qu'un conteneur d'initialisation de la console : **les identifiants
+  d'administration de la base n'entrent jamais dans le pod de la console**, le
+  composant le plus exposé. Rejoué à chaque mise à jour, il fait arriver les
+  nouveaux droits sans geste manuel. Il attend que `ca-server` ait appliqué ses
+  migrations. Le compte `postgres.user` doit pouvoir créer un rôle (c'est le cas du
+  StatefulSet intégré ; pour une base externe, à vérifier) ;
+- deux clés au Secret généré : `ra-console-db-password` et
+  `ra-console-decoy-secret` (réponses de connexion uniformes). Avec
+  `secrets.existingSecret`, le Secret fourni doit les contenir.
+
+**Premier démarrage.** L'entrypoint (`deploy/ra-console/entrypoint.sh`) récupère
+le certificat de la CA émettrice sur l'API interne de la CA (`/api/v1/ca.pem`, le
+premier certificat fait foi), puis demande le certificat client `internal_client`
+(`ra-console internal-cert`) et **attend son approbation** : le sidecar
+d'approbation la traite en démonstration ; en production, un opérateur nommé
+l'approuve sur la CA (`ca-server ra approve`), comme pour `internal_server`. La
+console n'approuve jamais son propre certificat. Un conteneur d'initialisation
+attend, avec les identifiants **de la console**, que le Job ait créé son rôle.
+
 ## Écarts notables avec le docker-compose
 
 Aucun, désormais, sur le plan des permissions : le remplacement d'OpenXPKI par
@@ -216,6 +271,7 @@ Voir `values.yaml` pour la liste complète. Les plus utiles :
 | `ca.crl.validity` / `ca.crl.refresh` | Fenêtre de validité des CRL et fréquence de republication |
 | `ca.audit.retention` | Durée de conservation du journal (ETSI EN 319 401 §7.10) ; le service refuse de démarrer en deçà d'un an |
 | `ocsp.publicURL` / `ocsp.gateway.enabled` / `ocsp.gateway.host` | Adresse publique gravée dans l'extension AIA du certificat TSU, et son exposition HTTP(S) |
+| `raConsole.enabled`, `raConsole.gateway.*`, `raConsole.networkPolicy.enabled` | Console d'exploitation (voir ci-dessus), désactivée par défaut |
 | `secrets.existingSecret` | Secret existant (ex. scellé via kubeseal) à utiliser à la place de celui généré par le motif `lookup` |
 | `postgres.external.enabled` / `postgres.external.host` / `postgres.external.port` | PostgreSQL externe (ex. CloudNativePG) à la place du StatefulSet intégré |
 | `postgres.persistence.size`, `tsa.persistence.*.size`, `ocsp.persistence.*.size`, `auditReplica.persistence.size` | Tailles des volumes persistants |

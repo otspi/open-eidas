@@ -1,0 +1,57 @@
+{{- if and .Values.raConsole.enabled .Values.raConsole.networkPolicy.enabled -}}
+# La console est le seul composant exposé aux navigateurs, donc le plus
+# probablement compromis un jour (docs/WEBUI.md §16-17) : ce qu'elle peut
+# joindre est borné au strict nécessaire.
+#
+# Entrée : le seul namespace de la Gateway interne (raConsole.gateway). Sans
+# Gateway, personne n'atteint la console par le réseau du cluster ;
+# `kubectl port-forward` reste possible pour l'exploitation.
+# Sortie : DNS, PostgreSQL (rôle en lecture seule), et la CA — son API
+# publique (certificat de la CA, enrôlement du certificat client) et son port
+# interne (actions signées, mTLS).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "open-eidas.fullname" . }}-ra-console
+  labels:
+    {{- include "open-eidas.componentLabels" (dict "context" . "component" "ra-console") | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "open-eidas.componentSelectorLabels" (dict "context" . "component" "ra-console") | nindent 6 }}
+  policyTypes:
+    - Ingress
+    - Egress
+  {{- if .Values.raConsole.gateway.enabled }}
+  ingress:
+    - ports:
+        - port: {{ .Values.raConsole.service.port }}
+      from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.raConsole.gateway.namespace }}
+  {{- else }}
+  ingress: []
+  {{- end }}
+  egress:
+    - ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+    - ports:
+        - port: {{ include "open-eidas.postgresPort" . }}
+      {{- if not .Values.postgres.external.enabled }}
+      to:
+        - podSelector:
+            matchLabels:
+              {{- include "open-eidas.componentSelectorLabels" (dict "context" . "component" "postgres") | nindent 14 }}
+      {{- end }}
+    - ports:
+        - port: {{ .Values.ca.service.port }}
+        - port: {{ .Values.ca.service.internalPort }}
+      to:
+        - podSelector:
+            matchLabels:
+              {{- include "open-eidas.componentSelectorLabels" (dict "context" . "component" "ca") | nindent 14 }}
+{{- end }}

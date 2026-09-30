@@ -1,0 +1,96 @@
+# Surcouche de docker-compose.yml : la console d'exploitation RA/CA
+# (bin/ra-console, docs/RA-CONSOLE.md, docs/WEBUI.md §17). Opt-in, jamais
+# chargée par `make up` ni par la CI : elle exige une liste blanche de modèles
+# de clés FIDO2 (décision O6), qu'aucune valeur par défaut ne peut fournir.
+#
+#   cp mes-modeles.json deploy/ra-console/models.json   # liste blanche, voir docs/CA.md
+#   export OPENEIDAS_DB_PASSWORD=openeidas               # celui de la base déjà amorcée
+#   export OPENEIDAS_RA_DB_PASSWORD="$(openssl rand -hex 24)"
+#   export OPENEIDAS_LOGIN_DECOY_SECRET="$(openssl rand -hex 32)"
+#   docker compose -f docker-compose.yml -f docker-compose.console.yml up -d --build
+#
+# Aucun secret n'a de valeur par défaut dans cette surcouche : la console tient
+# un rôle PostgreSQL et un secret de service qui ne doivent jamais valoir la
+# même chose d'une installation à l'autre.
+#   docker compose exec ca ca-server ra list PENDING    # certificats internal_server/_client
+#   docker compose exec ca ca-server ra approve <transaction> "prenom.nom" "lien interne"
+#
+# Elle ouvre le lien interne de la CA (port 8321, mTLS, jamais publié sur
+# l'hôte), applique les droits du rôle PostgreSQL en lecture seule de la
+# console (service one-shot, identifiants d'administration hors du conteneur
+# de la console), puis sert la console sur http://localhost:8330.
+
+services:
+  ca:
+    environment:
+      OPENEIDAS_INTERNAL_LISTEN: ":8321"
+      OPENEIDAS_INTERNAL_DNS_NAME: ca
+      OPENEIDAS_INTERNAL_TLS_CERT_FILE: /var/lib/open-eidas/state/internal-tls/server.pem
+      OPENEIDAS_INTERNAL_TLS_KEY_FILE: /var/lib/open-eidas/state/internal-tls/server.key
+      OPENEIDAS_WEBAUTHN_RP_ID: ${OPENEIDAS_WEBAUTHN_RP_ID:-localhost}
+      OPENEIDAS_WEBAUTHN_ORIGIN: ${OPENEIDAS_WEBAUTHN_ORIGIN:-http://localhost:8330}
+      OPENEIDAS_WEBAUTHN_RP_NAME: Open eIDAS Console
+      OPENEIDAS_WEBAUTHN_MODELS_FILE: /etc/open-eidas/webauthn/models.json
+    volumes:
+      - ./deploy/ra-console/models.json:/etc/open-eidas/webauthn/models.json:ro
+
+  # Droits du rôle openeidas_ra_console (crates/oe-castore/sql/ra_console_grants.sql),
+  # une fois les migrations de ca-server appliquées. Idempotent.
+  ra-console-grants:
+    image: postgres:17-alpine
+    restart: "no"
+    environment:
+      PGHOST: db
+      PGDATABASE: openeidas
+      PGUSER: openeidas
+      PGPASSWORD: ${OPENEIDAS_DB_PASSWORD:?définir OPENEIDAS_DB_PASSWORD (mot de passe de la base, le même que pour docker-compose.yml)}
+      RA_DB_PASSWORD: ${OPENEIDAS_RA_DB_PASSWORD:?définir OPENEIDAS_RA_DB_PASSWORD (rôle en lecture seule de la console)}
+    volumes:
+      - ./crates/oe-castore/sql/ra_console_grants.sql:/sql/ra_console_grants.sql:ro
+    command:
+      - /bin/sh
+      - -c
+      - |
+        set -eu
+        until psql -tAc "SELECT to_regclass('public.sessions') IS NOT NULL AND to_regclass('public.actions') IS NOT NULL" | grep -q t; do
+          echo "migrations de ca-server pas encore appliquées, nouvel essai dans 5 s"
+          sleep 5
+        done
+        psql -v ON_ERROR_STOP=1 -f /sql/ra_console_grants.sql
+        echo "ALTER ROLE openeidas_ra_console LOGIN PASSWORD :'pw';" | psql -v ON_ERROR_STOP=1 -v pw="$$RA_DB_PASSWORD"
+    depends_on:
+      ca:
+        condition: service_healthy
+
+  ra-console:
+    container_name: openeidas_ra_console
+    mem_reservation: 32m
+    mem_limit: 128m
+    cpus: 0.25
+    build:
+      context: .
+      dockerfile: deploy/ra-console/Dockerfile
+      args:
+        VERSION: ${OPENEIDAS_VERSION:-dev}
+    ports:
+      - "8330:8330"
+    environment:
+      OPENEIDAS_DATABASE_URL: postgres://openeidas_ra_console:${OPENEIDAS_RA_DB_PASSWORD:?définir OPENEIDAS_RA_DB_PASSWORD}@db:5432/openeidas?sslmode=disable
+      OPENEIDAS_CA_INTERNAL_URL: https://ca:8321
+      OPENEIDAS_CA_CHAIN_URL: http://ca:8320/api/v1/ca.pem
+      OPENEIDAS_ENROLL_URL: http://ca:8320/api/v1/enroll
+      OPENEIDAS_ENROLL_HMAC_KEY: ${OPENEIDAS_ENROLL_HMAC_KEY:-}
+      OPENEIDAS_WEBAUTHN_RP_ID: ${OPENEIDAS_WEBAUTHN_RP_ID:-localhost}
+      OPENEIDAS_WEBAUTHN_ORIGIN: ${OPENEIDAS_WEBAUTHN_ORIGIN:-http://localhost:8330}
+      OPENEIDAS_WEBAUTHN_RP_NAME: Open eIDAS Console
+      OPENEIDAS_WEBAUTHN_MODELS_FILE: /etc/open-eidas/webauthn/models.json
+      OPENEIDAS_LOGIN_DECOY_SECRET: ${OPENEIDAS_LOGIN_DECOY_SECRET:?définir OPENEIDAS_LOGIN_DECOY_SECRET (au moins 16 octets aléatoires)}
+    volumes:
+      - rastate:/var/lib/open-eidas/state
+      - ./deploy/ra-console/models.json:/etc/open-eidas/webauthn/models.json:ro
+    depends_on:
+      ra-console-grants:
+        condition: service_completed_successfully
+
+volumes:
+  rastate:

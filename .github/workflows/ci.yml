@@ -175,6 +175,12 @@ jobs:
             dockerfile: deploy/ocsp-responder/Dockerfile
             tag: openeidas-ocsp-responder:ci
             pin_env: OPENEIDAS_PIN
+          # Console d'exploitation : aucun token, donc aucun PIN, et pas de
+          # sous-commande `version` (option `--version`, clap).
+          - image: console RA
+            dockerfile: deploy/ra-console/Dockerfile
+            tag: openeidas-ra-console:ci
+            version_arg: --version
     steps:
       - uses: actions/checkout@v4
 
@@ -205,7 +211,7 @@ jobs:
             CACHEBUST=${{ steps.cachebust.outputs.value }}
 
       - name: Vérifie que le binaire démarre
-        run: docker run --rm -e ${{ matrix.pin_env }}=1234 ${{ matrix.tag }} version
+        run: docker run --rm ${{ matrix.pin_env && format('-e {0}=1234', matrix.pin_env) || '' }} ${{ matrix.tag }} ${{ matrix.version_arg || 'version' }}
 
       - name: Scan de vulnérabilités (Trivy)
         uses: aquasecurity/trivy-action@v0.36.0
@@ -241,6 +247,10 @@ jobs:
             dockerfile: deploy/tsa/Dockerfile
           - image: open-eidas-ocsp-responder
             dockerfile: deploy/ocsp-responder/Dockerfile
+          # Image par défaut de raConsole.image dans le chart. Pas épinglée sur
+          # le staging (job suivant) : la console n'y est pas déployée.
+          - image: open-eidas-ra-console
+            dockerfile: deploy/ra-console/Dockerfile
     steps:
       - uses: actions/checkout@v4
 
@@ -381,6 +391,28 @@ jobs:
             exit 1
           fi
           helm template open-eidas deploy/helm/open-eidas --set production=true > /dev/null
+      - name: helm lint et rendu avec ra-console
+        run: |
+          helm lint deploy/helm/open-eidas -f deploy/helm/open-eidas/ci/ra-console-values.yaml
+          helm template open-eidas deploy/helm/open-eidas \
+            -f deploy/helm/open-eidas/ci/ra-console-values.yaml > /dev/null
+      - name: helm template refuse ra-console sans le lien interne de la CA
+        # La console n'agit que par le lien interne : le rendu doit échouer,
+        # pas déployer une console inutilisable. Valeurs complètes par
+        # ailleurs : seule la garde peut faire échouer ce rendu.
+        run: |
+          if helm template open-eidas deploy/helm/open-eidas \
+              -f deploy/helm/open-eidas/ci/ra-console-values.yaml \
+              --set ca.internal.enabled=false > /dev/null 2>&1; then
+            echo "le chart accepte raConsole.enabled sans ca.internal.enabled" >&2
+            exit 1
+          fi
+      - name: Le script des droits du chart est celui du dépôt
+        # Helm ne lit pas de fichier hors du chart : files/ en porte une copie,
+        # qui ne doit jamais diverger de l'original.
+        run: |
+          diff -u crates/oe-castore/sql/ra_console_grants.sql \
+            deploy/helm/open-eidas/files/ra_console_grants.sql
 
   helm-kind-smoke-test:
     name: Amorçage complet + démonstration (Helm sur kind)

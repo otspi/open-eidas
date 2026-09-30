@@ -149,11 +149,35 @@ lecture sur `actions`, ajouté au script des droits. Rejouer
 | `OPENEIDAS_ENROLL_URL` | — | (`internal-cert`) API d'enrôlement publique de la CA |
 | `OPENEIDAS_ENROLL_HMAC_KEY` | — | (`internal-cert`) secret partagé d'enrôlement |
 | `OPENEIDAS_ENROLL_TIMEOUT_SECONDS` | 600 | (`internal-cert`) attente de l'approbation |
+| `OPENEIDAS_WEBAUTHN_RP_ID` / `_ORIGIN` / `_RP_NAME` | — (obligatoires, sauf le nom) | Relying Party WebAuthn, **la même** que celle de `ca-server` |
+| `OPENEIDAS_WEBAUTHN_MODELS_FILE` | — (obligatoire) | Liste blanche de modèles de clés, **la même** que celle de `ca-server` |
+| `OPENEIDAS_LOGIN_DECOY_SECRET` | — (obligatoire, 16 octets au moins) | Secret des réponses de connexion uniformes (clé factice d'un nom inconnu) |
+| `OPENEIDAS_PURGE_INTERVAL_SECONDS` | 60 | Purge des sessions et challenges expirés |
+| `OPENEIDAS_RA_AUDIT_FILE` | `/var/lib/open-eidas/state/ra-console-audit.log` | Journal d'audit chaîné de la console |
+| `OPENEIDAS_CA_CHAIN_URL` | — | (image, premier démarrage) d'où l'entrypoint récupère le certificat de la CA |
+
+## Déploiement
+
+- **Image** : `deploy/ra-console/Dockerfile`, construite avec `-p ra-console` seul, pour
+  que `cryptoki` ne soit pas lié (garde : `bin/ra-console/tests/no_pkcs11.rs`). Ni
+  SoftHSM ni opensc dans l'image. Construite et scannée par la CI comme les trois
+  autres, publiée sur GHCR (`open-eidas-ra-console`) à chaque push sur `dev`.
+- **Entrypoint** (`deploy/ra-console/entrypoint.sh`) : au premier démarrage, il
+  récupère le certificat de la CA émettrice (`OPENEIDAS_CA_CHAIN_URL`, conservé
+  ensuite), puis demande le certificat client et attend son approbation (étapes 3 et
+  4 du Jour 0 ci-dessous, automatisées).
+- **Helm** : `raConsole.enabled`, désactivé par défaut, exige `ca.internal.enabled`.
+  Détail (NetworkPolicy, Job des droits, secrets) dans
+  [le README du chart](../deploy/helm/open-eidas/README.md).
+- **docker-compose** : surcouche opt-in `docker-compose.console.yml`, jamais chargée
+  par `make up` ni par la CI (elle exige une liste blanche de modèles de clés,
+  `deploy/ra-console/models.json`, qu'aucune valeur par défaut ne peut fournir).
 
 ## Jour 0
 
 1. Créer le rôle de la console et lui donner ses droits :
-   `psql -f crates/oe-castore/sql/ra_console_grants.sql`, puis un mot de passe.
+   `psql -f crates/oe-castore/sql/ra_console_grants.sql`, puis un mot de passe. Le
+   chart Helm et la surcouche compose le font eux-mêmes.
 2. Sur `ca-server` : le lien interne activé et son certificat `internal_server`
    ([CA.md](CA.md)).
 3. Le certificat client de la console :
@@ -173,6 +197,6 @@ lecture sur `actions`, ajouté au script des droits. Rejouer
 
 La gestion du registre depuis la console (invitations, clés, rôles), le workflow d'incident et le frontend : voir [WEBUI.md](WEBUI.md) §15 et `TODO.md`. La
 connexion, les sessions et la lecture (`/api/v1/requests`) existent, mais ne sont pas
-encore décrites ici. L'image, le chart Helm et le
-`docker-compose.yml` de la console non plus. Le certificat client (3 mois) se
-renouvelle à la main pour l'instant.
+encore décrites ici. Le certificat client (3 mois) se renouvelle à la main pour
+l'instant. Aucun job de
+démonstration réelle (kind, compose) ne déploie encore la console.

@@ -1,0 +1,16 @@
+{{- if .Values.raConsole.enabled -}}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "open-eidas.fullname" . }}-ra-console-state
+  labels:
+    {{- include "open-eidas.componentLabels" (dict "context" . "component" "ra-console") | nindent 4 }}
+spec:
+  accessModes: ["ReadWriteOnce"]
+  {{- if .Values.raConsole.persistence.state.storageClassName }}
+  storageClassName: {{ .Values.raConsole.persistence.state.storageClassName }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.raConsole.persistence.state.size }}
+{{- end }}
