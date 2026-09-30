@@ -6,10 +6,14 @@ import { expect, type Page } from "@playwright/test";
 import { readFileSync } from "node:fs";
 import { fixturePath } from "../playwright.config";
 
+type Credential = Record<string, unknown> & { signCount: number };
+
 export interface Fixture {
   operator: string;
   pending: string[];
-  credential: Record<string, unknown> & { signCount: number };
+  certificates: string[];
+  credential: Credential;
+  operators: Record<string, { role: string; credential: Credential }>;
 }
 
 export const fixture = (): Fixture => JSON.parse(readFileSync(fixturePath, "utf8")) as Fixture;
@@ -19,7 +23,8 @@ export const fixture = (): Fixture => JSON.parse(readFileSync(fixturePath, "utf8
 // titre) un clone. Module partagé : le compteur croît d'un fichier à l'autre.
 let signCountBase = 1000;
 
-export async function withOperatorKey(page: Page): Promise<void> {
+export async function withOperatorKey(page: Page, who?: string): Promise<void> {
+  const credential = who === undefined ? fixture().credential : fixture().operators[who]!.credential;
   const cdp = await page.context().newCDPSession(page);
   await cdp.send("WebAuthn.enable");
   const { authenticatorId } = await cdp.send("WebAuthn.addVirtualAuthenticator", {
@@ -38,7 +43,7 @@ export async function withOperatorKey(page: Page): Promise<void> {
   signCountBase += 1000;
   await cdp.send("WebAuthn.addCredential", {
     authenticatorId,
-    credential: { ...fixture().credential, signCount: fixture().credential.signCount + signCountBase },
+    credential: { ...credential, signCount: credential.signCount + signCountBase },
   } as never);
 }
 
@@ -53,8 +58,8 @@ export function collectErrors(page: Page): string[] {
   return errors;
 }
 
-export async function logIn(page: Page): Promise<void> {
-  await page.getByTestId("login-name").fill(fixture().operator);
+export async function logIn(page: Page, who: string = fixture().operator): Promise<void> {
+  await page.getByTestId("login-name").fill(who);
   await page.getByTestId("login-submit").click();
-  await expect(page.getByTestId("operator")).toHaveText(fixture().operator);
+  await expect(page.getByTestId("operator")).toHaveText(who);
 }

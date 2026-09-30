@@ -14,6 +14,7 @@
 
 pub mod audit;
 pub mod ca_link;
+pub mod certificates;
 pub mod config;
 pub mod db_guard;
 pub mod http;

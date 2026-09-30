@@ -898,6 +898,67 @@ async fn a_co_signature_only_counts_for_its_action() {
     }
 }
 
+/// `GET /api/v1/certificates` (étape 6c) : les certificats émis, lus dans la
+/// table de `ca-server`, avec leur numéro de série sous la forme canonique
+/// qu'attend la révocation ; filtre par état ; rien sans session.
+#[tokio::test]
+async fn the_console_lists_issued_certificates() {
+    let mut env = env!();
+    env.operator_with_key("alice", Role::CaOperateur).await;
+    env.operator_with_key("bob", Role::CaOperateur).await;
+    let alice = env.log_in("alice").await;
+    let bob = env.log_in("bob").await;
+    let serial = env.certificate("tx-list").await;
+
+    let (status, issued) = env.get("/api/v1/certificates?status=issued", &alice).await;
+    assert_eq!(status, StatusCode::OK, "{issued}");
+    let found = issued
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["serial_hex"] == serial.as_str())
+        .unwrap_or_else(|| panic!("certificat émis absent de la liste : {issued}"));
+    assert_eq!(found["profile"], "tsa_signer");
+    assert_eq!(found["request_transaction_id"], "tx-list");
+
+    // Révoqué par deux opérateurs : il change de liste.
+    let action = env.first_signature(&alice, &serial).await;
+    let (_, issued_c) = env
+        .challenge(Some(&bob), serde_json::json!({ "action_id": action }))
+        .await;
+    let assertion = env.sign(&issued_c);
+    env.decide(
+        Some(&bob),
+        &format!("/api/v1/quorum/{action}/sign"),
+        &issued_c,
+        &assertion,
+    )
+    .await;
+    let (_, revoked) = env.get("/api/v1/certificates?status=revoked", &alice).await;
+    let found = revoked
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["serial_hex"] == serial.as_str())
+        .unwrap_or_else(|| panic!("certificat révoqué absent de la liste : {revoked}"));
+    assert_eq!(found["revocation_reason"], 1);
+    let (_, issued) = env.get("/api/v1/certificates?status=issued", &alice).await;
+    assert!(issued
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|c| c["serial_hex"] != serial.as_str()));
+
+    let (status, _) = env
+        .get("/api/v1/certificates?status=reserved", &alice)
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let (status, _) = env
+        .get("/api/v1/certificates", "session=n-importe-quoi")
+        .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+}
+
 // --- Gestion du registre depuis la console (invitation, clés, rôles) ---
 
 impl Env {

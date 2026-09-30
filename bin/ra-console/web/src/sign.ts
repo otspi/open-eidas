@@ -46,8 +46,9 @@ function explain(body: unknown, fallback: string): string {
   return fallback;
 }
 
-/// Ouvre la modale ; rend `true` si l'action a été signée et relayée avec succès.
-export function sign(signing: Signing): Promise<boolean> {
+/// Ouvre la modale ; rend la réponse de l'autorité si l'action a été signée et
+/// relayée avec succès, `null` sinon.
+export function sign(signing: Signing): Promise<Record<string, unknown> | null> {
   return new Promise((resolve) => {
     let busy = false;
     let done = false;
@@ -72,7 +73,7 @@ export function sign(signing: Signing): Promise<boolean> {
       h("div", { class: "actions" }, cancel, signButton),
     );
 
-    const close = (result: boolean): void => {
+    const close = (result: Record<string, unknown> | null): void => {
       dialog.close();
       dialog.remove();
       resolve(result);
@@ -109,11 +110,16 @@ export function sign(signing: Signing): Promise<boolean> {
       status.textContent = "Touchez votre clé de sécurité matérielle…";
       try {
         const assertion = await assert(current.webauthn);
-        const reply = await call("POST", signing.route, { challenge_id: current.challenge_id, assertion });
-        if (reply.status === 200) {
+        const reply = await call<Record<string, unknown>>("POST", signing.route, {
+          challenge_id: current.challenge_id,
+          assertion,
+        });
+        if (reply.status === 200 && reply.body !== null && !isError(reply.body)) {
           done = true;
-          status.textContent = "✓ Action signée et exécutée.";
-          window.setTimeout(() => close(true), 800);
+          const result = reply.body;
+          status.textContent =
+            result.status === "AWAITING_QUORUM" ? "✓ Signature enregistrée." : "✓ Action signée et exécutée.";
+          window.setTimeout(() => close(result), 800);
           return;
         }
         // Un challenge consommé ou expiré ne resservira pas : on en redemande un.
@@ -132,10 +138,10 @@ export function sign(signing: Signing): Promise<boolean> {
 
     dialog.addEventListener("cancel", (event) => {
       event.preventDefault();
-      if (!busy && !done) close(false);
+      if (!busy && !done) close(null);
     });
     cancel.addEventListener("click", () => {
-      if (!busy) close(false);
+      if (!busy) close(null);
     });
     signButton.addEventListener("click", () => void ceremony());
 
