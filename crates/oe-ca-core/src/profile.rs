@@ -37,7 +37,7 @@ pub struct Profile {
 
     pub key_usages: der::flagset::FlagSet<KeyUsages>,
     pub eku: &'static [&'static str],
-    /// ETSI EN 319 421 §7.7.2 exige `extendedKeyUsage` critique pour un
+    /// ETSI EN 319 422 §6.4 (RFC 3161 §2.3) exige `extendedKeyUsage` critique pour un
     /// certificat de TSU : sans criticité, un vérificateur peut ignorer la
     /// restriction d'usage.
     pub eku_critical: bool,
@@ -74,7 +74,7 @@ pub fn eku_oids(p: &Profile) -> Vec<ObjectIdentifier> {
     p.eku.iter().map(|s| oid(s)).collect()
 }
 
-/// Reproduit le profil ETSI EN 319 422 / EN 319 421 §7.7.2 de l'unité
+/// Reproduit le profil ETSI EN 319 422 §6 de l'unité
 /// d'horodatage.
 pub fn tsa_signer() -> Profile {
     Profile {

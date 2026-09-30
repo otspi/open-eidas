@@ -1617,7 +1617,7 @@ Pourquoi la CA émettrice plutôt qu'une petite CA interne dédiée :
   docker-compose et en Helm.
 
 Ces clés sont logicielles, et ce n'est pas une contradiction avec « les clés
-vivent dans un token PKCS#11 » (EN 319 401 §7.4 dans la matrice). Cette
+vivent dans un token PKCS#11 » (EN 319 401 §7.5, REQ-7.5-01, dans la matrice). Cette
 exigence vise les clés qui produisent le service de confiance : signature de
 certificats, de jetons d'horodatage, de réponses OCSP. Les deux clés
 ci-dessus n'authentifient qu'un canal interne. Leur compromission ne permet
