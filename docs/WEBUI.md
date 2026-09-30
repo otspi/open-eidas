@@ -911,7 +911,18 @@ que vise la cible actuelle du CPS ; il en est le pendant numérique pour les
 actions qui, elles, doivent rester exécutables à distance (ex. révocation
 d'urgence d'une CA hors heures ouvrées).
 
-Tables de collecte, côté `ra-console` (propriété et droits : §2, §16) :
+**Ce qui est construit (étape 4, 2026-09-27) diffère du schéma ci-dessous, en
+plus sûr.** `ca-server` enregistre chaque signature au fil de l'eau
+(`decision_evidence`, une ligne par opérateur, `UNIQUE(action_id, operator_id)`)
+et n'exécute qu'au seuil : chaque signataire obtient son propre challenge sur
+l'action figée (`issue_challenge_for`), et son assertion est vérifiée et
+consommée aussitôt. `ra-console` n'a donc aucune table de collecte et ne
+conserve jamais d'assertion : sa salle d'attente lit `actions` et
+`decision_evidence` en lecture seule (voir [RA-CONSOLE.md](RA-CONSOLE.md)).
+Les tables qui suivent sont conservées pour mémoire de la conception initiale.
+
+Tables de collecte, côté `ra-console` (propriété et droits : §2, §16) — **non
+construites** :
 
 ```sql
 CREATE TABLE quorum_requests (
