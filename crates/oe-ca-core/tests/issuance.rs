@@ -47,6 +47,7 @@ async fn run_test_ceremony(
         issuing_key_label: "issuing-key".to_string(),
         store: store.clone(),
         operator: "test-operator".to_string(),
+        public_url: "https://ca.example.test".to_string(),
         recorder: None,
     })
     .await
@@ -62,6 +63,129 @@ async fn run_test_ceremony(
         hierarchy.root,
         hierarchy.issuing,
     )
+}
+
+/// Constat C-1 de l'audit du 2026-09-25 : l'émettrice porte un CDP vers
+/// l'ARL de la racine et une AIA `caIssuers` vers son certificat, et la
+/// racine peut la révoquer et publier l'ARL qui en atteste — jusqu'ici,
+/// aucun des deux n'existait.
+#[tokio::test]
+async fn issuing_certificate_carries_cdp_and_aia_to_the_root() {
+    let store = store();
+    let (_root_signer, _issuing_signer, _root, issuing) = run_test_ceremony(store.clone()).await;
+
+    let cdp_oid = der::asn1::ObjectIdentifier::new("2.5.29.31").unwrap();
+    let aia_oid = der::asn1::ObjectIdentifier::new("1.3.6.1.5.5.7.1.1").unwrap();
+    let exts = issuing
+        .tbs_certificate()
+        .extensions()
+        .expect("l'émettrice doit porter des extensions");
+    assert!(
+        exts.iter().any(|e| e.extn_id == cdp_oid),
+        "l'émettrice doit porter un CDP vers l'ARL de la racine"
+    );
+    assert!(
+        exts.iter().any(|e| e.extn_id == aia_oid),
+        "l'émettrice doit porter une AIA caIssuers vers la racine"
+    );
+}
+
+#[tokio::test]
+async fn root_revokes_the_issuing_authority_and_publishes_the_arl() {
+    let store = store();
+    let (root_signer, _issuing_signer, root, _issuing) = run_test_ceremony(store.clone()).await;
+
+    let root_authority =
+        oe_ca_core::root::RootAuthority::new(oe_ca_core::root::RootAuthorityOptions {
+            signer: root_signer,
+            certificate: root,
+            store: store.clone(),
+            arl_validity: time::Duration::days(365),
+            recorder: None,
+        });
+
+    // Vide au départ : publiée quand même (ETSI EN 319 411-1 CSS-6.3.9-12).
+    let empty_arl = root_authority
+        .publish_arl()
+        .await
+        .expect("une ARL vide doit pouvoir être publiée");
+    let parsed_empty: x509_cert::crl::CertificateList =
+        x509_cert::crl::CertificateList::from_der(&empty_arl.der).unwrap();
+    assert!(parsed_empty.tbs_cert_list.revoked_certificates.is_none());
+
+    let arl = root_authority
+        .revoke_authority(
+            AUTHORITY_ISSUING,
+            1,
+            "test-operator",
+            "clé émettrice compromise",
+        )
+        .await
+        .expect("la révocation de l'émettrice doit réussir");
+    assert!(
+        arl.number > empty_arl.number,
+        "le numéro d'ARL doit augmenter à chaque publication"
+    );
+
+    let parsed: x509_cert::crl::CertificateList =
+        x509_cert::crl::CertificateList::from_der(&arl.der).unwrap();
+    let revoked = parsed
+        .tbs_cert_list
+        .revoked_certificates
+        .expect("l'ARL doit lister l'émettrice révoquée");
+    assert_eq!(revoked.len(), 1);
+
+    let issuing_authority = store.authority(AUTHORITY_ISSUING).await.unwrap();
+    assert!(issuing_authority.revoked_at.is_some());
+    assert_eq!(issuing_authority.revocation_reason, 1);
+
+    let current = root_authority.current_arl().await.unwrap();
+    assert_eq!(current.number, arl.number);
+}
+
+#[tokio::test]
+async fn root_cannot_revoke_itself() {
+    let store = store();
+    let (root_signer, _issuing_signer, root, _issuing) = run_test_ceremony(store.clone()).await;
+    let root_authority =
+        oe_ca_core::root::RootAuthority::new(oe_ca_core::root::RootAuthorityOptions {
+            signer: root_signer,
+            certificate: root,
+            store: store.clone(),
+            arl_validity: time::Duration::days(365),
+            recorder: None,
+        });
+    let err = root_authority
+        .revoke_authority(AUTHORITY_ROOT, 1, "test-operator", "")
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("racine"), "{err}");
+}
+
+#[tokio::test]
+async fn a_journal_failure_blocks_authority_revocation_before_the_store_is_touched() {
+    let store = store();
+    let (root_signer, _issuing_signer, root, _issuing) = run_test_ceremony(store.clone()).await;
+    let root_authority =
+        oe_ca_core::root::RootAuthority::new(oe_ca_core::root::RootAuthorityOptions {
+            signer: root_signer,
+            certificate: root,
+            store: store.clone(),
+            arl_validity: time::Duration::days(365),
+            recorder: Some(Arc::new(FailingRecorder)),
+        });
+
+    let err = root_authority
+        .revoke_authority(AUTHORITY_ISSUING, 1, "test-operator", "")
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("journal"), "{err}");
+
+    let issuing_authority = store.authority(AUTHORITY_ISSUING).await.unwrap();
+    assert!(
+        issuing_authority.revoked_at.is_none(),
+        "le journal a échoué : l'autorité ne doit pas être marquée révoquée"
+    );
 }
 
 #[tokio::test]
@@ -84,6 +208,7 @@ async fn ceremony_is_idempotent() {
         issuing_key_label: "issuing-key".to_string(),
         store: store.clone(),
         operator: "test-operator".to_string(),
+        public_url: "https://ca.example.test".to_string(),
         recorder: None,
     })
     .await
@@ -129,6 +254,7 @@ async fn ceremony_rejects_mismatched_signer_on_replay() {
         issuing_key_label: "issuing-key".to_string(),
         store,
         operator: "test-operator".to_string(),
+        public_url: "https://ca.example.test".to_string(),
         recorder: None,
     })
     .await;
@@ -535,6 +661,7 @@ async fn every_authority_decision_is_recorded() {
         issuing_key_label: "issuing-key".to_string(),
         store: store.clone(),
         operator: "test-operator".to_string(),
+        public_url: "https://ca.example.test".to_string(),
         recorder: Some(Arc::new(log.clone())),
     })
     .await
@@ -730,6 +857,7 @@ async fn a_journal_failure_blocks_the_ceremony_before_any_authority_is_saved() {
         issuing_key_label: "issuing-key".to_string(),
         store: store.clone(),
         operator: "test-operator".to_string(),
+        public_url: "https://ca.example.test".to_string(),
         recorder: Some(Arc::new(FailingRecorder)),
     })
     .await
@@ -878,4 +1006,164 @@ async fn a_journal_failure_blocks_crl_publication_before_the_store_is_touched() 
         store.latest_crl().await.is_err(),
         "aucune CRL ne doit être publiée : le journal a échoué avant"
     );
+}
+
+/// Émettrice et racine d'une même cérémonie, pour les tests de C-1 qui ont
+/// besoin des deux clés à la fois.
+async fn issuer_and_root_from_ceremony(
+    store: Arc<Memory>,
+) -> (
+    Issuer,
+    oe_ca_core::root::RootAuthority,
+    Certificate,
+    Certificate,
+) {
+    let (root_signer, issuing_signer, root, issuing) = run_test_ceremony(store.clone()).await;
+    let issuer = Issuer::new(Options {
+        signer: issuing_signer,
+        certificate: issuing.clone(),
+        chain: vec![root.clone()],
+        store: store.clone(),
+        public_url: "https://ca.example.test".to_string(),
+        ocsp_url: None,
+        crl_validity: time::Duration::hours(24),
+        crl_grace: time::Duration::hours(1),
+        recorder: None,
+    })
+    .unwrap();
+    let root_authority =
+        oe_ca_core::root::RootAuthority::new(oe_ca_core::root::RootAuthorityOptions {
+            signer: root_signer,
+            certificate: root.clone(),
+            store: store.clone(),
+            arl_validity: time::Duration::days(365),
+            recorder: None,
+        });
+    (issuer, root_authority, root, issuing)
+}
+
+/// Constat C-1 : une émettrice révoquée par la racine n'émet plus rien, sans
+/// attendre un redémarrage du service (la révocation vient d'un autre
+/// processus, `ca-server authority revoke`).
+#[tokio::test]
+async fn a_revoked_issuing_authority_refuses_to_issue() {
+    let store = store();
+    let (issuer, root_authority, _root, _issuing) =
+        issuer_and_root_from_ceremony(store.clone()).await;
+    let public_key_der = SoftwareToken::generate(2048).public_key_der().unwrap();
+    let tsa_profile = profile::tsa_signer();
+
+    issuer
+        .issue(
+            &public_key_der,
+            "before.example.test",
+            &tsa_profile,
+            "txn-before",
+        )
+        .await
+        .expect("avant révocation, l'émission doit réussir");
+
+    root_authority
+        .revoke_authority(AUTHORITY_ISSUING, 1, "test-operator", "compromission")
+        .await
+        .unwrap();
+
+    let err = issuer
+        .issue(
+            &public_key_der,
+            "after.example.test",
+            &tsa_profile,
+            "txn-after",
+        )
+        .await
+        .expect_err("une émettrice révoquée ne doit plus émettre");
+    assert!(err.to_string().contains("révoquée"), "{err}");
+}
+
+/// Constat C-1, vérifié par un tiers indépendant : avec l'ARL de la racine et
+/// la CRL de l'émettrice, `openssl verify -crl_check_all` accepte une feuille
+/// tant que l'émettrice est saine, puis la rejette pour révocation dès que la
+/// racine a révoqué l'émettrice — alors même que la feuille, elle, n'est pas
+/// révoquée.
+#[tokio::test]
+async fn openssl_rejects_a_leaf_under_a_revoked_issuing_authority() {
+    if std::process::Command::new("openssl")
+        .arg("version")
+        .output()
+        .is_err()
+    {
+        eprintln!("openssl indisponible : test de vérification croisée ignoré");
+        return;
+    }
+
+    let store = store();
+    let (issuer, root_authority, root, issuing) =
+        issuer_and_root_from_ceremony(store.clone()).await;
+    let public_key_der = SoftwareToken::generate(2048).public_key_der().unwrap();
+    let leaf = issuer
+        .issue(
+            &public_key_der,
+            "leaf.example.test",
+            &profile::tsa_signer(),
+            "txn-arl",
+        )
+        .await
+        .unwrap();
+
+    let dir = std::env::temp_dir().join(format!("oe-ca-core-arl-test-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let root_pem = dir.join("root.pem");
+    let issuing_pem = dir.join("issuing.pem");
+    let leaf_pem = dir.join("leaf.pem");
+    let crl_pem = dir.join("issuing.crl.pem");
+    let arl_pem = dir.join("root.arl.pem");
+    write_pem(&root_pem, &root.to_der().unwrap());
+    write_pem(&issuing_pem, &issuing.to_der().unwrap());
+    write_pem(&leaf_pem, &leaf.to_der().unwrap());
+    write_crl_pem(&crl_pem, &issuer.publish_crl().await.unwrap().der);
+
+    let verify = |arl_der: &[u8]| {
+        write_crl_pem(&arl_pem, arl_der);
+        std::process::Command::new("openssl")
+            .args(["verify", "-crl_check_all", "-CAfile"])
+            .arg(&root_pem)
+            .arg("-untrusted")
+            .arg(&issuing_pem)
+            .arg("-CRLfile")
+            .arg(&crl_pem)
+            .arg("-CRLfile")
+            .arg(&arl_pem)
+            .arg(&leaf_pem)
+            .output()
+            .expect("openssl doit s'exécuter")
+    };
+
+    let before = verify(&root_authority.publish_arl().await.unwrap().der);
+    assert!(
+        before.status.success(),
+        "openssl doit accepter la chaîne avec une ARL vide : {}{}",
+        String::from_utf8_lossy(&before.stdout),
+        String::from_utf8_lossy(&before.stderr)
+    );
+
+    let arl = root_authority
+        .revoke_authority(AUTHORITY_ISSUING, 1, "test-operator", "compromission")
+        .await
+        .unwrap();
+    let after = verify(&arl.der);
+    assert!(
+        !after.status.success(),
+        "openssl doit rejeter une feuille dont l'émettrice est révoquée"
+    );
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&after.stdout),
+        String::from_utf8_lossy(&after.stderr)
+    );
+    assert!(
+        combined.to_lowercase().contains("revoked"),
+        "le rejet doit être motivé par la révocation de l'émettrice : {combined}"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
 }

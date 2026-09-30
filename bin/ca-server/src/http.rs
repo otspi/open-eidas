@@ -4,6 +4,12 @@
 //! exactement ceux qu'OpenXPKI servait auparavant : les URL déjà gravées
 //! dans les extensions CDP/AIA des certificats émis restent valables, et le
 //! répondeur OCSP retrouve la CRL au même endroit.
+//!
+//! Constat C-1 : le certificat de la racine et son ARL sont servis de la même
+//! façon (`/download/<CN racine>.cer` et `.arl`), aux adresses que gravent
+//! l'AIA et le CDP de l'émettrice. L'ARL est publiée hors ligne
+//! (`ca-server ceremony`, `ca-server authority`) : ce service ne fait que la
+//! relire, il n'a jamais la clé de la racine.
 
 use std::sync::{Arc, RwLock};
 
@@ -20,6 +26,12 @@ struct CrlCache {
     err: Option<String>,
 }
 
+struct RootPublication {
+    der: Vec<u8>,
+    cer_path: String,
+    arl_path: String,
+}
+
 pub struct Server {
     issuer: Arc<oe_ca_core::Issuer>,
     flow: Arc<oe_raflow::Flow>,
@@ -28,6 +40,9 @@ pub struct Server {
     ca_pem: String,
     crl_path: String,
     ca_path: String,
+    /// Certificat (DER) de la racine et chemins de son `.cer`/`.arl` — absents
+    /// si l'émettrice est construite sans sa chaîne.
+    root: Option<RootPublication>,
     cache: RwLock<CrlCache>,
     /// Page HTML publique du dépôt (subjects, validités, empreintes des
     /// certificats réellement chargés) : générée une fois au démarrage,
@@ -55,6 +70,14 @@ impl Server {
         let ca_path = format!("/download/{name}.cer");
         let crl_path = format!("/download/{name}.crl");
         let repository_html = render_repository_html(&issuer, &ca_path, &crl_path);
+        let root = issuer.chain().last().map(|root| {
+            let name = oe_certs::file_name(&common_name(root));
+            RootPublication {
+                der: root.to_der().unwrap_or_default(),
+                cer_path: format!("/download/{name}.cer"),
+                arl_path: format!("/download/{name}.arl"),
+            }
+        });
         Server {
             issuer,
             flow,
@@ -63,6 +86,7 @@ impl Server {
             ca_pem,
             crl_path,
             ca_path,
+            root,
             cache: RwLock::new(CrlCache {
                 crl: None,
                 err: None,
@@ -295,14 +319,24 @@ fn pem_block(label: &str, der: &[u8]) -> String {
 pub fn router(server: Arc<Server>, max_request_bytes: usize) -> Router {
     let ca_path = server.ca_path.clone();
     let crl_path = server.crl_path.clone();
-    Router::new()
+    let root_paths = server
+        .root
+        .as_ref()
+        .map(|r| (r.cer_path.clone(), r.arl_path.clone()));
+    let mut router = Router::new()
         .route("/", get(handle_repository))
         .route("/api/v1/enroll", axum::routing::post(handle_enroll))
         .route("/api/v1/ca.pem", get(handle_ca_pem))
         .route("/api/v1/conformance", get(handle_conformance))
         .route(&ca_path, get(handle_ca_der))
         .route(&crl_path, get(handle_crl))
-        .route("/healthz", get(handle_health))
+        .route("/healthz", get(handle_health));
+    if let Some((cer_path, arl_path)) = root_paths {
+        router = router
+            .route(&cer_path, get(handle_root_der))
+            .route(&arl_path, get(handle_arl));
+    }
+    router
         .layer(DefaultBodyLimit::max(max_request_bytes))
         .with_state(server)
 }
@@ -446,6 +480,33 @@ async fn handle_ca_der(State(server): State<Arc<Server>>) -> impl IntoResponse {
         [(header::CONTENT_TYPE, "application/pkix-cert")],
         server.ca_der.clone(),
     )
+}
+
+/// Certificat de la racine, à l'adresse que porte l'AIA `caIssuers` de
+/// l'émettrice (constat C-1).
+async fn handle_root_der(State(server): State<Arc<Server>>) -> Response {
+    match &server.root {
+        Some(root) => (
+            [(header::CONTENT_TYPE, "application/pkix-cert")],
+            root.der.clone(),
+        )
+            .into_response(),
+        None => StatusCode::NOT_FOUND.into_response(),
+    }
+}
+
+/// ARL de la racine, à l'adresse que porte le CDP de l'émettrice (constat
+/// C-1). Relue en base à chaque requête : elle est publiée par un autre
+/// processus, hors ligne, et une révocation d'autorité qui n'est pas servie
+/// ne protège personne.
+async fn handle_arl(State(server): State<Arc<Server>>) -> Response {
+    match server.issuer.current_arl().await {
+        Ok(arl) => ([(header::CONTENT_TYPE, "application/pkix-crl")], arl.der).into_response(),
+        Err(e) => {
+            tracing::error!(erreur = %e, "ARL indisponible");
+            (StatusCode::SERVICE_UNAVAILABLE, "aucune ARL publiée").into_response()
+        }
+    }
 }
 
 async fn handle_crl(State(server): State<Arc<Server>>) -> Response {

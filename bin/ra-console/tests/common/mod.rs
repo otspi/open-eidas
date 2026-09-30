@@ -69,6 +69,7 @@ pub async fn pki() -> Pki {
         issuing_key_label: "i".into(),
         store: store.clone(),
         operator: "test".into(),
+        public_url: "https://ca.example.test".to_string(),
         recorder: None,
     })
     .await

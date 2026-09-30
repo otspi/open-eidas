@@ -15,7 +15,7 @@ use sqlx::{PgPool, Row};
 use time::OffsetDateTime;
 
 use crate::{
-    serial_key, Authority, Certificate, CertificateStatus, Crl, Request, RequestState, Serial,
+    serial_key, Arl, Authority, Certificate, CertificateStatus, Crl, Request, RequestState, Serial,
     Store, StoreError,
 };
 
@@ -173,7 +173,7 @@ impl Store for Postgres {
     }
 
     async fn authority(&self, name: &str) -> Result<Authority, StoreError> {
-        let row = sqlx::query("SELECT name, subject_dn, der, token_label, key_label, created_at FROM authorities WHERE name = $1")
+        let row = sqlx::query("SELECT name, subject_dn, der, token_label, key_label, created_at, revoked_at, revocation_reason FROM authorities WHERE name = $1")
             .bind(name)
             .fetch_optional(&self.pool)
             .await
@@ -186,7 +186,65 @@ impl Store for Postgres {
             token_label: row.try_get("token_label").map_err(map_err)?,
             key_label: row.try_get("key_label").map_err(map_err)?,
             created_at: row.try_get("created_at").map_err(map_err)?,
+            revoked_at: row.try_get("revoked_at").map_err(map_err)?,
+            revocation_reason: row.try_get("revocation_reason").map_err(map_err)?,
         })
+    }
+
+    async fn revoke_authority(
+        &self,
+        name: &str,
+        at: OffsetDateTime,
+        reason: i32,
+    ) -> Result<(), StoreError> {
+        let result = sqlx::query(
+            "UPDATE authorities SET revoked_at = $2, revocation_reason = $3
+             WHERE name = $1 AND revoked_at IS NULL",
+        )
+        .bind(name)
+        .bind(at)
+        .bind(reason)
+        .execute(&self.pool)
+        .await
+        .map_err(map_err)?;
+        if result.rows_affected() == 0 {
+            // Déjà révoquée (première révocation faisant foi) ou inconnue :
+            // seul le second cas est une erreur.
+            let exists: bool =
+                sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM authorities WHERE name = $1)")
+                    .bind(name)
+                    .fetch_one(&self.pool)
+                    .await
+                    .map_err(map_err)?;
+            if !exists {
+                return Err(StoreError::NotFound);
+            }
+        }
+        Ok(())
+    }
+
+    async fn revoked_authorities(&self) -> Result<Vec<Authority>, StoreError> {
+        let rows = sqlx::query(
+            "SELECT name, subject_dn, der, token_label, key_label, created_at, revoked_at, revocation_reason
+             FROM authorities WHERE revoked_at IS NOT NULL ORDER BY name",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(map_err)?;
+        rows.into_iter()
+            .map(|row| {
+                Ok(Authority {
+                    name: row.try_get("name").map_err(map_err)?,
+                    subject_dn: row.try_get("subject_dn").map_err(map_err)?,
+                    der: row.try_get("der").map_err(map_err)?,
+                    token_label: row.try_get("token_label").map_err(map_err)?,
+                    key_label: row.try_get("key_label").map_err(map_err)?,
+                    created_at: row.try_get("created_at").map_err(map_err)?,
+                    revoked_at: row.try_get("revoked_at").map_err(map_err)?,
+                    revocation_reason: row.try_get("revocation_reason").map_err(map_err)?,
+                })
+            })
+            .collect()
     }
 
     async fn reserve_serial(&self, serial: &Serial, profile: &str) -> Result<(), StoreError> {
@@ -454,6 +512,47 @@ impl Store for Postgres {
         .map_err(map_err)?
         .ok_or(StoreError::NotFound)?;
         Ok(Crl {
+            number: row.try_get("number").map_err(map_err)?,
+            der: row.try_get("der").map_err(map_err)?,
+            this_update: row.try_get("this_update").map_err(map_err)?,
+            next_update: row.try_get("next_update").map_err(map_err)?,
+        })
+    }
+
+    async fn next_arl_number(&self) -> Result<i64, StoreError> {
+        let n: i64 = sqlx::query_scalar("SELECT nextval('arl_number_seq')")
+            .fetch_one(&self.pool)
+            .await
+            .map_err(map_err)?;
+        Ok(n)
+    }
+
+    async fn save_arl(&self, a: Arl) -> Result<(), StoreError> {
+        let result = sqlx::query(
+            "INSERT INTO arls (number, der, this_update, next_update) VALUES ($1, $2, $3, $4)",
+        )
+        .bind(a.number)
+        .bind(&a.der)
+        .bind(a.this_update)
+        .bind(a.next_update)
+        .execute(&self.pool)
+        .await;
+        match result {
+            Ok(_) => Ok(()),
+            Err(e) if is_unique_violation(&e) => Err(StoreError::Conflict),
+            Err(e) => Err(map_err(e)),
+        }
+    }
+
+    async fn latest_arl(&self) -> Result<Arl, StoreError> {
+        let row = sqlx::query(
+            "SELECT number, der, this_update, next_update FROM arls ORDER BY number DESC LIMIT 1",
+        )
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(map_err)?
+        .ok_or(StoreError::NotFound)?;
+        Ok(Arl {
             number: row.try_get("number").map_err(map_err)?,
             der: row.try_get("der").map_err(map_err)?,
             this_update: row.try_get("this_update").map_err(map_err)?,

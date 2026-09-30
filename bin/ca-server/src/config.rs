@@ -47,6 +47,10 @@ pub struct Config {
     pub crl_validity: time::Duration,
     pub crl_refresh: Duration,
     pub crl_grace: time::Duration,
+    /// Validité de l'ARL de la racine (constat C-1). Publiée hors ligne, avec
+    /// la clé de la racine : au plus un an, ETSI EN 319 411-1 `CSS-6.3.9-12`
+    /// exigeant une republication au moins annuelle.
+    pub arl_validity: time::Duration,
 
     pub audit_file: String,
     /// Copie du journal sur un stockage objet compatible S3, auto-hébergé
@@ -248,6 +252,19 @@ impl Config {
             env_duration("OPENEIDAS_CRL_GRACE", Duration::from_secs(30 * 24 * 3600))?,
             time::Duration::days(30),
         );
+        let arl_validity = to_time_duration(
+            env_duration(
+                "OPENEIDAS_ARL_VALIDITY",
+                Duration::from_secs(365 * 24 * 3600),
+            )?,
+            time::Duration::days(365),
+        );
+        if arl_validity > time::Duration::days(365) || arl_validity <= time::Duration::ZERO {
+            return Err(
+                "OPENEIDAS_ARL_VALIDITY: entre 1 s et 365 jours (ETSI EN 319 411-1 CSS-6.3.9-12 : ARL republiée au moins une fois par an)"
+                    .to_string(),
+            );
+        }
         // Contrôlée ici, à la configuration, et non seulement documentée :
         // ETSI EN 319 401 §7.10 impose une durée de conservation minimale,
         // pas seulement un journal qui existe (oe_conformance::check_audit_retention).
@@ -287,6 +304,7 @@ impl Config {
             crl_validity,
             crl_refresh,
             crl_grace,
+            arl_validity,
             audit_file: env_str(
                 "OPENEIDAS_AUDIT_FILE",
                 "/var/lib/open-eidas/state/ca-audit.log",

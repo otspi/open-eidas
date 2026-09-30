@@ -348,6 +348,24 @@ Le renouvellement d'un service révoque automatiquement le certificat précéden
 du même sujet, avec le motif `superseded` : une seule unité active par sujet
 à tout instant.
 
+### Révocation de la CA émettrice
+
+Acte de la **racine**, hors ligne : la commande ouvre le token de la racine
+(comme `ceremony`), jamais celui de l'émettrice, et `serve` ne l'ouvre jamais.
+
+```bash
+ca-server authority revoke issuing <code_motif> "prenom.nom" "commentaire"
+```
+
+Le code usuel est `2` (`cACompromise`) pour une clé d'autorité exposée, `4` ou
+`5` pour un remplacement ou un arrêt. La racine ne peut pas se révoquer
+elle-même. L'événement `ca.authority_revoked` est écrit au journal **avant** la
+mise à jour du registre, puis l'ARL est republiée immédiatement
+(`ca.arl_published`). L'émettrice révoquée refuse aussitôt toute émission,
+y compris dans un `serve` déjà lancé : la révocation est relue à chaque
+émission. Une seule identité d'opérateur, comme la cérémonie elle-même (pas
+encore de quorum).
+
 ## 6. Publication de l'état de révocation
 
 La CRL est régénérée toutes les heures (`OPENEIDAS_CRL_REFRESH`) avec une
@@ -368,12 +386,22 @@ et AIA des certificats émis :
 |---|---|
 | `/download/<CN>.crl` | CRL de la CA émettrice, DER |
 | `/download/<CN>.cer` | certificat de la CA émettrice, DER (AIA `ca_issuers`) |
+| `/download/<CN racine>.arl` | ARL de la racine, DER (CDP de la CA émettrice) |
+| `/download/<CN racine>.cer` | certificat de la racine, DER (AIA `ca_issuers` de la CA émettrice) |
 | `/api/v1/ca.pem` | chaîne complète (émettrice + racine), PEM |
 | `/api/v1/conformance` | matrice ETSI telle que l'instance l'applique |
 
 Le nom de fichier dérive du nom courant de l'émettrice
 (`certs.FileName`) — une seule définition, partagée par l'émetteur qui grave
 l'URL, le serveur qui publie et le répondeur OCSP qui va chercher la CRL.
+
+L'**ARL** (liste des autorités révoquées) est signée par la racine, donc
+publiée hors ligne et seulement relue par `serve` : une première fois par
+`ceremony` (si aucune n'existe encore), puis à chaque `authority revoke`, et
+par `ca-server authority publish-arl`, **à relancer avant l'échéance** de la
+précédente (`OPENEIDAS_ARL_VALIDITY`, un an au plus : ETSI EN 319 411-1
+`CSS-6.3.9-12`). Une CA émettrice cérémoniée avant cette version ne porte ni
+CDP ni AIA vers la racine : seules les émettrices créées depuis en bénéficient.
 
 ## 7. Modèle de menace
 
@@ -440,6 +468,7 @@ il est porté comme exigence hors périmètre dans la matrice.
 | `OPENEIDAS_ROOT_VALIDITY` / `OPENEIDAS_ISSUING_VALIDITY` | 20 ans / 10 ans | Durées de vie des autorités |
 | `OPENEIDAS_CRL_VALIDITY` | 24h | Fenêtre `thisUpdate` → `nextUpdate` |
 | `OPENEIDAS_CRL_REFRESH` | 1h | Fréquence de republication |
+| `OPENEIDAS_ARL_VALIDITY` | 8760h | Validité de l'ARL de la racine (au plus un an) |
 | `OPENEIDAS_CRL_GRACE` | 720h | Délai après expiration pendant lequel un certificat révoqué reste listé |
 | `OPENEIDAS_AUDIT_FILE` | `/var/lib/open-eidas/state/ca-audit.log` | Journal d'audit |
 | `OPENEIDAS_AUDIT_RETENTION` | 8760h | Durée de conservation ; le service refuse de démarrer en deçà d'un an |

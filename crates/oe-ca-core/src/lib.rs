@@ -22,6 +22,7 @@
 
 mod extensions;
 pub mod profile;
+pub mod root;
 mod signing;
 
 use std::str::FromStr;
@@ -243,6 +244,7 @@ impl Issuer {
         transaction_id: &str,
     ) -> Result<Certificate, CaError> {
         profile.validate_cn(subject_cn).map_err(CaError::Other)?;
+        self.ensure_not_revoked().await?;
         let serial = self.reserve_serial(profile.name).await?;
         let serial_bytes = canonical_serial(&serial);
 
@@ -542,6 +544,28 @@ impl Issuer {
 
     pub async fn current_crl(&self) -> Result<oe_castore::Crl, CaError> {
         Ok(self.opts.store.latest_crl().await?)
+    }
+
+    /// L'ARL de la racine qui couvre cette émettrice (constat C-1) : publiée
+    /// hors ligne par [`crate::root::RootAuthority`], seulement relue ici
+    /// pour être servie à l'adresse gravée dans le CDP de l'émettrice.
+    pub async fn current_arl(&self) -> Result<oe_castore::Arl, CaError> {
+        Ok(self.opts.store.latest_arl().await?)
+    }
+
+    /// Constat C-1 : une émettrice révoquée par la racine n'émet plus rien.
+    /// Relu à chaque émission, pas seulement au démarrage : la révocation est
+    /// décidée par un autre processus (`ca-server authority revoke`), le
+    /// service en ligne doit s'arrêter d'émettre sans attendre un redémarrage.
+    async fn ensure_not_revoked(&self) -> Result<(), CaError> {
+        let own = self.opts.certificate.to_der()?;
+        let revoked = self.opts.store.revoked_authorities().await?;
+        if revoked.iter().any(|a| a.der == own) {
+            return Err(CaError::Other(
+                "l'autorité émettrice est révoquée : aucune émission possible".to_string(),
+            ));
+        }
+        Ok(())
     }
 }
 
