@@ -247,6 +247,26 @@ async fn the_binary_applies_what_the_matrix_declares() {
         pem("CERTIFICATE", &ocsp.to_der().unwrap()),
     )
     .unwrap();
+    // Constat T-3 : un certificat TSU par ailleurs valide, mais dont la clé a
+    // déjà dépassé sa propre date d'expiration (privateKeyUsagePeriod).
+    let expired_key_profile = oe_ca_core::Profile {
+        private_key_validity: Some(time::Duration::minutes(-5)),
+        ..profile::tsa_signer()
+    };
+    let expired_key = issuer
+        .issue(
+            &spki,
+            "tsu.example.test",
+            &expired_key_profile,
+            "tx-tsu-old",
+        )
+        .await
+        .unwrap();
+    std::fs::write(
+        dir.join("tsu-expired-key.pem"),
+        pem("CERTIFICATE", &expired_key.to_der().unwrap()),
+    )
+    .unwrap();
     let chain = [&hierarchy.issuing, &hierarchy.root]
         .iter()
         .map(|c| pem("CERTIFICATE", &c.to_der().unwrap()))
@@ -273,6 +293,30 @@ async fn the_binary_applies_what_the_matrix_declares() {
     assert!(!refused.status.success(), "{refused:?}");
     let stderr = String::from_utf8_lossy(&refused.stderr);
     assert!(stderr.contains("certificat TSU"), "{stderr}");
+
+    // EN 319 421 TIS-7.7.1-05/-06 (constat T-1) : une exactitude annoncée
+    // plus serrée que la dérive tolérée plus la résolution de genTime est
+    // refusée au démarrage (oe_config::Config::load).
+    let refused = fx
+        .command("tsu.pem", "monitor", port, "audit-accuracy.log")
+        .env("OPENEIDAS_ACCURACY", "500ms")
+        .env("OPENEIDAS_TIME_MAX_OFFSET", "500ms")
+        .output()
+        .unwrap();
+    assert!(!refused.status.success(), "{refused:?}");
+    let stderr = String::from_utf8_lossy(&refused.stderr);
+    assert!(stderr.contains("OPENEIDAS_ACCURACY"), "{stderr}");
+
+    // EN 319 421 TIS-7.7.1-09 (constat T-3) : la clé de signature a dépassé
+    // sa date d'expiration, le certificat non — aucun jeton ne sort.
+    {
+        let (_server, base) = fx
+            .serve("tsu-expired-key.pem", "monitor", "audit-expired-key.log")
+            .await;
+        let text = fx.timestamp(&base, "-sha256", "expired-key").await;
+        assert!(text.contains("Status: Rejected"), "{text}");
+        assert!(!text.contains("Status: Granted"), "{text}");
+    }
 
     // EN 319 421 TIS-7.7.1-07 : politique enforce et heure non traçable → la
     // TSU cesse d'émettre (timeNotAvailable) et /healthz le dit.
@@ -308,6 +352,56 @@ async fn the_binary_applies_what_the_matrix_declares() {
             String::from_utf8_lossy(&verify.stdout),
             String::from_utf8_lossy(&verify.stderr)
         );
+
+        // EN 319 421 OVR-7.13-05 (constat J-3) : le journal du service consigne
+        // la série du **jeton** relu (celle qu'openssl lit dans la réponse),
+        // l'empreinte soumise et l'état de l'horloge à l'instant de l'émission.
+        let serial = text
+            .lines()
+            .find_map(|l| l.trim().strip_prefix("Serial number: 0x"))
+            .expect("openssl affiche la série du jeton")
+            .trim()
+            .to_ascii_lowercase();
+        let records = oe_audit::read(fx.dir.join("audit-monitor.log")).unwrap();
+        let granted: Vec<_> = records
+            .iter()
+            .filter(|r| r.event == "timestamp.granted")
+            .collect();
+        assert_eq!(granted.len(), 1, "{records:?}");
+        let data = granted[0].data.as_ref().expect("données du jeton");
+        let journaled = data["serial_number"]
+            .as_str()
+            .unwrap()
+            .trim_start_matches('0');
+        assert_eq!(journaled, serial.trim_start_matches('0'), "{data:?}");
+        assert_eq!(
+            data["message_imprint_alg"], "2.16.840.1.101.3.4.2.1",
+            "{data:?}"
+        );
+        assert_eq!(
+            data["message_imprint"].as_str().unwrap().len(),
+            64,
+            "{data:?}"
+        );
+        assert_eq!(data["horloge"]["politique"], "monitor", "{data:?}");
+        assert!(
+            data["gen_time"].as_str().unwrap().ends_with('Z'),
+            "{data:?}"
+        );
+
+        // EN 319 422 §5.2.2 (constat T-1) : genTime porte une fraction de
+        // seconde. Une fraction exactement nulle est omise (forme canonique
+        // DER) : deux jetons ne peuvent pas l'être tous les deux par hasard.
+        let has_fraction = |t: &str| {
+            t.lines()
+                .find(|l| l.trim().starts_with("Time stamp:"))
+                .is_some_and(|l| l.contains('.'))
+        };
+        let fractional = has_fraction(&text) || {
+            let again = fx.timestamp(&base, "-sha256", "granted-bis").await;
+            has_fraction(&again)
+        };
+        assert!(fractional, "genTime sans fraction de seconde : {text}");
 
         let text = fx.timestamp(&base, "-sha1", "sha1").await;
         assert!(text.contains("Status: Rejected"), "{text}");

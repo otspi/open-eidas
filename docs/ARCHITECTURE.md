@@ -196,16 +196,17 @@ docker compose exec tsa tsa-server verify-audit
 ```
 
 Y sont consignés l'ouverture du journal, chaque jeton émis
-(`timestamp.granted` : `genTime`, politique, présence d'un nonce, et le numéro
-de série du **certificat** TSU), chaque refus avec son `failureInfo`
-(`timestamp.rejected`) et chaque mesure de temps avec l'écart par source
-(`time.measurement`). La CA tient son propre journal chaîné, où figurent les
-demandes d'enrôlement, les décisions RA, les émissions et les révocations.
-
-**Écart en cours de correction** (constat J-3 de l'audit du 2026-09-25,
-PR #52) : le journal de la TSA ne consigne pas encore le numéro de série du
-**jeton**, ni l'empreinte soumise, et le jeton n'est pas relu avant d'être
-consigné.
+(`timestamp.granted` : numéro de série du **jeton** tel que relu dans le
+jeton construit, `genTime` avec sa fraction de seconde, politique, empreinte
+soumise et son algorithme, présence d'un nonce, empreinte du certificat TSU,
+et l'état de l'horloge à cet instant — traçabilité, écart, sources), chaque
+refus avec son `failureInfo` (`timestamp.rejected`) et chaque mesure de temps
+avec l'écart par source (`time.measurement`). C'est ce qui permet, après un
+incident, d'identifier un par un les jetons affectés (EN 319 421
+`OVR-7.13-05`). La CA tient son propre journal chaîné, où figurent les
+demandes d'enrôlement, les décisions RA (avec la voie par laquelle l'opérateur
+a été identifié : `authenticated_via`), les émissions, les révocations et les
+actes de la racine (révocation d'une autorité, ARL).
 
 Deux propriétés rendent le dispositif exploitable :
 
