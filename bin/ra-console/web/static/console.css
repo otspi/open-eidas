@@ -210,3 +210,117 @@ button.quiet {
   color: var(--undeclared-text);
   border-bottom: 1px dashed var(--undeclared-text);
 }
+
+/* --- 6b : file des demandes, inspecteur, modale de signature (UI-UX §3.1, §5) --- */
+
+.mono {
+  font-family: var(--font-mono);
+  font-variant-numeric: slashed-zero tabular-nums;
+}
+.split {
+  display: grid;
+  grid-template-columns: 1fr minmax(420px, 34%);
+  gap: 16px;
+  align-items: start;
+}
+table.dense {
+  width: 100%;
+  border-collapse: collapse;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+}
+table.dense th {
+  position: sticky;
+  top: 0;
+  background: var(--bg-surface-elevated);
+  text-align: left;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+table.dense th,
+table.dense td {
+  padding: 8px 10px;
+  height: 38px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+table.dense tr[aria-selected="true"] td {
+  background: var(--bg-surface-elevated);
+}
+table.dense tr[aria-selected="true"] td:first-child {
+  box-shadow: inset 3px 0 0 var(--border-focus);
+}
+.badge {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 4px;
+}
+.badge.pending {
+  background: #451a03;
+  color: #fbbf24;
+  border: 1px dashed #d97706;
+}
+.inspector {
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: 6px;
+  padding: 16px;
+}
+.inspector h2,
+dialog.signature h2 {
+  font-size: 16px;
+  margin: 0 0 12px;
+}
+dl {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 6px 16px;
+  margin: 0 0 16px;
+}
+dt {
+  color: var(--text-muted);
+}
+dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+dialog.signature {
+  width: min(640px, 92vw);
+  background: var(--bg-surface-elevated);
+  color: var(--text-main);
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  padding: 24px;
+}
+dialog.signature::backdrop {
+  background: rgba(0, 0, 0, 0.7);
+  backdrop-filter: blur(4px);
+}
+dialog.signature textarea {
+  width: 100%;
+  font: inherit;
+  color: var(--text-main);
+  background: var(--bg-canvas);
+  border: 1px solid var(--border-subtle);
+  border-radius: 4px;
+  padding: 8px;
+  margin: 8px 0 16px;
+}
+.frozen pre {
+  background: var(--bg-canvas);
+  border: 1px solid var(--border-subtle);
+  border-radius: 4px;
+  padding: 12px;
+  overflow: auto;
+  max-height: 240px;
+  font-size: 12px;
+}
+.hash {
+  font-size: 13px;
+  word-spacing: 0.4em;
+}

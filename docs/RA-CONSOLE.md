@@ -186,8 +186,15 @@ construction : [`bin/ra-console/web/`](../bin/ra-console/web/README.md).
 - Connexion par nom et clé FIDO2, poste de travail (identité et rôle relus sur le
   serveur, compteurs des files), déconnexion, **verrouillage après 15 minutes
   d'inactivité** (avertissement à 14) : la session est révoquée côté serveur.
-- Les écrans métier (décisions, révocation, quorum, audit) suivent (étapes 6b et
-  suivantes).
+- **File des demandes (6b)** : tableau dense des demandes en attente, sélection au
+  clavier (`j`/`k`, `a` approuver, `r` rejeter), inspecteur latéral. Une décision passe
+  par une justification (**obligatoire pour un rejet**, garde d'interface seulement :
+  `ca-server` ne l'exige pas pour la voie signée), puis par la **modale de signature**
+  (`<dialog>` natif) : elle affiche le corps que `ca-server` a figé, tel quel, et son
+  empreinte SHA-256, avant tout geste sur la clé. Une erreur laisse la modale ouverte ;
+  un challenge consommé ou expiré est redemandé au besoin. Échap annule, sauf pendant
+  la cérémonie matérielle.
+- Révocation, salle de quorum et audit suivent (étapes 6c et suivantes).
 
 ## Variables d'environnement
 

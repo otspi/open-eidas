@@ -1,11 +1,12 @@
 // Le poste de travail une fois connecté (docs/UI-UX.md §2) : barre de
 // sécurité (environnement, identité et rôle relus sur le serveur), navigation
 // latérale avec les compteurs des files, zone de travail. Les écrans métier
-// (demandes, révocation, quorum, audit) arrivent aux étapes 6b et suivantes.
+// commencent par la file des demandes (6b) ; révocation, quorum et audit suivent.
 
 import { call, isError, type ConsoleInfo, type Me } from "./api";
 import { banner } from "./banner";
 import { h, replace } from "./dom";
+import { requestsView } from "./requests";
 
 const ROLE_LABELS: Record<Me["role"], string> = {
   auditeur: "auditeur",
@@ -14,7 +15,7 @@ const ROLE_LABELS: Record<Me["role"], string> = {
   admin: "administrateur",
 };
 
-export function renderShell(root: HTMLElement, info: ConsoleInfo, me: Me, onLogout: () => void): void {
+export function renderShell(root: HTMLElement, info: ConsoleInfo, me: Me, onLogout: () => void): () => void {
   const logout = h("button", { type: "button", class: "quiet", "data-testid": "logout" }, "Se déconnecter");
   logout.addEventListener("click", onLogout);
   const bar = h(
@@ -36,14 +37,11 @@ export function renderShell(root: HTMLElement, info: ConsoleInfo, me: Me, onLogo
     { class: "sidebar", "aria-label": "Files de travail" },
     h("ul", {}, h("li", {}, "Demandes RA ", requests), h("li", {}, "Quorum ", quorum)),
   );
-  const work = h(
-    "main",
-    { class: "workspace", tabindex: "-1" },
-    h("h1", {}, "Files de travail"),
-    h("p", { class: "muted" }, "Les écrans de décision arrivent avec les étapes suivantes."),
-  );
+  const view = requestsView(() => void refreshCounts(requests, quorum));
+  const work = h("main", { class: "workspace", tabindex: "-1" }, view.element);
   replace(root, banner(info), bar, h("div", { class: "layout" }, nav, work));
   void refreshCounts(requests, quorum);
+  return view.dispose;
 }
 
 async function refreshCounts(requests: HTMLElement, quorum: HTMLElement): Promise<void> {
