@@ -60,6 +60,10 @@ struct Revoked {
 
 struct CrlSnapshot {
     revoked: HashMap<Vec<u8>, Revoked>,
+    /// Constat O-1 : tous les numéros émis, tirés de l'extension privée de
+    /// la CRL (`oe_conformance::OID_CRL_ISSUED_SERIALS`). Un numéro absent
+    /// d'ici est `unknown`, jamais `good` par défaut.
+    issued: std::collections::HashSet<Vec<u8>>,
     this_update: time::OffsetDateTime,
     next_update: time::OffsetDateTime,
     last_fetch: Option<std::time::Instant>,
@@ -69,6 +73,7 @@ impl Default for CrlSnapshot {
     fn default() -> Self {
         CrlSnapshot {
             revoked: HashMap::new(),
+            issued: std::collections::HashSet::new(),
             this_update: time::OffsetDateTime::UNIX_EPOCH,
             next_update: time::OffsetDateTime::UNIX_EPOCH,
             last_fetch: None,
@@ -100,7 +105,19 @@ pub struct Responder {
     opts: Options,
     http: reqwest::Client,
     snapshot: RwLock<CrlSnapshot>,
+    /// Constat O-1 : un certificat tout juste émis peut légitimement être
+    /// absent de l'instantané courant (la CA a republié une CRL plus
+    /// récente que le dernier rafraîchissement périodique). Sur un
+    /// `unknown`, un rafraîchissement à la volée est tenté — mais borné par
+    /// [`ON_DEMAND_REFRESH_COOLDOWN`], sinon quiconque interroge des séries
+    /// au hasard déclencherait un fetch HTTP et une vérification de
+    /// signature à chaque requête (déni de service).
+    last_on_demand_refresh: std::sync::Mutex<Option<std::time::Instant>>,
 }
+
+/// Délai minimal entre deux rafraîchissements à la volée, quel que soit le
+/// volume de requêtes OCSP reçues entre-temps.
+const ON_DEMAND_REFRESH_COOLDOWN: Duration = Duration::from_secs(2);
 
 /// Déduit l'URL de la CRL de la CA émettrice à partir de l'adresse à
 /// laquelle ce service joint la PKI et du nom courant de l'émetteur. La
@@ -140,7 +157,30 @@ impl Responder {
             opts,
             http,
             snapshot: RwLock::new(CrlSnapshot::default()),
+            last_on_demand_refresh: std::sync::Mutex::new(None),
         })
+    }
+
+    /// Tente un rafraîchissement à la volée, borné par
+    /// [`ON_DEMAND_REFRESH_COOLDOWN`] : rend `true` s'il a eu lieu (que la
+    /// requête HTTP réussisse ou non — l'appelant relit simplement
+    /// l'instantané, qui n'a alors changé qu'en cas de succès), `false` s'il
+    /// a été sauté faute de délai écoulé.
+    async fn try_on_demand_refresh(&self) -> bool {
+        {
+            let mut last = self
+                .last_on_demand_refresh
+                .lock()
+                .expect("verrou empoisonné");
+            match *last {
+                Some(t) if t.elapsed() < ON_DEMAND_REFRESH_COOLDOWN => return false,
+                _ => *last = Some(std::time::Instant::now()),
+            }
+        }
+        if let Err(e) = self.refresh().await {
+            tracing::warn!(erreur = %e, "rafraîchissement à la volée de la CRL impossible");
+        }
+        true
     }
 
     /// Charge la CRL une première fois (bloquant), à appeler avant de
@@ -174,8 +214,31 @@ impl Responder {
             }
         }
 
+        // Constat O-1 : sans cette extension, impossible de distinguer un
+        // numéro jamais émis d'un numéro émis mais non révoqué — une CRL qui
+        // ne la porte pas est donc refusée, comme une CRL illisible (aucune
+        // CRL produite par cette CA n'en manque, voir
+        // `oe_ca_core::extensions::crl_issued_serials`).
+        let issued_oid = der::asn1::ObjectIdentifier::new(oe_conformance::OID_CRL_ISSUED_SERIALS)
+            .expect("OID constant invalide");
+        let issued_ext = crl
+            .tbs_cert_list
+            .crl_extensions
+            .as_ref()
+            .and_then(|exts| exts.iter().find(|e| e.extn_id == issued_oid))
+            .ok_or_else(|| {
+                OcspError::InvalidCrl(der::Error::new(der::ErrorKind::Failed, der::Length::ZERO))
+            })?;
+        let issued_serials: Vec<x509_cert::serial_number::SerialNumber> =
+            der::Decode::from_der(issued_ext.extn_value.as_bytes())?;
+        let issued: std::collections::HashSet<Vec<u8>> = issued_serials
+            .iter()
+            .map(|s| s.as_bytes().to_vec())
+            .collect();
+
         let mut snap = self.snapshot.write().expect("verrou de CRL empoisonné");
         snap.revoked = revoked;
+        snap.issued = issued;
         snap.this_update = x509_time_to_offset(&crl.tbs_cert_list.this_update);
         snap.next_update = crl
             .tbs_cert_list
@@ -194,14 +257,44 @@ impl Responder {
     /// une `OCSPResponse` DER, toujours — un refus protocolaire est une
     /// réponse OCSP valide de statut non `successful`, jamais une erreur de
     /// transport.
-    pub fn handle(&self, req_der: &[u8]) -> Vec<u8> {
-        match self.handle_inner(req_der) {
+    pub async fn handle(&self, req_der: &[u8]) -> Vec<u8> {
+        match self.handle_inner(req_der).await {
             Ok(der) => der,
             Err(_) => error_response(OcspResponseStatus::InternalError),
         }
     }
 
-    fn handle_inner(&self, req_der: &[u8]) -> Result<Vec<u8>, OcspError> {
+    /// `None` si la CRL en cache est trop ancienne (`stale`, à traiter par
+    /// l'appelant comme `tryLater`) ; sinon le statut, `thisUpdate` et
+    /// `nextUpdate` de l'instantané courant.
+    fn lookup(
+        &self,
+        serial: &[u8],
+    ) -> Option<(CertStatus, time::OffsetDateTime, time::OffsetDateTime)> {
+        let snap = self.snapshot.read().expect("verrou de CRL empoisonné");
+        let stale = match snap.last_fetch {
+            Some(t) => t.elapsed() > self.opts.crl_refresh * 2,
+            None => true,
+        };
+        if stale {
+            return None;
+        }
+        let status = match snap.revoked.get(serial) {
+            Some(rev) => CertStatus::Revoked(RevokedInfo {
+                revocation_time: der::asn1::GeneralizedTime::from_date_time(
+                    offset_to_der_datetime(rev.at).ok()?,
+                ),
+                revocation_reason: rev.reason,
+            }),
+            // Constat O-1 : un numéro absent des deux listes n'a jamais été
+            // émis par cette CA — `unknown`, jamais `good` par défaut.
+            None if snap.issued.contains(serial) => CertStatus::Good(der::asn1::Null),
+            None => CertStatus::Unknown(der::asn1::Null),
+        };
+        Some((status, snap.this_update, snap.next_update))
+    }
+
+    async fn handle_inner(&self, req_der: &[u8]) -> Result<Vec<u8>, OcspError> {
         let req = match OcspRequest::from_der(req_der) {
             Ok(r) => r,
             Err(_) => return Ok(error_response(OcspResponseStatus::MalformedRequest)),
@@ -222,27 +315,22 @@ impl Responder {
             return Ok(error_response(OcspResponseStatus::Unauthorized));
         }
 
-        let snap = self.snapshot.read().expect("verrou de CRL empoisonné");
-        let stale = match snap.last_fetch {
-            Some(t) => t.elapsed() > self.opts.crl_refresh * 2,
-            None => true,
-        };
-        if stale {
+        let serial = cert_id.serial_number.as_bytes().to_vec();
+        let Some((mut status, mut this_update, mut next_update)) = self.lookup(&serial) else {
             return Ok(error_response(OcspResponseStatus::TryLater));
-        }
-
-        let status = match snap.revoked.get(cert_id.serial_number.as_bytes()) {
-            Some(rev) => CertStatus::Revoked(RevokedInfo {
-                revocation_time: der::asn1::GeneralizedTime::from_date_time(
-                    offset_to_der_datetime(rev.at)?,
-                ),
-                revocation_reason: rev.reason,
-            }),
-            None => CertStatus::Good(der::asn1::Null),
         };
-        let this_update = snap.this_update;
-        let next_update = snap.next_update;
-        drop(snap);
+
+        // Constat O-1 : un certificat tout juste émis peut être absent de
+        // l'instantané courant — un rafraîchissement à la volée (borné,
+        // `try_on_demand_refresh`) lui laisse une chance avant de répondre
+        // `unknown` pour de bon.
+        if matches!(status, CertStatus::Unknown(_)) && self.try_on_demand_refresh().await {
+            if let Some((s, tu, nu)) = self.lookup(&serial) {
+                status = s;
+                this_update = tu;
+                next_update = nu;
+            }
+        }
 
         let single_response = SingleResponse {
             cert_id: cert_id.clone(),

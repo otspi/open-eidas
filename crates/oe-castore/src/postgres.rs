@@ -312,6 +312,18 @@ impl Store for Postgres {
         rows.into_iter().map(Self::certificate_from_row).collect()
     }
 
+    async fn issued_serials(&self) -> Result<Vec<Serial>, StoreError> {
+        let rows: Vec<(String,)> = sqlx::query_as(
+            "SELECT serial_hex FROM certificates WHERE status <> 'reserved' ORDER BY serial_hex",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(map_err)?;
+        rows.into_iter()
+            .map(|(hex_str,)| hex::decode(hex_str).map_err(|e| StoreError::Other(e.to_string())))
+            .collect()
+    }
+
     async fn create_request(&self, r: Request) -> Result<(), StoreError> {
         let result = sqlx::query(
             "INSERT INTO enrollment_requests
