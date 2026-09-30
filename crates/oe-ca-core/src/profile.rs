@@ -56,6 +56,11 @@ pub struct Profile {
     pub san_dns_from_cn: bool,
     /// Politique de certification gravée dans `certificatePolicies`.
     pub policy_oid: Option<&'static str>,
+    /// Durée de vie de la **clé privée**, plus courte que `validity`
+    /// (constat T-3 de l'audit du 2026-09-25, EN 319 421 `TIS-7.6.7-*`) :
+    /// gravée dans l'extension `privateKeyUsagePeriod`. `None` pour un
+    /// profil qui n'a pas cette exigence.
+    pub private_key_validity: Option<time::Duration>,
 
     /// Applique les règles ETSI propres à ce profil au certificat
     /// réellement signé — reproduit le champ `Check` de `ca.Profile` (Go).
@@ -83,7 +88,10 @@ pub fn tsa_signer() -> Profile {
         organizational_unit: "Time Stamping Authority",
         organization: "Open eIDAS",
         country: "FR",
-        validity: time::Duration::days(365),
+        // 2 ans de certificat, 1 an de clé (constat T-3) : la clé expire
+        // avant lui, imposant un renouvellement de bi-clé à mi-vie du
+        // certificat plutôt qu'une clé unique reconduite indéfiniment.
+        validity: time::Duration::days(2 * 365),
         // nonRepudiation (contentCommitment) accompagne digitalSignature :
         // un jeton d'horodatage engage l'autorité sur la date.
         key_usages: KeyUsages::DigitalSignature | KeyUsages::NonRepudiation,
@@ -96,6 +104,7 @@ pub fn tsa_signer() -> Profile {
         required_cn: None,
         san_dns_from_cn: false,
         policy_oid: None,
+        private_key_validity: Some(time::Duration::days(365)),
         check: oe_conformance::check_tsu_certificate,
     }
 }
@@ -121,6 +130,7 @@ pub fn ocsp_responder() -> Profile {
         required_cn: None,
         san_dns_from_cn: false,
         policy_oid: None,
+        private_key_validity: None,
         check: oe_conformance::check_ocsp_responder_certificate,
     }
 }
@@ -147,6 +157,7 @@ pub fn internal_client() -> Profile {
         required_cn: Some(INTERNAL_CLIENT_CN),
         san_dns_from_cn: false,
         policy_oid: Some(OID_POLICY_INTERNAL_CLIENT),
+        private_key_validity: None,
         check: oe_conformance::check_internal_client_certificate,
     }
 }
@@ -171,6 +182,7 @@ pub fn internal_server() -> Profile {
         required_cn: None,
         san_dns_from_cn: true,
         policy_oid: Some(OID_POLICY_INTERNAL_SERVER),
+        private_key_validity: None,
         check: oe_conformance::check_internal_server_certificate,
     }
 }

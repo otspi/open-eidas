@@ -291,6 +291,9 @@ impl Issuer {
         if let Some(policy) = profile.policy_oid {
             exts.push(extensions::certificate_policy(policy)?);
         }
+        if let Some(key_validity) = profile.private_key_validity {
+            exts.push(extensions::private_key_usage_period(now + key_validity)?);
+        }
         if profile.san_dns_from_cn {
             exts.push(extensions::subject_alt_name_dns(subject_cn)?);
         }
