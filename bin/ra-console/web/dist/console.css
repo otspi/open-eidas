@@ -382,3 +382,16 @@ select {
   max-height: 200px;
   font-size: 12px;
 }
+
+/* --- 6e : opérateurs --- */
+.actions.start {
+  justify-content: flex-start;
+  margin-bottom: 12px;
+}
+.key {
+  border-top: 1px solid var(--border-subtle);
+  padding: 8px 0;
+}
+.key p {
+  margin: 0 0 4px;
+}

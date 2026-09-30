@@ -74,7 +74,9 @@ impl Env {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let name = format!("chal_{nanos}");
+        static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let name = format!("chal_{nanos}_{seq}");
         let admin = PgPoolOptions::new().connect(&base).await.unwrap();
         sqlx::query(&format!("CREATE DATABASE {name}"))
             .execute(&admin)
@@ -1076,6 +1078,19 @@ async fn an_admin_invites_and_confirms_an_operator_through_the_console() {
     assert_eq!(pending["status"], "pending_confirmation", "{pending}");
     let credential_id = pending["credential_id"].as_str().unwrap().to_string();
 
+    // La console montre la clé en attente, avec l'empreinte même que ca-server a
+    // remise à l'invitée : c'est elle que l'administrateur compare hors bande.
+    let (status, registry) = env.get("/api/v1/operators", &admin).await;
+    assert_eq!(status, StatusCode::OK, "{registry}");
+    let shown = registry["pending"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["credential_id"] == credential_id.as_str())
+        .unwrap_or_else(|| panic!("clé en attente absente : {registry}"));
+    assert_eq!(shown["operator"], "eve");
+    assert_eq!(shown["key_fingerprint"], pending["key_fingerprint"]);
+
     let confirm = serde_json::json!({
         "action": "confirm_key",
         "credential_id": credential_id,
@@ -1093,6 +1108,17 @@ async fn an_admin_invites_and_confirms_an_operator_through_the_console() {
     // La clé est active : l'invitée peut se connecter.
     let eve = env.log_in("eve").await;
     assert!(eve.starts_with("session="));
+    let (_, registry) = env.get("/api/v1/operators", &admin).await;
+    assert_eq!(registry["pending"], serde_json::json!([]), "{registry}");
+    let eve_entry = registry["operators"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|o| o["name"] == "eve")
+        .unwrap();
+    assert_eq!(eve_entry["credentials"].as_array().unwrap().len(), 1);
+    let (status, _) = env.get("/api/v1/operators", "session=n-importe-quoi").await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
 }
 
 /// Révocation d'une clé : la cible de la route est contrôlée par ca-server.
