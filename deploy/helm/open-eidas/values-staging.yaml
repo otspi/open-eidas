@@ -5,7 +5,7 @@
 # Préalables sur le cluster cible, gérés hors de ce chart :
 #   - un listener HTTPS par hôte (api/pki/ocsp.staging.open-eidas.eu) sur la
 #     Gateway API "shared-gateway" (namespace "ingress"), chacun avec son
-#     Certificate cert-manager — voir open-eidas/deploy pour ce qui EST géré
+#     Certificate cert-manager — voir otspi/deploy pour ce qui EST géré
 #     par ce dépôt (Application ArgoCD, Cluster CloudNativePG, SealedSecret) ;
 #   - trois enregistrements DNS (A ou CNAME) pointant vers l'adresse publique
 #     de shared-gateway :
@@ -14,7 +14,7 @@
 #                                      certificat de la CA émettrice)
 #       ocsp.staging.open-eidas.eu  -> répondeur OCSP (AIA ocsp)
 #   - le Secret "open-eidas-generated" (scellé via kubeseal, voir
-#     open-eidas/deploy) présent dans le namespace open-eidas-staging avant
+#     otspi/deploy) présent dans le namespace open-eidas-staging avant
 #     le premier déploiement — il fournit à la fois les valeurs sensibles de
 #     ce chart et les identifiants de bootstrap du Cluster CloudNativePG.
 #
@@ -22,7 +22,7 @@
 #   helm install open-eidas deploy/helm/open-eidas \
 #       --namespace open-eidas-staging --create-namespace \
 #       -f deploy/helm/open-eidas/values-staging.yaml
-# ou via l'app-of-apps open-eidas/deploy (apps/open-eidas-staging.yaml).
+# ou via l'app-of-apps otspi/deploy (apps/open-eidas-staging.yaml).
 
 secrets:
   # Contient postgres-password, tsa-pin, ocsp-pin, ca-root-pin,
@@ -33,7 +33,7 @@ secrets:
   existingSecret: open-eidas-generated
 
 postgres:
-  # Cluster CloudNativePG géré par open-eidas/deploy (hors de ce chart), pas
+  # Cluster CloudNativePG géré par otspi/deploy (hors de ce chart), pas
   # le StatefulSet postgres intégré.
   external:
     enabled: true
