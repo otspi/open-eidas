@@ -24,6 +24,8 @@ pub struct Config {
     /// décision déjà prise pour ce journal (voir `ra_console::audit::Recorder`), non
     /// remise en cause par l'ajout de S3.
     pub s3: Option<S3Config>,
+    /// Environnement annoncé par le frontend (docs/UI-UX.md §1, principe 4).
+    pub environment: crate::web::Environment,
 }
 
 /// Mêmes champs que `ca_server::config::S3Config` (même stockage S3-compatible
@@ -153,6 +155,9 @@ impl Config {
                 "/var/lib/open-eidas/state/ra-console-audit.log",
             ),
             s3: s3_config()?,
+            environment: crate::web::Environment::parse(
+                &std::env::var("OPENEIDAS_RA_ENVIRONMENT").unwrap_or_default(),
+            )?,
         })
     }
 

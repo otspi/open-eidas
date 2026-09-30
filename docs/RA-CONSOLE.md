@@ -169,6 +169,26 @@ d'une action à plusieurs signatures (`status`, `signatures`, `required`, `signe
 - Identifiant de clé : base64url, 1 024 caractères au plus ; nom d'opérateur : 1 à 256
   caractères. Toute autre forme est refusée avant relais.
 
+## Frontend (étape 6a : socle)
+
+La console sert elle-même son interface (docs/UI-UX.md) : `/` et `/assets/*`, embarqués
+dans le binaire (aucun serveur web ni répertoire d'assets à déployer). Sources et
+construction : [`bin/ra-console/web/`](../bin/ra-console/web/README.md).
+
+- **Toutes** les réponses, API comprise, portent la CSP stricte d'UI-UX §6.3 (aucun
+  script ni style en ligne, rien hors de l'origine, `frame-ancestors 'none'`),
+  `X-Frame-Options: DENY`, `nosniff`, `Referrer-Policy: no-referrer` et
+  `Cache-Control: no-store`.
+- Bannière d'environnement sur tous les écrans, connexion comprise :
+  `OPENEIDAS_RA_ENVIRONMENT` (`production`, `staging`, `demo`) ; non déclarée, la
+  console affiche « ENVIRONNEMENT NON DÉCLARÉ » plutôt qu'un environnement sans risque.
+  `GET /api/v1/console` (sans session) la rend au frontend.
+- Connexion par nom et clé FIDO2, poste de travail (identité et rôle relus sur le
+  serveur, compteurs des files), déconnexion, **verrouillage après 15 minutes
+  d'inactivité** (avertissement à 14) : la session est révoquée côté serveur.
+- Les écrans métier (décisions, révocation, quorum, audit) suivent (étapes 6b et
+  suivantes).
+
 ## Variables d'environnement
 
 | Variable | Défaut | Rôle |
@@ -178,6 +198,7 @@ d'une action à plusieurs signatures (`status`, `signatures`, `required`, `signe
 | `OPENEIDAS_INTERNAL_TLS_CERT_FILE` / `_KEY_FILE` | — (obligatoires) | Certificat `internal_client` de la console et sa clé (PEM) |
 | `OPENEIDAS_CA_CERT_FILE` | — (obligatoire) | Certificat de la CA émettrice, seule racine de confiance du lien |
 | `OPENEIDAS_RA_LISTEN` | `:8330` | Adresse d'écoute |
+| `OPENEIDAS_RA_ENVIRONMENT` | — (non déclaré) | `production`, `staging` ou `demo` : bannière du frontend |
 | `OPENEIDAS_ENROLL_URL` | — | (`internal-cert`) API d'enrôlement publique de la CA |
 | `OPENEIDAS_ENROLL_HMAC_KEY` | — | (`internal-cert`) secret partagé d'enrôlement |
 | `OPENEIDAS_ENROLL_TIMEOUT_SECONDS` | 600 | (`internal-cert`) attente de l'approbation |

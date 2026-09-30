@@ -1,0 +1,18 @@
+{
+  "name": "ra-console-web",
+  "private": true,
+  "description": "Frontend de ra-console (docs/UI-UX.md) : TypeScript compilé par esbuild, embarqué dans le binaire.",
+  "license": "EUPL-1.2 OR AGPL-3.0-only",
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p e2e/tsconfig.json",
+    "build": "esbuild src/main.ts --bundle --format=esm --target=es2022 --minify --legal-comments=none --outfile=dist/console.js && cp static/index.html static/console.css dist/",
+    "e2e": "playwright test"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.63.0",
+    "@types/node": "24.19.0",
+    "esbuild": "0.28.2",
+    "typescript": "7.0.2"
+  }
+}
