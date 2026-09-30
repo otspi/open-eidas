@@ -1,5 +1,7 @@
 //! Branche `oe_ca_core::Issuer` sur l'action signée de révocation de
-//! certificat (`oe_actions::Revoker`).
+//! certificat (`oe_actions::Revoker`). Ce branchement ne sert qu'à elle :
+//! toute révocation qui passe ici a été signée par WebAuthn, d'où
+//! `Via::WebAuthn` (constat R-1).
 
 use std::sync::Arc;
 
@@ -17,7 +19,13 @@ impl oe_actions::Revoker for IssuerRevoker {
         comment: &str,
     ) -> Result<(), String> {
         self.0
-            .revoke(serial, reason, operator, comment)
+            .revoke(
+                serial,
+                reason,
+                operator,
+                comment,
+                &oe_ca_core::Via::WebAuthn,
+            )
             .await
             .map_err(|e| e.to_string())
     }

@@ -14,7 +14,7 @@ use x509_cert::Certificate;
 use oe_castore::{Arl, Store};
 use oe_hsm::SigningToken;
 
-use crate::{extensions, extensions_crl_reason, signing, to_x509_time, CaError, Recorder};
+use crate::{extensions, extensions_crl_reason, signing, to_x509_time, CaError, Recorder, Via};
 
 pub struct RootAuthorityOptions {
     pub signer: Arc<dyn SigningToken + Send + Sync>,
@@ -48,13 +48,16 @@ impl RootAuthority {
     /// Révoque une autorité subordonnée (jamais la racine elle-même, qui
     /// n'a pas d'émetteur à qui le signaler) et republie immédiatement
     /// l'ARL — même raisonnement que `Issuer::revoke`/`publish_crl` : une
-    /// révocation qui n'est pas publiée ne protège personne.
+    /// révocation qui n'est pas publiée ne protège personne. `via` dit par
+    /// quelle voie l'opérateur a été identifié (constat R-1) : aujourd'hui
+    /// toujours le CLI (`ca-server authority revoke`), consigné comme tel.
     pub async fn revoke_authority(
         &self,
         name: &str,
         reason: i32,
         operator: &str,
         comment: &str,
+        via: &Via,
     ) -> Result<Arl, CaError> {
         if operator.is_empty() {
             return Err(CaError::Other(
@@ -62,6 +65,7 @@ impl RootAuthority {
                     .to_string(),
             ));
         }
+        via.check_comment(comment).map_err(CaError::Other)?;
         if name == crate::ceremony::AUTHORITY_ROOT {
             return Err(CaError::Other(
                 "la racine ne peut pas se révoquer elle-même".to_string(),
@@ -73,18 +77,16 @@ impl RootAuthority {
         // Le journal *avant* la révocation en base (§15 étape 2b) : si
         // l'écriture échoue, l'autorité reste active — pas de révocation à
         // moitié consignée.
-        self.record(
-            "ca.authority_revoked",
-            serde_json::json!({
-                "autorite": name,
-                "sujet": authority.subject_dn,
-                "motif": reason,
-                "operateur": operator,
-                "commentaire": comment,
-                "date": at.format(&time::format_description::well_known::Rfc3339).unwrap_or_default(),
-            }),
-        )
-        .await?;
+        let mut data = serde_json::json!({
+            "autorite": name,
+            "sujet": authority.subject_dn,
+            "motif": reason,
+            "operateur": operator,
+            "commentaire": comment,
+            "date": at.format(&time::format_description::well_known::Rfc3339).unwrap_or_default(),
+        });
+        via.annotate(&mut data);
+        self.record("ca.authority_revoked", data).await?;
         self.opts.store.revoke_authority(name, at, reason).await?;
 
         self.publish_arl().await

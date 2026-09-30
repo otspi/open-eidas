@@ -238,7 +238,13 @@ async fn revoking_the_client_certificate_cuts_access_at_the_next_connection() {
 
     let serial = oe_ca_core::canonical_serial(cert.tbs_certificate().serial_number());
     pki.issuer
-        .revoke(&serial, 1, "operateur-test", "clé compromise")
+        .revoke(
+            &serial,
+            1,
+            "operateur-test",
+            "clé compromise",
+            &oe_ca_core::Via::WebAuthn,
+        )
         .await
         .unwrap();
     assert!(!ok(&get_ping(&pki, port, Some((&cert, &key))).await));

@@ -177,7 +177,13 @@ async fn the_arl_is_served_where_the_issuing_cdp_points_and_reflects_revocation(
     // relit en base, sans redémarrage.
     let revoked = f
         .root_authority
-        .revoke_authority(AUTHORITY_ISSUING, 2, "test-operator", "compromission")
+        .revoke_authority(
+            AUTHORITY_ISSUING,
+            2,
+            "test-operator",
+            "compromission",
+            &oe_ca_core::Via::WebAuthn,
+        )
         .await
         .unwrap();
     let (status, body) = get(&f.server, &path).await;

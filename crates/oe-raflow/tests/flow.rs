@@ -22,7 +22,7 @@ use oe_ca_core::ceremony::{run_ceremony, CeremonyOptions};
 use oe_ca_core::{profile, Issuer, Options as CaOptions};
 use oe_castore::{Memory, RequestState, Store};
 use oe_hsm::testing::SoftwareToken;
-use oe_raflow::{Decider, DeciderOptions, Flow, Options, RaflowError};
+use oe_raflow::{Decider, DeciderOptions, Flow, Options, RaflowError, Via};
 
 const HMAC_SECRET: &str = "secret-de-test";
 
@@ -65,10 +65,13 @@ fn build_csr_with_bits(cn: &str, bits: usize) -> (Vec<u8>, RsaPrivateKey) {
 }
 
 async fn test_flow() -> (Flow, Arc<Memory>) {
-    test_flow_with(None).await
+    test_flow_with(None, None).await
 }
 
-async fn test_flow_with(recorder: Option<Arc<dyn oe_raflow::Recorder>>) -> (Flow, Arc<Memory>) {
+async fn test_flow_with(
+    recorder: Option<Arc<dyn oe_raflow::Recorder>>,
+    ca_recorder: Option<Arc<dyn oe_ca_core::Recorder>>,
+) -> (Flow, Arc<Memory>) {
     let store = Arc::new(Memory::new());
     let root_signer = Arc::new(SoftwareToken::generate(2048));
     let issuing_signer = Arc::new(SoftwareToken::generate(2048));
@@ -102,7 +105,7 @@ async fn test_flow_with(recorder: Option<Arc<dyn oe_raflow::Recorder>>) -> (Flow
         ocsp_url: None,
         crl_validity: time::Duration::hours(24),
         crl_grace: time::Duration::hours(1),
-        recorder: None,
+        recorder: ca_recorder,
     })
     .unwrap();
 
@@ -188,7 +191,12 @@ async fn approve_then_resubmit_issues_a_certificate_signed_by_the_issuing_key() 
         .await
         .unwrap();
     flow.decider()
-        .approve(&opened.transaction_id, "operateur-ra", "conforme")
+        .approve(
+            &opened.transaction_id,
+            "operateur-ra",
+            "conforme",
+            &Via::WebAuthn,
+        )
         .await
         .unwrap();
 
@@ -236,7 +244,12 @@ async fn issuance_immediately_republishes_the_crl_with_the_new_serial() {
         .await
         .unwrap();
     flow.decider()
-        .approve(&opened.transaction_id, "operateur-ra", "conforme")
+        .approve(
+            &opened.transaction_id,
+            "operateur-ra",
+            "conforme",
+            &Via::WebAuthn,
+        )
         .await
         .unwrap();
     let issued = flow
@@ -279,7 +292,12 @@ async fn reject_then_resubmit_reports_the_operator_and_comment() {
         .await
         .unwrap();
     flow.decider()
-        .reject(&opened.transaction_id, "operateur-ra", "sujet non autorisé")
+        .reject(
+            &opened.transaction_id,
+            "operateur-ra",
+            "sujet non autorisé",
+            &Via::WebAuthn,
+        )
         .await
         .unwrap();
 
@@ -308,7 +326,7 @@ async fn issuing_a_renewal_revokes_the_previous_certificate_for_the_same_subject
         .await
         .unwrap();
     flow.decider()
-        .approve(&opened1.transaction_id, "operateur-ra", "")
+        .approve(&opened1.transaction_id, "operateur-ra", "", &Via::WebAuthn)
         .await
         .unwrap();
     let issued1 = flow
@@ -330,7 +348,7 @@ async fn issuing_a_renewal_revokes_the_previous_certificate_for_the_same_subject
         .await
         .unwrap();
     flow.decider()
-        .approve(&opened2.transaction_id, "operateur-ra", "")
+        .approve(&opened2.transaction_id, "operateur-ra", "", &Via::WebAuthn)
         .await
         .unwrap();
     let issued2 = flow
@@ -367,7 +385,10 @@ async fn decide_without_operator_identity_is_refused() {
         .await
         .unwrap();
 
-    let err = flow.decider().approve(&opened.transaction_id, "", "").await;
+    let err = flow
+        .decider()
+        .approve(&opened.transaction_id, "", "", &Via::WebAuthn)
+        .await;
     assert!(
         err.is_err(),
         "approuver sans identité d'opérateur doit être refusé — traçabilité de la décision"
@@ -383,7 +404,7 @@ async fn approve_unknown_transaction_is_not_found() {
         clock: None,
     });
     let err = decider
-        .approve("transaction-inconnue", "operateur-ra", "")
+        .approve("transaction-inconnue", "operateur-ra", "", &Via::WebAuthn)
         .await;
     assert!(matches!(err, Err(RaflowError::NotFound)));
 }
@@ -404,7 +425,7 @@ impl oe_raflow::Recorder for FailingRecorder {
 
 #[tokio::test]
 async fn a_journal_failure_blocks_submission_before_any_request_is_created() {
-    let (flow, store) = test_flow_with(Some(Arc::new(FailingRecorder))).await;
+    let (flow, store) = test_flow_with(Some(Arc::new(FailingRecorder)), None).await;
     let (csr_der, _key) = build_csr("audit.example.test");
     let signature = oe_raflow::signature(&csr_der, HMAC_SECRET);
 
@@ -442,7 +463,7 @@ async fn a_journal_failure_on_decide_still_leaves_the_decision_applied() {
         clock: None,
     });
     let err = failing_decider
-        .approve(&request.transaction_id, "operateur-ra", "")
+        .approve(&request.transaction_id, "operateur-ra", "", &Via::WebAuthn)
         .await
         .unwrap_err();
     assert!(err.to_string().contains("journal"), "{err}");
@@ -456,4 +477,113 @@ async fn a_journal_failure_on_decide_still_leaves_the_decision_applied() {
         RequestState::Approved,
         "la décision reste appliquée malgré l'échec du journal (exception documentée)"
     );
+}
+
+/// Journal en mémoire qui garde les données de chaque événement, des deux
+/// sources (`oe_raflow` et `oe_ca_core`).
+#[derive(Default, Clone)]
+struct DataLog(Arc<std::sync::Mutex<Vec<(String, serde_json::Value)>>>);
+
+impl DataLog {
+    fn last(&self, event: &str) -> serde_json::Value {
+        self.0
+            .lock()
+            .unwrap()
+            .iter()
+            .rev()
+            .find(|(e, _)| e == event)
+            .map(|(_, d)| d.clone())
+            .unwrap_or_else(|| panic!("événement {event} absent du journal"))
+    }
+}
+
+#[async_trait::async_trait]
+impl oe_raflow::Recorder for DataLog {
+    async fn append(&self, event: &str, data: serde_json::Value) -> Result<(), String> {
+        self.0.lock().unwrap().push((event.to_string(), data));
+        Ok(())
+    }
+}
+
+#[async_trait::async_trait]
+impl oe_ca_core::Recorder for DataLog {
+    async fn append(&self, event: &str, data: serde_json::Value) -> Result<(), String> {
+        self.0.lock().unwrap().push((event.to_string(), data));
+        Ok(())
+    }
+}
+
+async fn open_request(flow: &Flow, cn: &str) -> (String, Vec<u8>, String) {
+    let (csr_der, _key) = build_csr(cn);
+    let sig = oe_raflow::signature(&csr_der, HMAC_SECRET);
+    let opened = flow
+        .submit(&csr_der, profile::PROFILE_TSA_SIGNER, &sig)
+        .await
+        .unwrap();
+    (opened.transaction_id, csr_der, sig)
+}
+
+/// Constat R-1 : chaque décision dit par quelle voie son opérateur a été
+/// identifié (docs/WEBUI.md §20) — la voie signée, la voie de secours (avec
+/// l'identité système réelle, marquée non authentifiée) et le remplacement
+/// automatique au renouvellement.
+#[tokio::test]
+async fn each_decision_records_how_its_operator_was_identified() {
+    let log = DataLog::default();
+    let (flow, _store) =
+        test_flow_with(Some(Arc::new(log.clone())), Some(Arc::new(log.clone()))).await;
+
+    let (tx1, csr1, sig1) = open_request(&flow, "tsu.example.test").await;
+    let cli = Via::Cli(oe_raflow::SystemIdentity {
+        uid: Some(0),
+        user: "root".to_string(),
+        host: "open-eidas-ca-0".to_string(),
+    });
+    flow.decider()
+        .approve(&tx1, "prenom.nom", "identité vérifiée au guichet", &cli)
+        .await
+        .unwrap();
+    let approved = log.last("ca.request_approved");
+    assert_eq!(approved["authenticated_via"], "cli");
+    assert_eq!(approved["identite_systeme"]["authentifiee"], false);
+    assert_eq!(approved["identite_systeme"]["uid"], 0);
+    assert_eq!(approved["identite_systeme"]["hote"], "open-eidas-ca-0");
+    flow.submit(&csr1, profile::PROFILE_TSA_SIGNER, &sig1)
+        .await
+        .unwrap();
+
+    // Renouvellement : la décision signée, puis la révocation automatique de
+    // l'ancien certificat du même sujet.
+    let (tx2, csr2, sig2) = open_request(&flow, "tsu.example.test").await;
+    flow.decider()
+        .approve(&tx2, "operateur-ra", "", &Via::WebAuthn)
+        .await
+        .unwrap();
+    let approved = log.last("ca.request_approved");
+    assert_eq!(approved["authenticated_via"], "webauthn");
+    assert!(approved.get("identite_systeme").is_none());
+    flow.submit(&csr2, profile::PROFILE_TSA_SIGNER, &sig2)
+        .await
+        .unwrap();
+    let superseded = log.last("ca.certificate_revoked");
+    assert_eq!(superseded["authenticated_via"], "automatique");
+    assert_eq!(superseded["motif"], 4);
+}
+
+/// Constat R-1 : une décision prise par le CLI (voie de secours) sans
+/// commentaire est refusée avant que la demande ne change d'état.
+#[tokio::test]
+async fn a_cli_decision_without_a_comment_is_refused_before_the_request_changes() {
+    let (flow, store) = test_flow().await;
+    let (tx, _csr, _sig) = open_request(&flow, "tsu.example.test").await;
+    let cli = Via::Cli(oe_raflow::SystemIdentity::current());
+
+    let err = flow
+        .decider()
+        .approve(&tx, "prenom.nom", "  ", &cli)
+        .await
+        .expect_err("une décision CLI sans commentaire doit être refusée");
+    assert!(err.to_string().contains("commentaire"), "{err}");
+    let request = store.request_by_transaction_id(&tx).await.unwrap();
+    assert_eq!(request.state, RequestState::Pending);
 }

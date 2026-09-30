@@ -311,6 +311,12 @@ ca-server ra reject  <transaction_id> "prenom.nom" "sujet non reconnu"
 ca-server ra list
 ```
 
+Le commentaire est obligatoire, et chaque décision prise ainsi est consignée
+comme venant de la **voie de secours** (`"authenticated_via": "cli"`, identité
+système réelle, non authentifiée) : voir §5. Les décisions du conteneur
+`ra-autoapprove` passent par cette même commande et sont consignées de même,
+avec le nom de son pod.
+
 ### Écart assumé
 
 En démonstration et en CI, l'approbation est automatisée sous l'identité
@@ -342,6 +348,17 @@ Un motif est **obligatoire** : `unspecified` (0) est accepté par RFC 5280 mais
 signalé comme insuffisant par les règles de conformité — il ne justifie rien
 devant un auditeur.
 
+Le commentaire est **obligatoire** : `revoke`, comme `ra approve|reject`, est
+la **voie de secours** (docs/WEBUI.md §20), la voie primaire étant l'action
+signée par WebAuthn. L'opérateur n'y est que déclaré : l'événement du journal
+porte `"authenticated_via": "cli"` et l'identité système réelle du processus
+(`identite_systeme` : UID, utilisateur, hôte — le nom du pod sous Kubernetes),
+marquée `"authentifiee": false`. Derrière un `kubectl exec`, la personne
+n'apparaît que dans le journal d'audit de l'API Kubernetes : le contrôle réel de
+cette voie est le RBAC qui autorise `exec` sur le pod de la CA. Les décisions
+signées portent `"authenticated_via": "webauthn"`, la révocation `superseded`
+d'un renouvellement `"authenticated_via": "automatique"`.
+
 La révocation est idempotente et la **première date fait foi** : la
 réappliquer ne repousse pas l'instant à partir duquel le certificat cesse
 d'être fiable. `revoke` republie la CRL immédiatement — une révocation non
@@ -362,7 +379,9 @@ ca-server authority revoke issuing <code_motif> "prenom.nom" "commentaire"
 
 Le code usuel est `2` (`cACompromise`) pour une clé d'autorité exposée, `4` ou
 `5` pour un remplacement ou un arrêt. La racine ne peut pas se révoquer
-elle-même. L'événement `ca.authority_revoked` est écrit au journal **avant** la
+elle-même. Le commentaire est obligatoire (voie de secours, `"authenticated_via":
+"cli"` et identité système au journal, comme `revoke`). L'événement
+`ca.authority_revoked` est écrit au journal **avant** la
 mise à jour du registre, puis l'ARL est republiée immédiatement
 (`ca.arl_published`). L'émettrice révoquée refuse aussitôt toute émission,
 y compris dans un `serve` déjà lancé : la révocation est relue à chaque

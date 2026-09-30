@@ -66,7 +66,13 @@ async fn revoking_the_client_certificate_cuts_the_link() {
 
     let serial = oe_ca_core::canonical_serial(client.0.tbs_certificate().serial_number());
     pki.issuer
-        .revoke(&serial, 1, "operateur-test", "clé compromise")
+        .revoke(
+            &serial,
+            1,
+            "operateur-test",
+            "clé compromise",
+            &oe_ca_core::Via::WebAuthn,
+        )
         .await
         .unwrap();
     let err = link.ping().await.expect_err("certificat révoqué");
