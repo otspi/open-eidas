@@ -128,12 +128,16 @@ impl Findings {
     }
 }
 
-/// L'état d'une exigence pour l'ensemble du système. Trois valeurs
+/// L'état d'une exigence pour l'ensemble du système. Quatre valeurs
 /// seulement, pour qu'aucune zone grise ne puisse s'y loger.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Status {
-    /// L'exigence est appliquée par du code de ce dépôt et vérifiée par un test.
+    /// L'exigence est appliquée par un binaire en service, vérifiée par un
+    /// test, et la mise en service est elle-même prouvée ([`Entry::in_service`]).
     Covered,
+    /// Le mécanisme existe et il est testé, mais aucun binaire ne l'appelle
+    /// (constat D-2 de l'audit du 2026-09-25) : l'exigence n'est pas satisfaite.
+    Implemented,
     /// Écart connu et assumé, avec une mesure compensatoire et une cible.
     Gap,
     /// Exigence organisationnelle, qu'aucun logiciel ne peut satisfaire seul.
@@ -144,6 +148,7 @@ impl Status {
     pub fn label(self) -> &'static str {
         match self {
             Status::Covered => "couvert",
+            Status::Implemented => "implémenté, pas en service",
             Status::Gap => "écart documenté",
             Status::OutOfScope => "hors périmètre logiciel",
         }
@@ -159,6 +164,11 @@ pub struct Entry {
     pub mechanism: &'static str,
     /// Nomme le test qui vérifie le mécanisme. Vide hors périmètre logiciel.
     pub test: &'static str,
+    /// Preuve que le mécanisme est en service (constat D-2) : un test qui
+    /// exerce un binaire (`bin/…`) ou une étape d'un job de démonstration
+    /// réelle (`.github/workflows/…`). Obligatoire pour une ligne couverte ;
+    /// chaque référence est résolue par `tests/references.rs`.
+    pub in_service: &'static str,
     /// Ce qui reste à faire pour lever un écart. Vide si couvert.
     pub target: &'static str,
 }
@@ -171,6 +181,7 @@ impl Matrix {
     pub fn counts(&self) -> BTreeMap<Status, usize> {
         let mut out = BTreeMap::new();
         out.insert(Status::Covered, 0);
+        out.insert(Status::Implemented, 0);
         out.insert(Status::Gap, 0);
         out.insert(Status::OutOfScope, 0);
         for e in &self.0 {
@@ -236,6 +247,24 @@ impl Matrix {
                     if e.test.is_empty() {
                         problems.push(format!("{key}: couvert mais aucun test nommé"));
                     }
+                    // Constat D-2 : un test de bibliothèque prouve que le
+                    // mécanisme existe, pas qu'un binaire l'applique.
+                    if !e
+                        .in_service
+                        .split(", ")
+                        .any(|r| r.starts_with("bin/") || r.starts_with(".github/workflows/"))
+                    {
+                        problems.push(format!(
+                            "{key}: couvert sans preuve de mise en service (test d'un binaire ou job de démonstration)"
+                        ));
+                    }
+                }
+                Status::Implemented => {
+                    if e.mechanism.is_empty() || e.test.is_empty() || e.target.is_empty() {
+                        problems.push(format!(
+                            "{key}: implémenté sans mécanisme, test ou cible de mise en service"
+                        ));
+                    }
                 }
                 Status::Gap => {
                     if e.mechanism.is_empty() {
@@ -282,15 +311,17 @@ pub fn render_markdown(m: &Matrix) -> String {
 
     let counts = m.counts();
     b.push_str(&format!(
-        "**{} exigences** — {} couvertes, {} écarts documentés, {} hors périmètre logiciel.\n\n",
+        "**{} exigences** — {} couvertes, {} implémentée(s) sans être en service, {} écarts documentés, {} hors périmètre logiciel.\n\n",
         m.0.len(),
         counts[&Status::Covered],
+        counts[&Status::Implemented],
         counts[&Status::Gap],
         counts[&Status::OutOfScope],
     ));
 
-    b.push_str("Trois statuts seulement, pour qu'aucune zone grise ne puisse s'y loger :\n\n");
-    b.push_str("- **couvert** — l'exigence est appliquée par du code de ce dépôt et vérifiée par un test nommé ci-dessous ;\n");
+    b.push_str("Quatre statuts seulement, pour qu'aucune zone grise ne puisse s'y loger :\n\n");
+    b.push_str("- **couvert** — l'exigence est appliquée par un binaire en service : le test nommé vérifie le mécanisme, la preuve de mise en service (test du binaire ou job de démonstration réelle) montre qu'il est appelé ;\n");
+    b.push_str("- **implémenté, pas en service** — le mécanisme existe et il est testé, mais aucun binaire ne l'appelle : l'exigence n'est pas satisfaite ;\n");
     b.push_str("- **écart documenté** — l'exigence n'est pas satisfaite en l'état ; la mesure compensatoire en place et la cible sont indiquées ;\n");
     b.push_str("- **hors périmètre logiciel** — exigence organisationnelle, qu'aucun code ne peut établir seul.\n\n");
 
@@ -314,7 +345,7 @@ pub fn render_markdown(m: &Matrix) -> String {
             let last = if e.status != Status::Covered {
                 format!("**Cible :** {}", e.target)
             } else {
-                e.test.to_string()
+                format!("{} ; **en service :** {}", e.test, e.in_service)
             };
             let clause = if e.requirement.ids.is_empty() {
                 cell(e.requirement.clause)
@@ -699,7 +730,8 @@ pub fn system_matrix() -> Matrix {
             requirement: Requirement { standard: "ETSI EN 319 401", version: "V3.2.1 (2026-01)", clause: "§7.5", ids: &["REQ-7.5-01"], title: "Gestion des clés du prestataire dans un module cryptographique" },
             status: Status::Covered,
             mechanism: "Toutes les clés vivent dans un token PKCS#11 et n'en sortent jamais : oe-hsm::Pkcs11Token, validé contre un vrai token SoftHSM2 (crates/oe-hsm/tests/pkcs11_integration.rs).",
-            test: "crates/oe-hsm/tests/pkcs11_integration.rs",
+            test: "bin/tsa-server/tests/serve.rs (the_binary_applies_what_the_matrix_declares)",
+            in_service: "bin/tsa-server/tests/serve.rs (the_binary_applies_what_the_matrix_declares), .github/workflows/ci.yml (Horodate un fichier et vérifie le jeton (openssl ts))",
             target: "",
         },
         Entry {
@@ -707,6 +739,7 @@ pub fn system_matrix() -> Matrix {
             status: Status::Gap,
             mechanism: "Journal JSON Lines chaîné par SHA-256 (oe-audit), écrit avant chaque émission dans les deux services ; durée de conservation contrôlée à la configuration par oe_conformance::check_audit_retention, mais côté CA seulement (bin/ca-server::Config::load).",
             test: "crates/oe-audit/src/lib.rs (deux_ecrivains_partagent_la_meme_chaine), crates/oe-conformance/src/lib.rs (check_audit_retention_accepts_the_minimum, check_audit_retention_rejects_unconfigured_and_short_durations)",
+            in_service: "",
             target: "Constat J-3 (PR #52) : consigner la série du jeton et l'empreinte soumise ; contrôler aussi la durée de conservation au démarrage de tsa-server (docs/CPS.md B.3).",
         },
         Entry {
@@ -714,13 +747,15 @@ pub fn system_matrix() -> Matrix {
             status: Status::Gap,
             mechanism: "Chaînage par hachage vérifié intégralement à l'ouverture ; verrou de fichier partagé entre plusieurs écrivains : oe-audit::Log. Le chaînage n'a pas de clé : une réécriture complète du fichier avec recalcul de la chaîne n'est pas détectée tant que la tête n'est pas ancrée hors du système.",
             test: "crates/oe-audit/src/lib.rs (deux_ecrivains_partagent_la_meme_chaine, verify_detects_modified_record, verify_detects_truncated_and_rewritten_tail)",
+            in_service: "",
             target: "Constat J-1 : sceller périodiquement la tête de chaîne (TSU et TSA tierce) et en déposer une copie hors site, depuis les binaires en service.",
         },
         Entry {
             requirement: Requirement { standard: "ETSI EN 319 401", version: "V3.2.1 (2026-01)", clause: "§7.11.1, §7.11.2", ids: &["REQ-7.11.1-01", "REQ-7.11.2-01"], title: "Copies de sauvegarde et plan de sauvegarde" },
-            status: Status::Gap,
+            status: Status::Implemented,
             mechanism: "Contreseing du journal par une TSA tierce (oe-crosstsa) et réplication WebDAV hors site (oe-replicate) écrits et testés contre un vrai serveur, mais appelés par aucun binaire : l'intégrité et la survie du journal reposent sur le contrôle d'accès et la sauvegarde de son volume.",
             test: "crates/oe-crosstsa/tests/against_local_server.rs (seals_a_digest_against_a_real_rfc3161_server), crates/oe-replicate/tests/against_local_server.rs (replicates_content_via_webdav_put)",
+            in_service: "",
             target: "Constat J-1 : câbler dans tsa-server serve puis ca-server serve le scellement périodique (log.sealed), le contreseing tiers (log.cross_sealed) et la copie hors site (PR #49, #50 pour le stockage S3), testés de bout en bout sur le binaire ; dégrader /healthz sur échec prolongé.",
         },
         Entry {
@@ -728,6 +763,7 @@ pub fn system_matrix() -> Matrix {
             status: Status::OutOfScope,
             mechanism: "Procédure organisationnelle décrite dans docs/CA.md, indépendante du langage d'implémentation.",
             test: "",
+            in_service: "",
             target: "Engagement juridique de l'association, dépôt auprès de l'organe de contrôle, séquestre des journaux.",
         },
         Entry {
@@ -735,6 +771,7 @@ pub fn system_matrix() -> Matrix {
             status: Status::Gap,
             mechanism: "docs/CPS.md porte un brouillon structuré, déjà indépendant du langage d'implémentation du service.",
             test: "",
+            in_service: "",
             target: "Adoption formelle de docs/CPS.md par l'association (organisationnel, non affecté par le portage Rust).",
         },
         Entry {
@@ -742,6 +779,7 @@ pub fn system_matrix() -> Matrix {
             status: Status::Covered,
             mechanism: "Cérémonie produisant une racine et une CA émettrice au profil contrôlé (CA:TRUE critique, keyCertSign+cRLSign, SKI/AKI) : oe_ca_core::ceremony::run_ceremony, chaîne revérifiée par openssl.",
             test: "crates/oe-ca-core/tests/issuance.rs (ceremony_is_idempotent, ceremony_rejects_mismatched_signer_on_replay, openssl_accepts_the_chain_and_honors_revocation)",
+            in_service: ".github/workflows/ci.yml (Vérifie le certificat TSU et la CRL avec openssl)",
             target: "",
         },
         Entry {
@@ -749,6 +787,7 @@ pub fn system_matrix() -> Matrix {
             status: Status::Covered,
             mechanism: "Profils définis en structures Rust compilées, pas en configuration interprétée : oe_ca_core::profile. Contrôle de criticité (basicConstraints, keyUsage, EKU) posé à la main, vérifié par openssl.",
             test: "crates/oe-ca-core/tests/issuance.rs (openssl_accepts_the_chain_and_honors_revocation)",
+            in_service: ".github/workflows/ci.yml (Vérifie le certificat TSU et la CRL avec openssl)",
             target: "",
         },
         Entry {
@@ -756,6 +795,7 @@ pub fn system_matrix() -> Matrix {
             status: Status::Gap,
             mechanism: "Aucune transition vers Approved n'existe sans identité d'opérateur : oe_raflow::Decider::approve/reject. L'identité est consignée en base et au journal d'audit.",
             test: "crates/oe-raflow/tests/flow.rs (decide_without_operator_identity_is_refused, approve_then_resubmit_issues_a_certificate_signed_by_the_issuing_key)",
+            in_service: "",
             target: "Constat R-2 (PR #57) : approbation automatique désactivée par défaut dans le chart Helm, refusée avec production: true.",
         },
         Entry {
@@ -763,6 +803,7 @@ pub fn system_matrix() -> Matrix {
             status: Status::Gap,
             mechanism: "HMAC-SHA256 sur la CSR DER, vérifié en temps constant, et vérification de l'auto-signature de la CSR (preuve de possession) : oe_raflow::Flow::submit.",
             test: "crates/oe-raflow/tests/flow.rs (submit_without_valid_hmac_is_unauthenticated, submit_opens_a_pending_request_idempotently)",
+            in_service: "",
             target: "Constat R-3 : un secret, ou mieux une identité mTLS, par demandeur, liée aux profils qu'il peut demander ; ne révoquer au renouvellement que les certificats du même demandeur.",
         },
         Entry {
@@ -770,6 +811,7 @@ pub fn system_matrix() -> Matrix {
             status: Status::Covered,
             mechanism: "Numéro de série de 128 bits tiré sur rand::thread_rng et réservé de façon atomique (contrainte d'unicité en base) : oe_ca_core::Issuer::reserve_serial, oe_castore::Store::reserve_serial.",
             test: "crates/oe-castore/src/lib.rs (reserve_serial_twice_conflicts), crates/oe-castore/tests/postgres.rs (reserve_serial_twice_conflicts)",
+            in_service: ".github/workflows/ci.yml (Vérifie le certificat TSU et la CRL avec openssl)",
             target: "",
         },
         Entry {
@@ -777,6 +819,7 @@ pub fn system_matrix() -> Matrix {
             status: Status::Covered,
             mechanism: "Motif RFC 5280 obligatoire à la révocation (Issuer::revoke), persisté et repris dans chaque entrée de CRL avec son extension cRLReason.",
             test: "crates/oe-ca-core/tests/issuance.rs (revoke_is_idempotent_and_keeps_first_reason, revoke_then_publish_crl_lists_the_certificate)",
+            in_service: "bin/ca-server/tests/revocation_action.rs (a_ca_operator_revokes_a_certificate_and_the_crl_carries_it)",
             target: "",
         },
         Entry {
@@ -784,6 +827,7 @@ pub fn system_matrix() -> Matrix {
             status: Status::Covered,
             mechanism: "oe_ca_core::Issuer::publish_crl produit une CRL signée, republiable même vide ; bin/ca-server::http::Server republie à intervalle régulier et dégrade /healthz (503) dès que la CRL servie est périmée, plutôt que de se déclarer sain sans pouvoir dire ce qui est révoqué.",
             test: "crates/oe-ca-core/tests/issuance.rs (revoke_then_publish_crl_lists_the_certificate), bin/ca-server/tests/crl_publication.rs (crl_is_republished_periodically, healthz_degrades_when_the_published_crl_is_stale)",
+            in_service: "bin/ca-server/tests/crl_publication.rs (crl_is_republished_periodically, healthz_degrades_when_the_published_crl_is_stale)",
             target: "",
         },
         Entry {
@@ -791,6 +835,7 @@ pub fn system_matrix() -> Matrix {
             status: Status::Gap,
             mechanism: "Aucune : la CA émettrice ne porte ni CDP ni AIA vers la racine, et la racine ne publie aucune ARL.",
             test: "",
+            in_service: "",
             target: "Constat C-1 (PR #56) : CDP/AIA vers la racine, `ca-server authority revoke|publish-arl`, ARL servie, émission refusée par une émettrice révoquée.",
         },
         Entry {
@@ -798,6 +843,7 @@ pub fn system_matrix() -> Matrix {
             status: Status::Gap,
             mechanism: "Le répondeur OCSP ne connaît que la CRL : un numéro de série absent de la CRL est déclaré good, y compris jamais émis.",
             test: "",
+            in_service: "",
             target: "Constat O-1 (PR #55) : publier les numéros émis avec la CRL et répondre unknown pour un numéro absent.",
         },
         Entry {
@@ -805,6 +851,7 @@ pub fn system_matrix() -> Matrix {
             status: Status::Gap,
             mechanism: "Cérémonie scriptée et idempotente (`ca-server ceremony`), produisant un procès-verbal consigné au journal d'audit (empreintes de clés, opérateur, date) : oe_ca_core::ceremony.",
             test: "crates/oe-ca-core/tests/issuance.rs (every_authority_decision_is_recorded)",
+            in_service: "",
             target: "Cérémonie en double contrôle, sous témoin indépendant, sur HSM certifié, avec procès-verbal contresigné — écart organisationnel, pas seulement logiciel.",
         },
         Entry {
@@ -812,6 +859,7 @@ pub fn system_matrix() -> Matrix {
             status: Status::Gap,
             mechanism: "Actions d'opérateur signées par WebAuthn (clé attestée, rôle lu dans le registre, quorum pour la révocation) : oe-actions, derrière le lien interne mTLS de ca-server. Le CLI de secours (ra approve|reject, revoke) reste ouvert sans second facteur.",
             test: "",
+            in_service: "",
             target: "Constats R-1/R-2 : relayer les actions signées depuis ra-console (docs/WEBUI.md §15, étape 3) ; tracer et revoir la voie de secours CLI (PR #58, #59) ; approbation automatique désactivée par défaut (PR #57).",
         },
         Entry {
@@ -819,6 +867,7 @@ pub fn system_matrix() -> Matrix {
             status: Status::Covered,
             mechanism: "Surveillance NTP multi-sources avec quorum, seuil de dérive (MaxOffset) et péremption (MaxAge) ; la politique enforce fait refuser chaque demande avec timeNotAvailable : oe_timesource::Monitor.",
             test: "crates/oe-timesource/src/lib.rs (now_refuses_untraceable_time_in_enforce_mode, now_allows_untraceable_time_in_monitor_mode, new_rejects_quorum_larger_than_source_count), crates/oe-tsa-core/src/lib.rs (test_timestamp_refuses_when_time_is_not_traceable)",
+            in_service: "bin/tsa-server/tests/serve.rs (the_binary_applies_what_the_matrix_declares)",
             target: "",
         },
         Entry {
@@ -826,6 +875,7 @@ pub fn system_matrix() -> Matrix {
             status: Status::Gap,
             mechanism: "genTime est tronqué à la seconde alors que la dérive tolérée atteint OPENEIDAS_TIME_MAX_OFFSET : l'écart réel peut dépasser l'exactitude annoncée.",
             test: "",
+            in_service: "",
             target: "Constat T-1 (PR #53) : genTime à la milliseconde, et refus de démarrer si accuracy < max_offset + résolution.",
         },
         Entry {
@@ -833,6 +883,7 @@ pub fn system_matrix() -> Matrix {
             status: Status::Gap,
             mechanism: "Plusieurs sources UTC(k) avec quorum et seuil de dérive (oe_timesource::Monitor), mais client NTP sans contrôle d'origine, de l'indicateur de seconde intercalaire ni NTS.",
             test: "",
+            in_service: "",
             target: "Constat T-2 : contrôler l'origine et le LI des réponses NTP, envisager NTS (RFC 8915).",
         },
         Entry {
@@ -840,13 +891,15 @@ pub fn system_matrix() -> Matrix {
             status: Status::Gap,
             mechanism: "Aucune : la seconde intercalaire n'est ni détectée ni consignée.",
             test: "",
+            in_service: "",
             target: "Constat T-4 : détecter l'annonce (LI), consigner l'instant du changement au journal.",
         },
         Entry {
             requirement: Requirement { standard: "ETSI EN 319 421", version: "V1.3.1 (2025-07)", clause: "§7.6.2", ids: &["TIS-7.6.2-03"], title: "Génération de la clé TSU dans le module cryptographique" },
             status: Status::Gap,
             mechanism: "La bi-clé est générée dans le token PKCS#11 (oe_hsm::Pkcs11Token::generate_rsa_key) et ne manipule qu'un SigningToken ; la clé privée n'est jamais extraite.",
-            test: "crates/oe-hsm/tests/pkcs11_integration.rs",
+            test: "bin/tsa-server/tests/serve.rs (the_binary_applies_what_the_matrix_declares)",
+            in_service: "",
             target: "Constat H-1 : vérifier au chargement que la clé a été générée dans le module (CKA_LOCAL, CKA_NEVER_EXTRACTABLE).",
         },
         Entry {
@@ -854,6 +907,7 @@ pub fn system_matrix() -> Matrix {
             status: Status::Covered,
             mechanism: "oe_conformance::check_certificate_lifetime relit la validité du certificat réellement signé et la compare à un plafond indépendant du profil (MAX_END_ENTITY_LIFETIME/MAX_OCSP_LIFETIME) ; appelé via le champ Profile::check de oe_ca_core::Issuer::issue, comme profile.Check (Go).",
             test: "crates/oe-conformance/src/lib.rs (check_certificate_lifetime_accepts_within_the_ceiling, check_certificate_lifetime_rejects_beyond_the_ceiling), crates/oe-conformance/tests/tsu_certificate.rs",
+            in_service: ".github/workflows/ci.yml (Vérifie le certificat TSU et la CRL avec openssl)",
             target: "",
         },
         Entry {
@@ -861,6 +915,7 @@ pub fn system_matrix() -> Matrix {
             status: Status::Gap,
             mechanism: "Validité du certificat TSU contrôlée au démarrage seulement ; aucune date d'expiration de clé définie.",
             test: "",
+            in_service: "",
             target: "Constat T-3 (PR #54) : privateKeyUsagePeriod posé à l'émission, contrôlé à chaque signature ; nouvelle clé à chaque renouvellement.",
         },
         Entry {
@@ -868,6 +923,7 @@ pub fn system_matrix() -> Matrix {
             status: Status::Gap,
             mechanism: "Le journal consigne genTime et la série du certificat TSU, pas celle du jeton : les jetons émis ne sont pas identifiables un par un.",
             test: "",
+            in_service: "",
             target: "Constat J-3 (PR #52) : consigner la série du jeton, l'empreinte soumise et l'état de l'horloge.",
         },
         Entry {
@@ -875,6 +931,7 @@ pub fn system_matrix() -> Matrix {
             status: Status::Covered,
             mechanism: "oe_conformance::check_tsu_certificate (id-kp-timeStamping seul et critique, CA:FALSE, keyUsage restreint, durée de vie plafonnée) est appliquée à l'émission (Profile::check) ET re-contrôlée au démarrage de tsa-server (oe_tsa_core::Authority::new) — un certificat chargé depuis le disque peut venir d'ailleurs.",
             test: "crates/oe-conformance/tests/tsu_certificate.rs (accepts_a_certificate_issued_with_the_tsa_signer_profile, rejects_a_certificate_issued_with_the_ocsp_responder_profile)",
+            in_service: "bin/tsa-server/tests/serve.rs (the_binary_applies_what_the_matrix_declares), .github/workflows/ci.yml (Vérifie le certificat TSU et la CRL avec openssl)",
             target: "",
         },
         Entry {
@@ -882,13 +939,15 @@ pub fn system_matrix() -> Matrix {
             status: Status::Gap,
             mechanism: "TSTInfo complet (politique, imprint, série, genTime UTC, précision), assemblé en CMS SignedData signé par le token : oe_rfc3161_asn1, oe_tsa_core::Authority::timestamp.",
             test: "crates/oe-tsa-core/tests/end_to_end.rs (produces_tokens_accepted_by_openssl_for_every_granted_case_in_the_corpus)",
+            in_service: "",
             target: "Constat T-1 (PR #53) : genTime avec fraction de seconde (§5.2.2), cohérent avec la précision annoncée.",
         },
         Entry {
             requirement: Requirement { standard: "ETSI EN 319 422", version: "V1.1.1 (2016-03)", clause: "§7", ids: &[], title: "Protocole d'horodatage RFC 3161 sur HTTP" },
             status: Status::Covered,
             mechanism: "Endpoint /tsa acceptant application/timestamp-query, refus protocolaires rendus en TimeStampResp valides : oe_httpapi, bin/tsa-server.",
-            test: "crates/oe-httpapi/tests/end_to_end.rs (serves_a_verifiable_token_over_http, vérification croisée openssl ts -verify)",
+            test: "crates/oe-httpapi/tests/end_to_end.rs (serves_a_verifiable_token_over_http)",
+            in_service: "bin/tsa-server/tests/serve.rs (the_binary_applies_what_the_matrix_declares), .github/workflows/ci.yml (Horodate un fichier et vérifie le jeton (openssl ts))",
             target: "",
         },
         Entry {
@@ -896,6 +955,7 @@ pub fn system_matrix() -> Matrix {
             status: Status::Covered,
             mechanism: "oe-config et bin/ca-server/src/config.rs imposent OPENEIDAS_KEY_BITS >= 3072 à la configuration (clé des autorités elles-mêmes) ; oe_raflow::parse_and_verify_csr applique la même exigence à la clé publique portée par une CSR soumise à l'enrôlement.",
             test: "crates/oe-config/src/lib.rs (load_fails_on_undersized_key_bits), crates/oe-raflow/tests/flow.rs (submit_rejects_a_csr_with_an_undersized_key)",
+            in_service: "bin/ca-server/tests/bootstrap_cli.rs (undersized_ca_keys_are_refused_by_the_binary)",
             target: "",
         },
         Entry {
@@ -903,6 +963,7 @@ pub fn system_matrix() -> Matrix {
             status: Status::Covered,
             mechanism: "oe_conformance::check_signature_algorithm vérifie explicitement l'OID de signature d'un certificat contre la liste des suites admises (SHA-256/384/512 avec RSA), appelée via Profile::check à l'émission et à la re-vérification.",
             test: "crates/oe-conformance/src/lib.rs (check_signature_algorithm_accepts_sha256_with_rsa, check_signature_algorithm_rejects_sha1)",
+            in_service: ".github/workflows/ci.yml (Vérifie le certificat TSU et la CRL avec openssl)",
             target: "",
         },
         Entry {
@@ -910,6 +971,7 @@ pub fn system_matrix() -> Matrix {
             status: Status::Covered,
             mechanism: "oe_hsm::DigestAlg restreint la signature à SHA-256/384/512 ; une empreinte SHA-1 est refusée avec le failureInfo RFC 3161 badAlg : oe_tsa_core::Authority::timestamp.",
             test: "crates/oe-tsa-core/src/lib.rs (test_timestamp_rejects_sha1)",
+            in_service: "bin/tsa-server/tests/serve.rs (the_binary_applies_what_the_matrix_declares)",
             target: "",
         },
         Entry {
@@ -917,13 +979,15 @@ pub fn system_matrix() -> Matrix {
             status: Status::Covered,
             mechanism: "Répondeur OCSP RFC 6960 s'appuyant sur la CRL publiée par la CA : oe_ocsp_core::Responder.",
             test: "crates/oe-ocsp-core/tests/against_real_crl.rs (reports_good_status_for_a_non_revoked_certificate, reports_revoked_status_for_a_revoked_certificate)",
+            in_service: ".github/workflows/ci.yml (Interroge le répondeur OCSP pour le certificat TSU)",
             target: "",
         },
         Entry {
             requirement: Requirement { standard: "RFC 6960", version: "", clause: "§4.2.2.2", ids: &[], title: "Profil du certificat de signature du répondeur OCSP" },
             status: Status::Covered,
             mechanism: "Profil ocsp_responder (id-pkix-ocsp-nocheck, pas de CDP/AIA, durée de vie courte) appliqué à l'émission, re-contrôlé après signature par oe_conformance::check_ocsp_responder_certificate (Profile::check).",
-            test: "crates/oe-ca-core/tests/issuance.rs (revoke_then_publish_crl_lists_the_certificate, qui émet avec ce profil), crates/oe-conformance/tests/tsu_certificate.rs (rejects_a_certificate_issued_with_the_ocsp_responder_profile, qui prouve que check_ocsp_responder_certificate distingue bien ce profil de tsa_signer)",
+            test: "crates/oe-ca-core/tests/issuance.rs (revoke_then_publish_crl_lists_the_certificate), crates/oe-conformance/tests/tsu_certificate.rs (rejects_a_certificate_issued_with_the_ocsp_responder_profile)",
+            in_service: ".github/workflows/ci.yml (Interroge le répondeur OCSP pour le certificat TSU)",
             target: "",
         },
         Entry {
@@ -931,6 +995,7 @@ pub fn system_matrix() -> Matrix {
             status: Status::Covered,
             mechanism: "subjectKeyIdentifier (SHA-1 de la clé, méthode 1) et authorityKeyIdentifier (pointant vers le SKI de l'émetteur) posés sans condition à l'émission et dans la cérémonie : oe_ca_core::extensions, oe_ca_core::signing::subject_key_id.",
             test: "crates/oe-ca-core/tests/issuance.rs (issue_produces_a_certificate_signed_by_the_issuing_key, assert_ski_and_aki_present_and_linked)",
+            in_service: ".github/workflows/ci.yml (Vérifie le certificat TSU et la CRL avec openssl)",
             target: "",
         },
         Entry {
@@ -938,6 +1003,7 @@ pub fn system_matrix() -> Matrix {
             status: Status::Covered,
             mechanism: "CRL régénérée avec cRLNumber, thisUpdate/nextUpdate et signature, republiée même vide : oe_ca_core::Issuer::publish_crl. La signature et le motif de révocation sont revérifiés par openssl.",
             test: "crates/oe-ca-core/tests/issuance.rs (revoke_then_publish_crl_lists_the_certificate, openssl_accepts_the_chain_and_honors_revocation)",
+            in_service: ".github/workflows/ci.yml (Vérifie le certificat TSU et la CRL avec openssl), bin/ca-server/tests/crl_publication.rs (crl_is_republished_periodically)",
             target: "",
         },
         Entry {
@@ -945,6 +1011,7 @@ pub fn system_matrix() -> Matrix {
             status: Status::OutOfScope,
             mechanism: "Le dépôt est intégralement public ; cette matrice fournit le point d'entrée d'un audit, indépendamment du langage d'implémentation.",
             test: "",
+            in_service: "",
             target: "Audit par un organisme accrédité (LSTI, Apave), puis inscription à la liste de confiance nationale.",
         },
     ])
@@ -1043,6 +1110,7 @@ mod tests {
             status: Status::Covered,
             mechanism: "",
             test: "",
+            in_service: "",
             target: "",
         }]);
         assert!(bad.validate().is_err());
@@ -1054,6 +1122,7 @@ mod tests {
             status: Status::Covered,
             mechanism: "m",
             test: "t",
+            in_service: "bin/x/tests/y.rs (z)",
             target: "",
         }
     }
@@ -1098,6 +1167,15 @@ mod tests {
             .validate()
             .unwrap_err();
         assert!(err.contains("deux versions"), "{err}");
+
+        // Constat D-2 : couvert exige une preuve de mise en service par un
+        // binaire ; un test de bibliothèque ne suffit pas.
+        let library_only = Entry {
+            in_service: "crates/oe-audit/src/lib.rs (t)",
+            ..covered(OK)
+        };
+        let err = Matrix(vec![library_only]).validate().unwrap_err();
+        assert!(err.contains("sans preuve de mise en service"), "{err}");
 
         // Une RFC ne porte ni version ETSI ni identifiant.
         let rfc = Requirement {

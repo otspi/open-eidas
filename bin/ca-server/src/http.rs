@@ -549,6 +549,7 @@ async fn handle_conformance(State(server): State<Arc<Server>>) -> impl IntoRespo
                 "statut": e.status.label(),
                 "mecanisme": e.mechanism,
                 "test": e.test,
+                "en_service": e.in_service,
                 "cible": e.target,
             })
         })
