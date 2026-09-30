@@ -38,6 +38,9 @@ pub enum SessionError {
 
 /// Une session authentifiée, relue en base à l'instant de l'appel.
 pub struct Authenticated {
+    /// Identifiant de l'opérateur dans le registre : ce qu'une route relaie à
+    /// `ca-server` (`operator_hint`), jamais une valeur venue du navigateur.
+    pub operator_id: Uuid,
     pub operator: String,
     pub role: Role,
 }
@@ -118,6 +121,7 @@ impl Sessions {
             .execute(self.registry.pool())
             .await;
         Ok(Authenticated {
+            operator_id: operator.id,
             operator: operator.name,
             role: operator.role,
         })

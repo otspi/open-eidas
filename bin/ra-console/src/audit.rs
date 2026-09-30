@@ -17,6 +17,11 @@ pub const EVENT_LOGIN_SUCCEEDED: &str = "ra.login_succeeded";
 pub const EVENT_LOGIN_REFUSED: &str = "ra.login_refused";
 pub const EVENT_SESSION_OPENED: &str = "ra.session_opened";
 pub const EVENT_SESSION_CLOSED: &str = "ra.session_closed";
+/// Une action signée préparée par `ca-server` à la demande d'un opérateur
+/// (docs/WEBUI.md §4, étapes 1 à 3) : l'identifiant de l'action et
+/// l'empreinte du corps figé, pour rapprocher ce journal de celui de
+/// `ca-server`, qui fait foi.
+pub const EVENT_ACTION_CHALLENGE: &str = "ra.action_challenge";
 
 /// Même forme que `oe_ca_core::Recorder` / `oe_raflow::Recorder`, dupliquée
 /// plutôt que partagée (ce sont des traits d'un seul étage, la duplication

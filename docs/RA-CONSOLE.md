@@ -53,6 +53,29 @@ gardé par la console.
 - Pas encore de limitation de débit (l'endpoint est anonyme ; le jeton fait 256 bits et
   vit 24 h au plus) : voir `TODO.md`.
 
+## Préparation d'une action signée (relais du challenge)
+
+`POST /api/v1/webauthn/challenge`, avec une session ouverte : le corps est l'action
+demandée, dans la forme d'`oe_actions` (`{"action": "approve_request",
+"transaction_id": "…", "comment": "…"}`, ou `reject_request`). La console relaie à
+`ca-server` (`/internal/v1/challenge`), qui **fige** l'action et rend le corps qu'il
+exécutera, son empreinte (`body_hash`) et les options WebAuthn à passer à la clé
+(docs/WEBUI.md §4, étapes 1 à 3).
+
+- Le challenge est émis pour **l'opérateur de la session** : l'identifiant relayé
+  (`operator_hint`) vient de la session, jamais du navigateur. L'action est relue dans
+  l'énumération fermée d'`oe_actions` puis resérialisée : un champ en trop ne franchit
+  pas la console.
+- Seules l'approbation et le rejet d'une demande sont préparés à ce stade (§15, étape
+  3) ; toute autre action est refusée (`403 action_not_available`) sans solliciter
+  `ca-server`.
+- Le rôle et l'état de la demande sont jugés par `ca-server` (un administrateur ne peut
+  pas approuver) ; la console relaie son refus.
+- Chaque préparation est inscrite au journal de la console (`ra.action_challenge` :
+  opérateur, action, `action_id`, `body_hash`, statut), rapprochable du journal de
+  `ca-server`, qui fait foi.
+- L'exécution (relais de l'assertion signée) est l'étape 3b.
+
 ## Variables d'environnement
 
 | Variable | Défaut | Rôle |
@@ -87,8 +110,9 @@ gardé par la console.
 
 ## Ce qui n'existe pas encore
 
-La connexion des opérateurs (login, sessions), la
-lecture, les actions signées relayées, la révocation, le workflow d'incident et le
-frontend : voir [WEBUI.md](WEBUI.md) §15 et `TODO.md`. L'image, le chart Helm et le
+L'exécution des actions signées (étape 3b : relais de l'assertion), la révocation, le
+workflow d'incident et le frontend : voir [WEBUI.md](WEBUI.md) §15 et `TODO.md`. La
+connexion, les sessions et la lecture (`/api/v1/requests`) existent, mais ne sont pas
+encore décrites ici. L'image, le chart Helm et le
 `docker-compose.yml` de la console non plus. Le certificat client (3 mois) se
 renouvelle à la main pour l'instant.
