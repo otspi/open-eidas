@@ -198,8 +198,13 @@ pub enum Error {
 #[serde(deny_unknown_fields)]
 pub struct Expect {
     pub action: String,
+    /// Demande visée par une décision d'enrôlement.
     #[serde(default)]
     pub transaction_id: Option<String>,
+    /// Certificat visé par une révocation (hexadécimal minuscule, forme
+    /// canonique du corps figé).
+    #[serde(default)]
+    pub serial: Option<String>,
 }
 
 impl Expect {
@@ -211,18 +216,30 @@ impl Expect {
                 action.kind()
             )));
         }
-        let target = match action {
+        // La cible que porte le corps figé, et celle que l'appelant attend pour
+        // ce type d'action ; l'autre champ d'attente doit rester vide.
+        let (frozen, expected, other) = match action {
             Action::ApproveRequest { transaction_id, .. }
-            | Action::RejectRequest { transaction_id, .. } => Some(transaction_id),
-            _ => None,
+            | Action::RejectRequest { transaction_id, .. } => {
+                (Some(transaction_id), &self.transaction_id, &self.serial)
+            }
+            Action::RevokeCertificate { serial, .. } => {
+                (Some(serial), &self.serial, &self.transaction_id)
+            }
+            _ => (None, &None, &None),
         };
-        match (target, &self.transaction_id) {
+        if other.is_some() {
+            return Err(Error::BadRequest(
+                "cible sans rapport avec ce type d'action".to_string(),
+            ));
+        }
+        match (frozen, expected) {
             (Some(frozen), Some(expected)) if frozen == expected => Ok(()),
             (Some(_), None) => Err(Error::BadRequest(
-                "la demande visée doit être précisée".to_string(),
+                "la cible visée doit être précisée".to_string(),
             )),
             (Some(frozen), Some(expected)) => Err(Error::Mismatch(format!(
-                "demande attendue {expected}, figée {frozen}"
+                "cible attendue {expected}, figée {frozen}"
             ))),
             (None, _) => Ok(()),
         }
@@ -994,6 +1011,7 @@ mod expect_tests {
         Expect {
             action: action.to_string(),
             transaction_id: tx.map(str::to_string),
+            serial: None,
         }
     }
 
@@ -1021,5 +1039,27 @@ mod expect_tests {
             role: Role::Auditeur,
         };
         assert!(expect("set_role", None).check(&role).is_ok());
+
+        // Révocation : la cible est le numéro de série, jamais une demande.
+        let revoke = Action::RevokeCertificate {
+            serial: "0a1b".to_string(),
+            reason: 1,
+            comment: "x".to_string(),
+        };
+        let by_serial = |s: &str| Expect {
+            action: "revoke_certificate".to_string(),
+            transaction_id: None,
+            serial: Some(s.to_string()),
+        };
+        assert!(by_serial("0a1b").check(&revoke).is_ok());
+        assert!(matches!(
+            by_serial("0a1c").check(&revoke),
+            Err(Error::Mismatch(_))
+        ));
+        let mixed = Expect {
+            transaction_id: Some("tx".to_string()),
+            ..by_serial("0a1b")
+        };
+        assert!(matches!(mixed.check(&revoke), Err(Error::BadRequest(_))));
     }
 }

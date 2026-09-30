@@ -50,6 +50,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/v1/webauthn/challenge", post(handle_action_challenge))
         .route("/api/v1/requests/{id}/approve", post(handle_approve))
         .route("/api/v1/requests/{id}/reject", post(handle_reject))
+        .route("/api/v1/certificates/{serial}/revoke", post(handle_revoke))
         .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
         .with_state(state)
 }
@@ -443,14 +444,16 @@ async fn handle_requests(
     }
 }
 
-/// Les actions que la console relaie à ce stade (docs/WEBUI.md §15, étape 3) :
-/// décider d'une demande d'enrôlement. La révocation (étape 4) et la gestion
-/// du registre suivront ; d'ici là, la console refuse de les préparer, même si
-/// `ca-server` saurait les exécuter.
+/// Les actions que la console relaie à ce stade (docs/WEBUI.md §15, étapes 3
+/// et 4) : décider d'une demande d'enrôlement, révoquer un certificat. La
+/// gestion du registre suivra ; d'ici là, la console refuse de la préparer,
+/// même si `ca-server` saurait l'exécuter.
 fn relayed_at_this_stage(action: &oe_actions::Action) -> bool {
     matches!(
         action,
-        oe_actions::Action::ApproveRequest { .. } | oe_actions::Action::RejectRequest { .. }
+        oe_actions::Action::ApproveRequest { .. }
+            | oe_actions::Action::RejectRequest { .. }
+            | oe_actions::Action::RevokeCertificate { .. }
     )
 }
 
@@ -546,35 +549,33 @@ async fn handle_reject(
     relay_decision(&state, "reject_request", &id, &headers, &body).await
 }
 
-/// `POST /api/v1/requests/{id}/approve|reject` (docs/WEBUI.md §4 étapes 5 à 7,
-/// §5) : la console relaie l'identifiant du challenge et l'assertion brute —
-/// **jamais de corps** : `ca-server` exécute celui qu'il a figé. Elle y joint
-/// ce que la route promet (`expect` : l'action et la demande du chemin), que
-/// `ca-server` compare au corps figé avant toute vérification : une signature
-/// obtenue pour une demande ne décide jamais d'une autre.
-async fn relay_decision(
+/// Relaie l'identifiant du challenge et l'assertion brute d'un opérateur
+/// connecté à `ca-server` (docs/WEBUI.md §4 étapes 5 à 7) — **jamais de
+/// corps** : `ca-server` exécute celui qu'il a figé. `expect` dit ce que la
+/// route promet (action et cible) ; `ca-server` le compare au corps figé avant
+/// toute vérification, si bien qu'une signature ne décide jamais d'autre chose
+/// que ce qui a été signé. Chaque relais est inscrit au journal de la console.
+///
+/// L'`Err` est la réponse à rendre telle quelle (voir [`authenticate`]).
+#[allow(clippy::result_large_err)]
+async fn relay_assertion(
     state: &AppState,
-    action: &str,
-    transaction_id: &str,
     headers: &HeaderMap,
     body: &[u8],
-) -> Response {
+    expect: serde_json::Value,
+) -> Result<Relayed, Response> {
     if !is_json(headers) {
-        return unsupported_media_type();
+        return Err(unsupported_media_type());
     }
-    let who = match authenticate(state, headers).await {
-        Ok(a) => a,
-        Err(resp) => return resp,
-    };
-    let req: Signed = match serde_json::from_slice(body) {
-        Ok(r) => r,
-        Err(_) => return error(StatusCode::BAD_REQUEST, "bad_request", "corps invalide"),
-    };
-    if !looks_like_uuid(&req.challenge_id)
-        || !req.assertion.is_object()
-        || !looks_like_a_transaction(transaction_id)
-    {
-        return error(StatusCode::BAD_REQUEST, "bad_request", "corps invalide");
+    let who = authenticate(state, headers).await?;
+    let req: Signed = serde_json::from_slice(body)
+        .map_err(|_| error(StatusCode::BAD_REQUEST, "bad_request", "corps invalide"))?;
+    if !looks_like_uuid(&req.challenge_id) || !req.assertion.is_object() {
+        return Err(error(
+            StatusCode::BAD_REQUEST,
+            "bad_request",
+            "corps invalide",
+        ));
     }
     let result = state
         .link
@@ -583,7 +584,7 @@ async fn relay_decision(
             &serde_json::json!({
                 "challenge_id": req.challenge_id,
                 "assertion": req.assertion,
-                "expect": { "action": action, "transaction_id": transaction_id },
+                "expect": expect,
             }),
         )
         .await;
@@ -592,32 +593,89 @@ async fn relay_decision(
             audit::EVENT_ACTION_RELAYED,
             serde_json::json!({
                 "session_operator": who.operator,
-                "action": action,
-                "transaction_id": transaction_id,
+                "expect": expect,
                 "action_id": r.body.get("action_id"),
                 "signed_by": r.body.get("operator"),
                 "status": r.status,
+                "outcome": r.body.get("status"),
                 "error": r.body.get("error"),
             }),
         );
     }
     match result {
-        // La forme du §5 : l'identité qui a décidé est celle que `ca-server` a
-        // lue dans son registre, pas celle de la session.
-        Ok(r)
-            if r.status == 200
-                && r.body.get("status").and_then(|s| s.as_str()) == Some("executed") =>
-        {
-            Json(serde_json::json!({
-                "transaction_id": transaction_id,
-                "state": if action == "approve_request" { "APPROVED" } else { "REJECTED" },
-                "decided_by": r.body.get("operator"),
-                "action_id": r.body.get("action_id"),
-            }))
-            .into_response()
-        }
-        other => relayed(other),
+        Ok(r) if r.status == 200 => Ok(r),
+        other => Err(relayed(other)),
     }
+}
+
+/// `POST /api/v1/requests/{id}/approve|reject` (docs/WEBUI.md §5) : la décision
+/// signée sur une demande d'enrôlement. `decided_by` est l'opérateur dont la clé
+/// a signé, lu dans le registre de `ca-server`, pas celui de la session.
+async fn relay_decision(
+    state: &AppState,
+    action: &str,
+    transaction_id: &str,
+    headers: &HeaderMap,
+    body: &[u8],
+) -> Response {
+    if !looks_like_a_transaction(transaction_id) {
+        return error(StatusCode::BAD_REQUEST, "bad_request", "demande invalide");
+    }
+    let expect = serde_json::json!({ "action": action, "transaction_id": transaction_id });
+    match relay_assertion(state, headers, body, expect).await {
+        Ok(r) => Json(serde_json::json!({
+            "transaction_id": transaction_id,
+            "state": if action == "approve_request" { "APPROVED" } else { "REJECTED" },
+            "decided_by": r.body.get("operator"),
+            "action_id": r.body.get("action_id"),
+        }))
+        .into_response(),
+        Err(resp) => resp,
+    }
+}
+
+/// Un numéro de série dans la forme canonique du corps figé : hexadécimal
+/// minuscule, sans préfixe, 20 octets au plus (RFC 5280 §4.1.2.2).
+fn looks_like_a_serial(s: &str) -> bool {
+    !s.is_empty() && s.len() <= 40 && s.chars().all(|c| matches!(c, '0'..='9' | 'a'..='f'))
+}
+
+/// `POST /api/v1/certificates/{serial}/revoke` (docs/WEBUI.md §5, §8, §15 étape
+/// 4) : une signature de plus sur la révocation figée. `ca-server` exige, par
+/// sa propre politique, deux `ca_operateur` distincts : tant que le seuil n'est
+/// pas atteint, la signature est enregistrée et rien n'est révoqué
+/// (`AWAITING_QUORUM`) ; la dernière signature exécute (`EXECUTED`).
+async fn handle_revoke(
+    State(state): State<Arc<AppState>>,
+    Path(serial): Path<String>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    if !looks_like_a_serial(&serial) {
+        return error(
+            StatusCode::BAD_REQUEST,
+            "bad_request",
+            "numéro de série invalide",
+        );
+    }
+    let expect = serde_json::json!({ "action": "revoke_certificate", "serial": serial });
+    match relay_assertion(&state, &headers, &body, expect).await {
+        Ok(r) => Json(quorum_status(&r.body)).into_response(),
+        Err(resp) => resp,
+    }
+}
+
+/// La forme du §5 pour une action à plusieurs signatures.
+fn quorum_status(body: &serde_json::Value) -> serde_json::Value {
+    let executed = body.get("status").and_then(|s| s.as_str()) == Some("executed");
+    serde_json::json!({
+        "action_id": body.get("action_id"),
+        "status": if executed { "EXECUTED" } else { "AWAITING_QUORUM" },
+        "signatures": body.get("signatures"),
+        "required": body.get("required"),
+        "signed_by": body.get("operator"),
+        "result": body.get("result"),
+    })
 }
 
 /// `POST /api/v1/logout` : révoque la session sans attendre son expiration.
