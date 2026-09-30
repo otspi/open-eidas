@@ -9,8 +9,8 @@
 # direct.
 #
 # AVERTISSEMENT — comme le docker-compose, ce chart est une démonstration :
-# cérémonie de clé sans double contrôle, approbation RA automatisée sous un
-# compte technique, SoftHSM en lieu d'un HSM certifié. Voir
+# cérémonie de clé sans double contrôle, approbation RA automatisable sous un
+# compte technique (désactivée par défaut, voir ca.autoApprove), SoftHSM en lieu d'un HSM certifié. Voir
 # docs/CONFORMITE-ETSI.md pour l'état exigence par exigence,
 # docs/ARCHITECTURE.md pour les écarts au référentiel eIDAS et
 # deploy/helm/open-eidas/README.md pour les adaptations nécessaires à un
@@ -18,6 +18,12 @@
 
 nameOverride: ""
 fullnameOverride: ""
+
+# Déploiement destiné à la qualification ou à la production. Refuse le rendu
+# du chart tant qu'un raccourci de démonstration reste actif (aujourd'hui :
+# ca.autoApprove.enabled) plutôt que de le laisser hériter par oubli (constat
+# R-2 de l'audit du 2026-09-25, ETSI EN 319 411-1 GEN-6.5.5-04).
+production: false
 
 # Politique de tirage d'image commune à tous les composants du chart.
 imagePullPolicy: IfNotPresent
@@ -188,14 +194,17 @@ ca:
     # Durée de conservation du journal (ETSI EN 319 401 §7.10). Le service
     # refuse de démarrer en deçà d'un an.
     retention: 8760h
-  # ÉCART ASSUMÉ — approbation automatique des demandes d'enrôlement, pour
-  # que la démonstration et la CI s'amorcent sans opérateur humain. Le point
-  # d'approbation reste réellement actif : c'est un conteneur nommé qui
-  # décide, sous une identité technique tracée au journal d'audit. Un
-  # déploiement destiné à la qualification pose enabled: false et approuve
-  # par `kubectl exec … ca-server ra approve <transaction> <opérateur>`.
+  # Approbation automatique des demandes d'enrôlement, pour que la
+  # démonstration et la CI s'amorcent sans opérateur humain. DÉSACTIVÉE par
+  # défaut (constat R-2 de l'audit du 2026-09-25) : une valeur par défaut
+  # dangereuse est ce qu'un déploiement de production hérite par oubli. Sans
+  # elle, un opérateur nommé approuve par
+  # `kubectl exec … ca-server ra approve <transaction> <opérateur>`. Une
+  # démonstration pose enabled: true (ÉCART ASSUMÉ : c'est alors un conteneur
+  # nommé qui décide, sous une identité technique tracée au journal d'audit).
+  # Refusée au rendu si production: true.
   autoApprove:
-    enabled: true
+    enabled: false
     operator: "ci-bootstrap"
     intervalSeconds: 5
     # N'ouvre aucun token PKCS#11 (voir plus haut : approuver, c'est

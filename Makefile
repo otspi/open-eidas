@@ -41,6 +41,7 @@ ra: ## Liste les demandes d'enrôlement en attente de décision
 helm-lint: ## Vérifie le chart Helm (lint + rendu complet)
 	helm lint deploy/helm/open-eidas
 	helm template open-eidas deploy/helm/open-eidas > /dev/null
+	! helm template open-eidas deploy/helm/open-eidas --set production=true --set ca.autoApprove.enabled=true > /dev/null 2>&1
 
 logs: ## Suit les journaux de la TSA
 	docker compose logs -f tsa

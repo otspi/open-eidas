@@ -317,9 +317,12 @@ En démonstration et en CI, l'approbation est automatisée sous l'identité
 technique `ci-bootstrap` (boucle de `scripts/bootstrap.sh` en docker-compose,
 conteneur `ra-autoapprove` dans le chart Helm). Le point d'approbation reste
 **réellement actif** : c'est une décision, prise sous une identité distincte,
-et visible comme telle dans le journal d'audit. Un déploiement destiné à la
-qualification désactive cette automatisation
-(`ca.autoApprove.enabled: false`) et approuve sous une identité nominative.
+et visible comme telle dans le journal d'audit. Dans le chart Helm, cette
+automatisation est **désactivée par défaut** (`ca.autoApprove.enabled: false`,
+constat R-2) : la démonstration l'active explicitement, et `production: true`
+en refuse le rendu. Quand elle est active, le chart le déclare à `ca-server`
+(`OPENEIDAS_RA_AUTO_APPROVE`), qui l'affiche dans `/healthz`
+(`"approbation_automatique": true`).
 
 ## 5. Révocation
 
@@ -476,5 +479,6 @@ il est porté comme exigence hors périmètre dans la matrice.
 | `OPENEIDAS_INTERNAL_LISTEN` | — (désactivé) | Adresse du lien interne `/internal/v1/*` |
 | `OPENEIDAS_INTERNAL_TLS_CERT_FILE` / `_KEY_FILE` | — | Certificat `internal_server` et sa clé (PEM). Les deux ou aucun ; sans eux, boucle locale seulement |
 | `OPENEIDAS_WEBAUTHN_RP_ID` / `_ORIGIN` / `_RP_NAME` | — (obligatoires avec le lien interne, sauf le nom) | Relying Party WebAuthn des opérateurs |
+| `OPENEIDAS_RA_AUTO_APPROVE` | false | Déclaration du déploiement : les demandes sont approuvées par un conteneur technique ; affichée par `/healthz`, sans autre effet |
 | `OPENEIDAS_REGISTRY_CHECK_INTERVAL` | 60s | Fréquence du contrôle du registre contre le journal (avec le lien interne) |
 | `OPENEIDAS_WEBAUTHN_MODELS_FILE` | — (obligatoire avec le lien interne) | Liste blanche de modèles de clés (JSON : `description`, `aaguid`, `root_pem`) |

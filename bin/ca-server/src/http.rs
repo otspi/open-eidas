@@ -51,6 +51,8 @@ pub struct Server {
     repository_html: String,
     /// Fermée quand le registre des opérateurs diverge du journal (§21).
     registry_guard: Option<Arc<oe_actions::RegistryGuard>>,
+    /// Voir `Config::ra_auto_approve`.
+    ra_auto_approve: bool,
 }
 
 impl Server {
@@ -93,6 +95,7 @@ impl Server {
             }),
             repository_html,
             registry_guard: None,
+            ra_auto_approve: false,
         }
     }
 
@@ -100,6 +103,15 @@ impl Server {
     /// du journal met le service en 503, avec le détail.
     pub fn with_registry_guard(mut self, guard: Arc<oe_actions::RegistryGuard>) -> Server {
         self.registry_guard = Some(guard);
+        self
+    }
+
+    /// Déclare, dans `/healthz`, que les demandes sont approuvées par un
+    /// conteneur technique (constat R-2) : un auditeur le voit sans avoir à
+    /// relire les valeurs du déploiement. N'en dégrade pas le statut : c'est
+    /// un mode de démonstration assumé, pas une panne.
+    pub fn with_ra_auto_approve(mut self, enabled: bool) -> Server {
+        self.ra_auto_approve = enabled;
         self
     }
 
@@ -613,6 +625,7 @@ async fn handle_health(State(server): State<Arc<Server>>) -> Response {
         "crl_next_update": crl_next_update,
         "detail": if detail.is_empty() { None } else { Some(detail) },
         "registre_bloque": registry_blocked,
+        "approbation_automatique": server.ra_auto_approve,
     });
     (status, Json(body)).into_response()
 }

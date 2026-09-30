@@ -111,6 +111,10 @@ une fois pour que les deux ne puissent pas diverger sur le DSN ou les secrets.
 {{- $ctx := .context -}}
 - name: OPENEIDAS_LISTEN
   value: {{ printf ":%d" ($ctx.Values.ca.service.port | int) | quote }}
+# Déclaré par le chart, affiché par /healthz : un auditeur voit sans lire les
+# valeurs Helm que les demandes sont approuvées automatiquement (constat R-2).
+- name: OPENEIDAS_RA_AUTO_APPROVE
+  value: {{ $ctx.Values.ca.autoApprove.enabled | toString | quote }}
 - name: OPENEIDAS_DB_PASSWORD
   valueFrom:
     secretKeyRef:

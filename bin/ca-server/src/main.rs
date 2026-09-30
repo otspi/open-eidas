@@ -696,7 +696,11 @@ async fn run_serve() {
         )
         .await;
 
-    let mut server = http::Server::new(issuer.clone(), flow, env!("CARGO_PKG_VERSION").to_string());
+    let mut server = http::Server::new(issuer.clone(), flow, env!("CARGO_PKG_VERSION").to_string())
+        .with_ra_auto_approve(cfg.ra_auto_approve);
+    if cfg.ra_auto_approve {
+        tracing::warn!("approbation automatique des demandes déclarée (OPENEIDAS_RA_AUTO_APPROVE) : mode démonstration");
+    }
     if let Some((_, guard, _)) = &internal_service {
         server = server.with_registry_guard(guard.clone());
     }

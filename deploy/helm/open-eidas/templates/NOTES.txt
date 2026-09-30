@@ -6,11 +6,19 @@ Suivez sa progression :
 
   kubectl -n {{ .Release.Namespace }} get pods -w
 
+{{ if .Values.ca.autoApprove.enabled -}}
 Le conteneur "ca" journalise la cérémonie de clé et chaque émission ; le
 conteneur "ra-autoapprove", chaque décision d'approbation :
 
   kubectl -n {{ .Release.Namespace }} logs deploy/{{ include "open-eidas.fullname" . }}-ca -c ca -f
   kubectl -n {{ .Release.Namespace }} logs deploy/{{ include "open-eidas.fullname" . }}-ca -c ra-autoapprove -f
+{{- else -}}
+L'approbation automatique est désactivée : la TSU et le répondeur OCSP
+attendent qu'un opérateur nommé approuve leur demande d'enrôlement :
+
+  kubectl -n {{ .Release.Namespace }} exec deploy/{{ include "open-eidas.fullname" . }}-ca -c ca -- ca-server ra list PENDING
+  kubectl -n {{ .Release.Namespace }} exec deploy/{{ include "open-eidas.fullname" . }}-ca -c ca -- ca-server ra approve <transaction> "prenom.nom" "motif"
+{{- end }}
 
 Une fois {{ include "open-eidas.fullname" . }}-tsa prêt (Ready), exposez le
 service et vérifiez l'horodatage :
