@@ -605,6 +605,16 @@ jobs:
               -url http://localhost:8319/ocsp -resp_text | tee ocsp-response.txt
           grep -q "tsu.pem: good" ocsp-response.txt
 
+      # Constat O-1 (EN 319 411-1 OVR-6.6.3-02) : un numéro de série que cette
+      # CA n'a jamais émis reçoit `unknown`, jamais `good` par défaut.
+      - name: Interroge le répondeur OCSP pour un numéro jamais émis
+        run: |
+          kubectl -n open-eidas port-forward svc/open-eidas-ocsp 8329:8319 &
+          sleep 3
+          openssl ocsp -issuer ca.pem -serial 0x7e57 -CAfile ca.pem -no_nonce \
+              -url http://localhost:8329/ocsp -resp_text | tee ocsp-unknown.txt
+          grep -q "0x7e57: unknown" ocsp-unknown.txt
+
       - name: Vérifie la chaîne des journaux d'audit (TSA et CA)
         run: |
           kubectl -n open-eidas exec deploy/open-eidas-tsa -- tsa-server verify-audit
