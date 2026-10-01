@@ -30,7 +30,7 @@ imagePullPolicy: IfNotPresent
 
 tsa:
   image:
-    repository: ghcr.io/open-eidas/open-eidas-tsa
+    repository: ghcr.io/otspi/open-eidas-tsa
     tag: "latest"
   replicaCount: 1
   service:
@@ -84,7 +84,7 @@ tsa:
 
 ocsp:
   image:
-    repository: ghcr.io/open-eidas/open-eidas-ocsp-responder
+    repository: ghcr.io/otspi/open-eidas-ocsp-responder
     tag: "latest"
   replicaCount: 1
   service:
@@ -123,7 +123,7 @@ ocsp:
 # remplace OpenXPKI : voir INDEPENDANCE.md.
 ca:
   image:
-    repository: ghcr.io/open-eidas/open-eidas-ca
+    repository: ghcr.io/otspi/open-eidas-ca
     tag: "latest"
   service:
     port: 8320
@@ -232,7 +232,7 @@ ca:
 raConsole:
   enabled: false
   image:
-    repository: ghcr.io/open-eidas/open-eidas-ra-console
+    repository: ghcr.io/otspi/open-eidas-ra-console
     tag: "latest"
   service:
     port: 8330

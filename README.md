@@ -7,7 +7,7 @@
 
 # Open eIDAS — Les services de confiance eIDAS comme infrastructure ouverte
 
-[![CI](https://github.com/open-eidas/open-eidas/actions/workflows/ci.yml/badge.svg)](https://github.com/open-eidas/open-eidas/actions/workflows/ci.yml)
+[![CI](https://github.com/otspi/open-eidas/actions/workflows/ci.yml/badge.svg)](https://github.com/otspi/open-eidas/actions/workflows/ci.yml)
 [![Licence EUPL-1.2 OU AGPL-3.0](https://img.shields.io/badge/licence-EUPL--1.2%20%7C%20AGPL--3.0-blue.svg)](#licence)
 [![Site Web](https://img.shields.io/badge/Site%20Web-open--eidas.eu-003399?style=flat-square)](https://open-eidas.eu)
 [![Contact](https://img.shields.io/badge/Contact-contact%40open--eidas.eu-0F2042?style=flat-square)](mailto:contact@open-eidas.eu)

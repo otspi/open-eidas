@@ -1827,7 +1827,7 @@ ca:
 ```yaml
 raConsole:
   image:
-    repository: ghcr.io/open-eidas/open-eidas-ra-console
+    repository: ghcr.io/otspi/open-eidas-ra-console
     tag: "latest"
   replicaCount: 1
   service:
