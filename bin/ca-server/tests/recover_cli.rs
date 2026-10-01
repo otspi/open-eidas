@@ -35,7 +35,10 @@ async fn the_token_pin_from_stdin_is_the_proof_of_custody() {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let name = format!("recli_{nanos}");
+    let name = format!("recli_{nanos}_{}_{}", std::process::id(), {
+        static SEQ: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    });
     let dir = std::env::temp_dir().join(&name);
     std::fs::create_dir_all(dir.join("tokens")).unwrap();
     std::fs::write(

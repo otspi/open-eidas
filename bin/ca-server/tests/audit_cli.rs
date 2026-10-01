@@ -17,7 +17,10 @@ async fn the_audit_command_reports_what_the_journal_cannot_vouch_for() {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let name = format!("audcli_{nanos}");
+    let name = format!("audcli_{nanos}_{}_{}", std::process::id(), {
+        static SEQ: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    });
     let admin = PgPoolOptions::new().connect(&base).await.unwrap();
     sqlx::query(&format!("CREATE DATABASE {name}"))
         .execute(&admin)
@@ -88,7 +91,10 @@ async fn the_audit_command_does_not_require_hsm_configuration() {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let name = format!("audnohsm_{nanos}");
+    let name = format!("audnohsm_{nanos}_{}_{}", std::process::id(), {
+        static SEQ: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    });
     let admin = PgPoolOptions::new().connect(&base).await.unwrap();
     sqlx::query(&format!("CREATE DATABASE {name}"))
         .execute(&admin)
