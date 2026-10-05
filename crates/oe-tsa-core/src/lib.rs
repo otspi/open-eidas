@@ -658,7 +658,7 @@ mod tests {
             signer: Arc::new(signer),
             certificate,
             chain: Vec::new(),
-            policy: ObjectIdentifier::new("1.3.6.1.4.1.99999.1.1.1").unwrap(),
+            policy: ObjectIdentifier::new("1.3.6.1.4.1.67027.9.1.1.1").unwrap(),
             accuracy: std::time::Duration::from_secs(1),
             signing_digest: DigestAlg::Sha256,
             clock,

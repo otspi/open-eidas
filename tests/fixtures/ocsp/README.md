@@ -53,8 +53,10 @@ changé les séries revoquées/émises) :
 #
 # [crl_ext]
 # crlNumber = DER:02021000
-# 1.3.6.1.4.1.0.1.3 = DER:30080202100002021001
+# 1.3.6.1.4.1.67027.3.1 = DER:30080202100002021001
 #
+# default_crl_days = 3650 : la validité de 30 jours d'origine aurait fait
+# échouer ces tests à l'échéance de la fixture.
 openssl ca -config openssl.cnf -gencrl -out newcrl.pem
 openssl crl -in newcrl.pem -outform DER -out issuer.crl.der
 ```

@@ -48,7 +48,7 @@ tsa:
     state:
       size: 256Mi
       storageClassName: ""
-  policyOID: "1.3.6.1.4.1.99999.1.1.1"
+  policyOID: "1.3.6.1.4.1.67027.9.1.1.1"
   # Seul le nom courant est choisi par le service : unité, organisation et
   # pays sont imposés par le profil côté autorité (internal/ca/profile.go),
   # de sorte qu'un service ne puisse pas se réclamer d'une autre organisation.

@@ -127,9 +127,11 @@ sont logicielles et ne signent ni certificat, ni jeton, ni réponse OCSP.
 | Politique (`certificatePolicies`) | OID dédié, qu'aucun autre profil ne porte | OID dédié |
 | Nom courant | imposé : `ra-console` | un nom DNS en minuscules, repris en `subjectAltName` |
 
-Les OID de politique sont **provisoires** (`oe_conformance::OID_POLICY_INTERNAL_*`,
-sous le numéro d'entreprise 0, réservé) : à remplacer par l'arc de l'association
-avant toute mise en production.
+Les OID de politique (`oe_conformance::OID_POLICY_INTERNAL_*`) sont sous l'arc
+d'OTSPI, `1.3.6.1.4.1.67027.2.9.1` (client) et `.2` (serveur). La branche `2.9`
+reste à faire approuver par le CPC et à consigner au registre d'OID. Les
+certificats internes émis avant ce changement portent l'ancien OID provisoire et
+sont refusés par `ca-server` : les réémettre (validité de 3 mois).
 
 `ca-server` termine lui-même le TLS du port interne (`OPENEIDAS_INTERNAL_LISTEN`,
 TLS 1.3 seul, certificat client obligatoire). En plus de la chaîne vers la CA

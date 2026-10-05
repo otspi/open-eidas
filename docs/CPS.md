@@ -10,7 +10,7 @@
 >    conseil d'administration de l'association ;
 > 2. le document qui en résulte n'a pas été formellement adopté et versionné ;
 > 3. l'OID de politique correspondant n'a pas été obtenu et substitué à l'OID
->    de test actuel (`1.3.6.1.4.1.99999.1.1.1`).
+>    de test actuel (`1.3.6.1.4.1.67027.9.1.1.1`).
 >
 > Le contenu technique (profils, algorithmes, durées de vie, journalisation)
 > est en revanche tiré du code réellement en service — `oe_ca_core`,
@@ -272,7 +272,7 @@ couvertes par une CP/CPS générique de CA.
 
 | | |
 |---|---|
-| OID de politique d'horodatage | `1.3.6.1.4.1.99999.1.1.1` — **OID de test**, `[À COMPLÉTER — OID définitif sous l'arc PEN de l'association avant toute émission destinée à être invoquée devant un tiers]` |
+| OID de politique d'horodatage | `1.3.6.1.4.1.67027.9.1.1.1` — **OID de test**, `[À COMPLÉTER — OID définitif sous l'arc PEN de l'association avant toute émission destinée à être invoquée devant un tiers]` |
 | Exactitude annoncée (`accuracy`) | 1 seconde (`OPENEIDAS_ACCURACY`) |
 | Algorithmes d'empreinte acceptés | SHA-256, SHA-384, SHA-512 — SHA-1 refusé (`badAlg`) |
 | Ordonnancement (`ordering`) | Non garanti entre jetons |
