@@ -457,3 +457,8 @@ tr.detail pre {
   overflow: hidden;
   clip-path: inset(50%);
 }
+.audit-alert ul {
+  margin: 8px 0 0;
+  padding-left: 20px;
+  font-weight: 400;
+}

@@ -37,6 +37,9 @@ test("recherche dans les deux journaux, filtres et détail d'un événement", as
   await page.locator("[data-testid^=audit-toggle-ca-server-]").first().click();
   await expect(detail.first()).toBeVisible();
   await expect(detail.first()).toContainText('"commentaire": "remplacé"');
+  // Les empreintes de chaînage : celle de l'entrée précédente, puis la sienne.
+  await expect(detail.first().locator("[data-testid^=audit-hash-]")).toHaveText(/^[0-9a-f]{8}( [0-9a-f]{8}){7}$/);
+  await expect(detail.first().locator("[data-testid^=audit-prev-]")).toHaveText(/^[0-9a-f]{8}( [0-9a-f]{8}){7}$/);
 
   // Filtre par type d'événement.
   await page.getByTestId("audit-operator").fill("");
@@ -64,6 +67,11 @@ test("une chaîne rompue bloque tout l'affichage", async ({ page }) => {
     const alert = page.getByTestId("audit-broken");
     await expect(alert).toContainText("RUPTURE D'INTÉGRITÉ");
     await expect(alert).toHaveAttribute("role", "alert");
+    // La rupture est localisée : le bon journal, la nature, l'entrée en cause.
+    await expect(alert.getByTestId("audit-break-ca-server")).toContainText("journal de l'autorité");
+    await expect(alert.getByTestId("audit-break-ca-server")).toContainText("ne correspond plus à son empreinte");
+    await expect(alert.getByTestId("audit-break-ca-server")).toContainText(/#0000000\d/);
+    await expect(alert.getByTestId("audit-break-ra-console")).toHaveCount(0);
     // Rien n'est montré à côté de l'alerte, pas même les événements de la console.
     await expect(page.getByTestId("audit-results")).toBeHidden();
     await expect(page.getByTestId("audit-verified")).toHaveCount(0);

@@ -272,12 +272,12 @@ construction : [`bin/ra-console/web/`](../bin/ra-console/web/README.md).
 
 ## Ce qui n'existe pas encore
 
-L'explorateur d'audit du navigateur (6d-1, écran « Audit ») lit `GET /api/v1/audit/search` :
+L'explorateur d'audit du navigateur (écran « Audit », 6d) lit `GET /api/v1/audit/search` :
 recherche par série et par période, filtres par opérateur et par événement appliqués dans le
-navigateur sur les résultats reçus, détail dépliable de chaque événement, bannière « chaîne
-vérifiée » ou blocage rouge sans aucun résultat si l'une des deux chaînes est rompue. Écarts
-assumés avec `docs/UI-UX.md` §3.3 (6d-2) : l'API ne dit ni quelle chaîne ni quelle séquence est
-rompue, et ne renvoie pas les empreintes `prev_hash` / hash courant.
+navigateur sur les résultats reçus, détail dépliable de chaque événement avec ses empreintes
+`prev` et `hash`. Si l'une des deux chaînes est rompue, il n'affiche aucun résultat, seulement une
+alerte qui dit quel journal, quelle nature de rupture et quelle entrée. Reste, hors périmètre :
+pas de pagination (chaque requête relit les deux journaux en entier).
 
 Le libre-service (ajout et retrait de ses propres clés, §10) et le workflow d'incident :
 voir [WEBUI.md](WEBUI.md) §15 et `TODO.md`. La connexion, les sessions et la lecture

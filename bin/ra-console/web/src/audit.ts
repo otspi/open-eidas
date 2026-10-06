@@ -7,7 +7,7 @@
 
 import { call, isError } from "./api";
 import { h, replace } from "./dom";
-import { utc } from "./format";
+import { groupedHash, utc } from "./format";
 import type { View } from "./view";
 
 interface Entry {
@@ -16,18 +16,50 @@ interface Entry {
   at: string;
   event: string;
   data?: Record<string, unknown>;
+  prev: string;
+  hash: string;
+}
+
+/// Où et pourquoi un journal n'est pas intègre (`broken` de l'API).
+interface Break {
+  source: Entry["source"];
+  kind: "chain" | "sequence" | "tampered" | "unreadable";
+  sequence?: number;
+  line?: number;
 }
 
 interface Report {
   chain_verified: boolean;
   entries_checked: number;
   results: Entry[];
+  broken?: Break[];
 }
 
 const SOURCES: Record<Entry["source"], string> = {
   "ca-server": "Autorité",
   "ra-console": "Console",
 };
+
+const JOURNALS: Record<Entry["source"], string> = {
+  "ca-server": "journal de l'autorité",
+  "ra-console": "journal de la console",
+};
+
+/// Une rupture en une phrase, avec le journal et l'entrée en cause.
+export function describe(b: Break): string {
+  const where = `Dans le ${JOURNALS[b.source] ?? b.source}`;
+  const entry = b.sequence === undefined ? "une entrée" : `l'entrée ${padded(b.sequence)}`;
+  switch (b.kind) {
+    case "chain":
+      return `${where} : l'empreinte précédente de ${entry} ne reprend pas celle de l'entrée qui la précède.`;
+    case "sequence":
+      return `${where} : la numérotation est rompue à ${entry} (entrée retirée ou insérée).`;
+    case "tampered":
+      return `${where} : le contenu de ${entry} ne correspond plus à son empreinte.`;
+    case "unreadable":
+      return `${where} : ${b.line === undefined ? "une ligne" : `la ligne ${b.line}`} n'est pas une entrée de journal.`;
+  }
+}
 
 /// L'opérateur d'un événement : `ca-server` l'écrit `operateur`, la console
 /// `operator`. Aucun des deux n'est garanti (une émission n'a pas d'opérateur),
@@ -106,7 +138,19 @@ export function auditView(): View {
     const key = `${e.source}-${e.sequence}`;
     const toggle = h("button", { type: "button", class: "quiet", "aria-expanded": "false", "data-testid": `audit-toggle-${key}` }, "Détail");
     const detail = h("tr", { class: "detail", hidden: "", "data-testid": `audit-detail-${key}` });
-    const cell = h("td", { colspan: "6" }, h("pre", { class: "mono" }, JSON.stringify(e.data ?? {}, null, 2)));
+    const cell = h(
+      "td",
+      { colspan: "6" },
+      h(
+        "dl",
+        {},
+        h("dt", {}, "Empreinte précédente"),
+        h("dd", { class: "mono hash", "data-testid": `audit-prev-${key}` }, groupedHash(e.prev)),
+        h("dt", {}, "Empreinte"),
+        h("dd", { class: "mono hash", "data-testid": `audit-hash-${key}` }, groupedHash(e.hash)),
+      ),
+      h("pre", { class: "mono" }, JSON.stringify(e.data ?? {}, null, 2)),
+    );
     detail.append(cell);
     toggle.addEventListener("click", () => {
       const open = detail.hidden;
@@ -143,12 +187,22 @@ export function auditView(): View {
     event.value = kinds.includes(kept) ? kept : "";
   };
 
-  const blocked = (message: string): void => {
+  const blocked = (message: string, breaks: Break[] = []): void => {
     entries = [];
     refreshEvents();
     table.hidden = true;
     replace(body);
-    replace(banner, h("div", { class: "audit-alert", role: "alert", "data-testid": "audit-broken" }, message));
+    replace(
+      banner,
+      h(
+        "div",
+        { class: "audit-alert", role: "alert", "data-testid": "audit-broken" },
+        message,
+        breaks.length === 0
+          ? null
+          : h("ul", {}, ...breaks.map((b) => h("li", { "data-testid": `audit-break-${b.source}` }, describe(b)))),
+      ),
+    );
   };
 
   const search = async (): Promise<void> => {
@@ -169,7 +223,8 @@ export function auditView(): View {
     }
     if (!reply.body.chain_verified) {
       blocked(
-        "RUPTURE D'INTÉGRITÉ DÉTECTÉE : l'un des deux journaux est rompu ou illisible. Aucun résultat n'est affiché tant que la chaîne n'est pas rétablie ; prévenez un administrateur.",
+        "RUPTURE D'INTÉGRITÉ DÉTECTÉE : au moins un des deux journaux est rompu ou illisible. Aucun résultat n'est affiché tant que la chaîne n'est pas rétablie ; prévenez un administrateur.",
+        reply.body.broken ?? [],
       );
       return;
     }
