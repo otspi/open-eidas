@@ -272,8 +272,14 @@ construction : [`bin/ra-console/web/`](../bin/ra-console/web/README.md).
 
 ## Ce qui n'existe pas encore
 
-Le libre-service (ajout et retrait de ses propres clés, §10), l'explorateur d'audit
-dans le navigateur (6d, sur `GET /api/v1/audit/search`) et le workflow d'incident :
+L'explorateur d'audit du navigateur (6d-1, écran « Audit ») lit `GET /api/v1/audit/search` :
+recherche par série et par période, filtres par opérateur et par événement appliqués dans le
+navigateur sur les résultats reçus, détail dépliable de chaque événement, bannière « chaîne
+vérifiée » ou blocage rouge sans aucun résultat si l'une des deux chaînes est rompue. Écarts
+assumés avec `docs/UI-UX.md` §3.3 (6d-2) : l'API ne dit ni quelle chaîne ni quelle séquence est
+rompue, et ne renvoie pas les empreintes `prev_hash` / hash courant.
+
+Le libre-service (ajout et retrait de ses propres clés, §10) et le workflow d'incident :
 voir [WEBUI.md](WEBUI.md) §15 et `TODO.md`. La connexion, les sessions et la lecture
 (`/api/v1/requests`) existent, mais ne sont pas encore décrites ici. Le certificat
 client (3 mois) se renouvelle à la main pour l'instant. Aucun job de démonstration

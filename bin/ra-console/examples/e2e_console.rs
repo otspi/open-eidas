@@ -199,6 +199,11 @@ async fn main() {
         );
     }
 
+    // L'explorateur d'audit (6d) relit les deux journaux sur un stockage S3 : un
+    // serveur HTTP en mémoire en tient lieu (même technique que
+    // tests/audit_search.rs), et le test peut y déposer un journal altéré.
+    let (s3, s3_endpoint) = fake_s3(&to_revoke[0]).await;
+
     let pending: Vec<String> = (1..=8).map(|i| format!("tx-e2e-{i}")).collect();
     let alice = operators["alice"].clone();
     let out = serde_json::json!({
@@ -209,6 +214,12 @@ async fn main() {
         "role": "ra_operateur",
         "credential": alice["credential"],
         "operators": operators,
+        "s3": {
+            "endpoint": s3_endpoint,
+            "bucket": S3_BUCKET,
+            "ca_key": S3_CA_KEY,
+            "ra_key": S3_RA_KEY,
+        },
     });
     if let Some(parent) = std::path::Path::new(&fixture).parent() {
         std::fs::create_dir_all(parent).unwrap();
@@ -275,7 +286,7 @@ async fn main() {
             ),
             sessions: common::sessions(pool),
             journal: Arc::new(ra_console::audit::NullRecorder),
-            s3: None,
+            s3: Some(s3),
         }),
         ra_console::web::Console {
             environment: ra_console::web::Environment::Staging,
@@ -329,6 +340,109 @@ fn bytes_of(values: &[serde_cbor_2::Value]) -> Vec<u8> {
             _ => panic!("octet attendu"),
         })
         .collect()
+}
+
+const S3_BUCKET: &str = "audit";
+const S3_CA_KEY: &str = "ca-server/audit.log";
+const S3_RA_KEY: &str = "ra-console/audit.log";
+
+type Objects = Arc<std::sync::Mutex<std::collections::HashMap<String, Vec<u8>>>>;
+
+/// Un journal `oe-audit` valide (chaîné par `oe_audit::Log`), rendu en octets.
+fn journal(events: &[(&str, serde_json::Value)]) -> Vec<u8> {
+    let path = std::env::temp_dir().join(format!(
+        "e2e-audit-{}-{}.log",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let log = oe_audit::Log::open(&path).unwrap();
+    for (event, data) in events {
+        let data = data
+            .as_object()
+            .map(|m| m.iter().map(|(k, v)| (k.clone(), v.clone())).collect());
+        log.append(event, data).unwrap();
+    }
+    drop(log);
+    let bytes = std::fs::read(&path).unwrap();
+    let _ = std::fs::remove_file(&path);
+    bytes
+}
+
+/// Un service S3-compatible minimal (PUT, GET) portant un journal de
+/// `ca-server` et un journal de `ra-console`. Rend la configuration de la
+/// console et l'adresse du serveur : le test y fait PUT d'un journal altéré
+/// pour exercer le blocage sur chaîne rompue, puis y remet l'original.
+async fn fake_s3(serial: &str) -> (ra_console::config::S3Config, String) {
+    use axum::extract::{Path, State};
+    use axum::http::{Method, StatusCode};
+    let objects: Objects = Objects::default();
+    objects.lock().unwrap().insert(
+        format!("{S3_BUCKET}/{S3_CA_KEY}"),
+        journal(&[
+            (
+                "ca.certificate_issued",
+                serde_json::json!({ "serie": serial, "sujet": "tsu-rev-1.example.test", "transaction": "tx-rev-1" }),
+            ),
+            (
+                "ca.certificate_revoked",
+                serde_json::json!({ "serie": serial, "motif": 4, "operateur": "bob", "commentaire": "remplacé" }),
+            ),
+            ("ca.crl_published", serde_json::json!({ "numero": 2 })),
+        ]),
+    );
+    objects.lock().unwrap().insert(
+        format!("{S3_BUCKET}/{S3_RA_KEY}"),
+        journal(&[
+            (
+                "ra.login_succeeded",
+                serde_json::json!({ "operator": "alice" }),
+            ),
+            (
+                "ra.session_opened",
+                serde_json::json!({ "operator": "alice" }),
+            ),
+        ]),
+    );
+    async fn handle(
+        State(objects): State<Objects>,
+        method: Method,
+        Path((bucket, key)): Path<(String, String)>,
+        body: axum::body::Bytes,
+    ) -> (StatusCode, Vec<u8>) {
+        let full = format!("{bucket}/{key}");
+        match method {
+            Method::PUT => {
+                objects.lock().unwrap().insert(full, body.to_vec());
+                (StatusCode::OK, Vec::new())
+            }
+            Method::GET => match objects.lock().unwrap().get(&full) {
+                Some(bytes) => (StatusCode::OK, bytes.clone()),
+                None => (StatusCode::NOT_FOUND, Vec::new()),
+            },
+            _ => (StatusCode::METHOD_NOT_ALLOWED, Vec::new()),
+        }
+    }
+    let app = axum::Router::new()
+        .route("/{bucket}/{*key}", axum::routing::any(handle))
+        .with_state(objects);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let endpoint = format!("http://{}", listener.local_addr().unwrap());
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    (
+        ra_console::config::S3Config {
+            endpoint: endpoint.clone(),
+            bucket: S3_BUCKET.to_string(),
+            region: "us-east-1".to_string(),
+            access_key: "test".to_string(),
+            secret_key: "test-secret-au-moins-16-octets".to_string(),
+            key: S3_RA_KEY.to_string(),
+            ca_key: S3_CA_KEY.to_string(),
+        },
+        endpoint,
+    )
 }
 
 struct NullJournal;
