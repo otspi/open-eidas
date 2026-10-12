@@ -630,17 +630,17 @@ pub fn check_ocsp_responder_certificate(
 /// porte : c'est ce qui distingue un certificat client interne d'un certificat
 /// d'identité ou de TSU qui porterait aussi `clientAuth`.
 ///
-/// **PROVISOIRE** : sous le numéro d'entreprise 0, réservé et jamais attribué
-/// (l'arc 2.999 des exemples est refusé par `const-oid`). À remplacer par l'arc
-/// de l'association avant toute mise en production ; ces deux constantes sont
-/// les seuls endroits à changer.
-pub const OID_POLICY_INTERNAL_CLIENT: &str = "1.3.6.1.4.1.0.1.1";
-pub const OID_POLICY_INTERNAL_SERVER: &str = "1.3.6.1.4.1.0.1.2";
+/// Sous l'arc d'OTSPI (numéro d'entreprise 67027), branche `2.9` : politiques
+/// de certification internes, à part des certificats publics. Allocation à
+/// consigner au registre d'OID du dépôt de gouvernance (docs/cadrage/oid-arc.md)
+/// et à faire approuver par le CPC.
+pub const OID_POLICY_INTERNAL_CLIENT: &str = "1.3.6.1.4.1.67027.2.9.1";
+pub const OID_POLICY_INTERNAL_SERVER: &str = "1.3.6.1.4.1.67027.2.9.2";
 /// Extension privée de la CRL portant la liste des numéros de série émis
 /// (constat O-1 de l'audit du 2026-09-25) — voir
 /// `oe_ca_core::extensions::issued_serials`, produite par `ca-server` et lue
-/// par `oe_ocsp_core::Responder`. **PROVISOIRE**, même arc que ci-dessus.
-pub const OID_CRL_ISSUED_SERIALS: &str = "1.3.6.1.4.1.0.1.3";
+/// par `oe_ocsp_core::Responder`. Sous l'arc `3` (extensions et attributs) d'OTSPI.
+pub const OID_CRL_ISSUED_SERIALS: &str = "1.3.6.1.4.1.67027.3.1";
 /// Le seul nom courant que porte le certificat client de `ra-console`.
 pub const INTERNAL_CLIENT_CN: &str = "ra-console";
 pub const OID_EKU_SERVER_AUTH: &str = "1.3.6.1.5.5.7.3.1";

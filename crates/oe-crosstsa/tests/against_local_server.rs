@@ -37,7 +37,7 @@ async fn start_local_tsa() -> String {
             signer: Arc::new(signer),
             certificate,
             chain: Vec::new(),
-            policy: der::asn1::ObjectIdentifier::new("1.3.6.1.4.1.99999.1.1.1").unwrap(),
+            policy: der::asn1::ObjectIdentifier::new("1.3.6.1.4.1.67027.9.1.1.1").unwrap(),
             accuracy: std::time::Duration::from_secs(1),
             signing_digest: oe_hsm::DigestAlg::Sha256,
             clock: Arc::new(FixedClock),

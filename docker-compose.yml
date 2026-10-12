@@ -121,7 +121,7 @@ services:
       OPENEIDAS_TOKEN_LABEL: open-eidas-tsa
       OPENEIDAS_KEY_LABEL: tsu-signing-key
       OPENEIDAS_KEY_BITS: "3072"
-      OPENEIDAS_POLICY_OID: ${OPENEIDAS_POLICY_OID:-1.3.6.1.4.1.99999.1.1.1}
+      OPENEIDAS_POLICY_OID: ${OPENEIDAS_POLICY_OID:-1.3.6.1.4.1.67027.9.1.1.1}
       OPENEIDAS_ACCURACY: 1s
       # Traçabilité de l'heure : le service cesse de signer si la dérive
       # dépasse le seuil ou si le quorum de sources n'est plus joignable.

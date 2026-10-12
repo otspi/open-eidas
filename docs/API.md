@@ -74,7 +74,7 @@ Réponse :
   "token": "MIIQ...",
   "gen_time": "2026-09-06T14:32:07Z",
   "serial_number": "5310430...",
-  "policy": "1.3.6.1.4.1.99999.1.1.1",
+  "policy": "1.3.6.1.4.1.67027.9.1.1.1",
   "accuracy": "1s",
   "hash_algorithm": "sha256"
 }
@@ -101,7 +101,7 @@ HTTP 400 (requête invalide) ou 500 (défaillance interne).
 
 ```json
 {
-  "policy_oid": "1.3.6.1.4.1.99999.1.1.1",
+  "policy_oid": "1.3.6.1.4.1.67027.9.1.1.1",
   "accuracy": "1s",
   "accepted_hashes": ["sha256", "sha384", "sha512"],
   "tsu_subject": "CN=Open eIDAS Time-Stamping Unit 1,OU=Time Stamping Authority,O=Open eIDAS,C=FR",
@@ -192,7 +192,7 @@ Toutes les options sont pilotées par variables d'environnement.
 | `OPENEIDAS_KEY_BITS` | `3072` | Taille de clé RSA, minimum 3072 |
 | `OPENEIDAS_CERT_FILE` | `/var/lib/open-eidas/tsu.pem` | Certificat de la TSU |
 | `OPENEIDAS_CHAIN_FILE` | `/var/lib/open-eidas/chain.pem` | Chaîne d'émission |
-| `OPENEIDAS_POLICY_OID` | `1.3.6.1.4.1.99999.1.1.1` | OID de la politique d'horodatage |
+| `OPENEIDAS_POLICY_OID` | `1.3.6.1.4.1.67027.9.1.1.1` | OID de la politique d'horodatage |
 | `OPENEIDAS_PRODUCTION` | `false` | Mode production : le service refuse de démarrer si l'OID de politique appartient à un arc de test (ancien numéro `99999`, ou sous-arc `9` d'un numéro d'entreprise) |
 | `OPENEIDAS_ACCURACY` | `1s` | Précision annoncée dans le `TSTInfo` |
 | `OPENEIDAS_SIGNING_DIGEST` | `sha256` | Empreinte utilisée pour signer le jeton |

@@ -127,7 +127,10 @@ impl Config {
             return Err(ConfigError::KeyBitsTooSmall(key_bits));
         }
 
-        let policy_oid = parse_oid(&env_str("OPENEIDAS_POLICY_OID", "1.3.6.1.4.1.99999.1.1.1"))?;
+        let policy_oid = parse_oid(&env_str(
+            "OPENEIDAS_POLICY_OID",
+            "1.3.6.1.4.1.67027.9.1.1.1",
+        ))?;
         let production = env_bool("OPENEIDAS_PRODUCTION", false)?;
         if production && is_test_oid(&policy_oid) {
             return Err(ConfigError::TestPolicyOidInProduction(oid_to_string(
@@ -420,7 +423,7 @@ mod tests {
         let cfg = Config::load().unwrap();
         assert_eq!(cfg.listen, ":8318");
         assert_eq!(cfg.key_bits, 3072);
-        assert_eq!(cfg.policy_oid, vec![1, 3, 6, 1, 4, 1, 99999, 1, 1, 1]);
+        assert_eq!(cfg.policy_oid, vec![1, 3, 6, 1, 4, 1, 67027, 9, 1, 1, 1]);
         assert_eq!(cfg.signing_digest, SigningDigest::Sha256);
         assert_eq!(cfg.time_policy, Policy::Enforce);
         assert_eq!(cfg.accuracy, Duration::from_secs(1));
