@@ -53,6 +53,15 @@ impl ra_console::audit::Recorder for ConsoleJournal {
     fn append(&self, event: &str, data: serde_json::Value) {
         self.0.lock().unwrap().push(format!("{event} {data}"));
     }
+
+    fn record(
+        &self,
+        event: &str,
+        data: serde_json::Value,
+    ) -> Result<(), ra_console::audit::JournalError> {
+        self.append(event, data);
+        Ok(())
+    }
 }
 
 struct Env {

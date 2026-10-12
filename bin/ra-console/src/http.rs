@@ -70,6 +70,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/v1/quorum", get(handle_quorum))
         .route("/api/v1/quorum/{action_id}/sign", post(handle_quorum_sign))
         .merge(crate::registry_routes::routes())
+        .merge(crate::incident_routes::routes())
         .route("/api/v1/audit/search", get(handle_audit_search))
         .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
         .with_state(state)
@@ -121,14 +122,14 @@ pub(crate) fn error(status: StatusCode, code: &str, message: &str) -> Response {
 /// Une route qui relaie des JSON n'accepte que du JSON déclaré : un navigateur ne
 /// peut pas envoyer `application/json` d'un autre site sans pré-requête CORS, ce qui
 /// ferme les envois « aveugles » d'un formulaire piégé.
-fn is_json(headers: &HeaderMap) -> bool {
+pub(crate) fn is_json(headers: &HeaderMap) -> bool {
     headers
         .get(header::CONTENT_TYPE)
         .and_then(|v| v.to_str().ok())
         .is_some_and(|v| v.split(';').next().unwrap_or("").trim() == "application/json")
 }
 
-fn unsupported_media_type() -> Response {
+pub(crate) fn unsupported_media_type() -> Response {
     error(
         StatusCode::UNSUPPORTED_MEDIA_TYPE,
         "unsupported_media_type",
@@ -404,7 +405,10 @@ fn session_id_from(headers: &HeaderMap) -> Option<String> {
 /// visible seulement sur la toolchain 1.98 de la CI) : c'est justement la réponse à
 /// renvoyer telle quelle à l'appelant, la boxer n'apporterait rien ici.
 #[allow(clippy::result_large_err)]
-async fn authenticate(state: &AppState, headers: &HeaderMap) -> Result<Authenticated, Response> {
+pub(crate) async fn authenticate(
+    state: &AppState,
+    headers: &HeaderMap,
+) -> Result<Authenticated, Response> {
     let id = session_id_from(headers).ok_or_else(unauthenticated)?;
     state
         .sessions

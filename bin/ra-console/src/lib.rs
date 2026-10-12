@@ -19,6 +19,8 @@ pub mod certificates;
 pub mod config;
 pub mod db_guard;
 pub mod http;
+pub mod incident_routes;
+pub mod incidents;
 pub mod login;
 pub mod operators;
 pub mod purge;
