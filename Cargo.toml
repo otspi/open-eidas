@@ -34,3 +34,10 @@ repository = "https://github.com/open-eidas/open-eidas"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
+
+# Les tests génèrent des bi-clés RSA (jusqu'à 4096 bits) avec la crate `rsa` :
+# sans optimisation, l'arithmétique de `num-bigint-dig` y passe l'essentiel du
+# temps des suites (63 s contre 2 s pour oe-conformance/tests/tsu_certificate.rs).
+# Ne concerne que les profils dev et test ; le profil release est inchangé.
+[profile.dev.package.num-bigint-dig]
+opt-level = 3
