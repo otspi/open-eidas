@@ -41,10 +41,15 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON
     login_counters
 TO openeidas_ra_console;
 
--- Dossiers d'incident (docs/WEBUI.md §6) : la console les ouvre et les lit.
--- Ni UPDATE ni DELETE : un dossier ouvert ne se réécrit pas et ne s'efface
--- pas. La clôture recevra son propre droit, limité aux colonnes de clôture.
-GRANT SELECT, INSERT ON incidents TO openeidas_ra_console;
+-- Dossiers d'incident (docs/WEBUI.md §6) : la console les ouvre, y consigne
+-- des notes et des références d'actions, et les clôt. Jamais de DELETE ; et
+-- pour seul UPDATE, les colonnes de clôture : un titre, un auteur ou une date
+-- d'ouverture ne se réécrivent pas. Ce qui est consigné et la preuve d'une
+-- clôture ne se modifient pas.
+GRANT SELECT, INSERT ON incidents, incident_actions, incident_closures
+    TO openeidas_ra_console;
+GRANT UPDATE (state, closed_by, closed_at, closing_note) ON incidents
+    TO openeidas_ra_console;
 
 -- Aucun droit, même en lecture : operator_invites (hachés de jetons),
 -- actions, action_challenges, authorities, crls.

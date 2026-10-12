@@ -28,7 +28,7 @@ pose ce que tout le reste suppose :
   `internal_server`, et couvre le nom auquel elle se connecte. Les connexions ne sont
   pas réutilisées : `ca-server` ne contrôle le certificat client (révocation comprise)
   qu'à la poignée de main, et une connexion gardée ouverte survivrait à la révocation.
-- **Ses propres tables** (migrations 0006 et 0008) : challenges de connexion, sessions,
+- **Ses propres tables** (migrations 0006, 0008 et 0009) : challenges de connexion, sessions,
   compteurs de signatures des connexions, dossiers d'incident. Rien de ce qui touche la
   PKI.
 
@@ -170,31 +170,59 @@ d'une action à plusieurs signatures (`status`, `signatures`, `required`, `signe
 - Identifiant de clé : base64url, 1 024 caractères au plus ; nom d'opérateur : 1 à 256
   caractères. Toute autre forme est refusée avant relais.
 
-## Dossiers d'incident (ouverture et lecture)
+## Dossiers d'incident
 
 Un dossier d'incident regroupe et justifie ([WEBUI.md](WEBUI.md) §6) : il ne donne aucun
 pouvoir sur la PKI, et `ca-server` n'en voit rien passer.
 
 | Route | Qui | Effet |
 |---|---|---|
-| `POST /api/v1/incidents` (`{"title": "…"}`) | `ra_operateur`, `ca_operateur` | Ouvre un dossier au nom de l'opérateur de la session ; `201` et le dossier |
+| `POST /api/v1/incidents` (`{"title"}`) | `ra_operateur`, `ca_operateur` | Ouvre un dossier au nom de l'opérateur de la session ; `201` et le dossier |
 | `GET /api/v1/incidents?state=OUVERT\|CLOS` | toute session | Les dossiers, les plus récents d'abord |
-| `GET /api/v1/incidents/{id}` | toute session | Un dossier ; `404 unknown_incident` s'il n'existe pas |
+| `GET /api/v1/incidents/{id}` | toute session | Le dossier, ses entrées dans l'ordre (`actions`) et la preuve de sa clôture (`closure`) |
+| `POST /api/v1/incidents/{id}/actions` | `ra_operateur`, `ca_operateur` | Consigne une note ou la référence d'une action ; `201` et l'entrée |
+| `POST /api/v1/incidents/{id}/close/challenge` (`{"closing_note"}`) | `ra_operateur`, `ca_operateur` | Fige la clôture et rend le challenge à signer |
+| `POST /api/v1/incidents/{id}/close` (`{"challenge_id", "assertion"}`) | l'opérateur qui a demandé le challenge | Clôt le dossier sur sa signature |
 
-- **La console contrôle elle-même le rôle** de qui ouvre un dossier (`403 forbidden`
+- **La console contrôle elle-même le rôle** de qui écrit dans un dossier (`403 forbidden`
   pour un `auditeur` ou un `admin`). C'est le seul contrôle de rôle de la console qui
   soit une barrière : partout ailleurs, c'est `ca-server` qui juge.
-- **Le journal d'abord** : l'ouverture est consignée dans le journal de la console
-  (`ra.incident_opened` : identifiant, titre, opérateur) avant que le dossier n'existe en
-  base. Si le journal local ne peut pas être écrit, la route répond `503` et aucun
-  dossier n'est créé. La copie S3 reste « au mieux », comme pour le reste de ce journal.
-- Le nom de qui ouvre vient de la session, jamais du corps (un champ en trop est
-  refusé). Titre : 1 à 200 caractères, sans caractère de contrôle, blancs de bord retirés.
-- Le rôle PostgreSQL de la console n'a que `SELECT` et `INSERT` sur `incidents` : un
-  dossier ouvert ne se réécrit pas et ne s'efface pas. **Rejouer
-  `ra_console_grants.sql` après la migration 0008** (le Job du chart l'attend).
-- Pas encore : consigner une action dans un dossier, le clore, et l'écran du navigateur.
-  Pas de pagination.
+- **Le journal d'abord** : chaque écriture est consignée dans le journal de la console
+  (`ra.incident_opened`, `ra.incident_action`, `ra.incident_closed`) avant d'exister en
+  base. Si le journal local ne peut pas être écrit, la route répond `503` et rien n'est
+  écrit. La copie S3 reste « au mieux », comme pour le reste de ce journal.
+- Le nom de qui écrit vient de la session, jamais du corps (un champ en trop est
+  refusé). Titre : 1 à 200 caractères ; note, commentaire et note de clôture : 2 000 au
+  plus ; blancs de bord retirés.
+- **Entrées** : `{"kind": "note", "detail"}`, ou `{"kind": "action_liee", "action_id",
+  "detail"?}` pour désigner une action que `ca-server` a figée (une révocation, par
+  exemple). Le dossier ne déclenche rien : l'action passe par sa propre route. La
+  référence est vérifiée — l'action doit exister (`404 unknown_action`), et l'empreinte de
+  son corps est lue dans la table `actions`, jamais fournie par l'appelant ; c'est elle
+  qui recoupe le journal de `ca-server`. Une action ne se rattache qu'une fois à un
+  dossier (`409 already_linked`).
+- **Clôture signée** : `close/challenge` rend `challenge_id`, les options `webauthn`, le
+  corps figé (`body` : dossier, note de clôture, opérateur) et son empreinte SHA-256
+  (`body_hash`), à afficher tels quels. L'opérateur signe avec l'une de ses clés ; la
+  console vérifie elle-même l'assertion (clé du registre, de cet opérateur, non
+  révoquée, compteur) et la conserve dans `incident_closures`, sous la même forme que
+  `decision_evidence` côté `ca-server`. La note enregistrée est celle du corps figé :
+  la requête de clôture n'en porte pas.
+  - Un challenge émis pour un autre dossier est refusé **sans être consommé**
+    (`409 challenge_mismatch`).
+  - Un challenge ne sert qu'une fois, à l'opérateur qui l'a demandé, pendant 5 minutes ;
+    tout autre refus est `403 invalid_assertion`, sa raison au journal
+    (`ra.reassertion_refused`).
+- **Un dossier clos ne change plus** : ni entrée, ni seconde clôture
+  (`409 incident_closed`). C'est la base qui l'impose (déclencheurs de la migration
+  0009), comme elle refuse une clôture sans preuve.
+- Le rôle PostgreSQL de la console n'a que `SELECT` et `INSERT` sur ces tables, plus
+  `UPDATE` sur les seules colonnes de clôture d'`incidents`. **Rejouer
+  `ra_console_grants.sql` après les migrations 0008 et 0009** (le Job du chart les
+  attend).
+- Pas encore : l'écran du navigateur. Pas de pagination. La liaison entre le challenge
+  signé et le corps figé tient à l'enregistrement de la console (challenge et corps
+  conservés ensemble), pas à la signature elle-même.
 
 ## Frontend (étape 6a : socle)
 
@@ -306,8 +334,8 @@ navigateur sur les résultats reçus, détail dépliable de chaque événement a
 alerte qui dit quel journal, quelle nature de rupture et quelle entrée. Reste, hors périmètre :
 pas de pagination (chaque requête relit les deux journaux en entier).
 
-Le libre-service (ajout et retrait de ses propres clés, §10), et la suite du workflow
-d'incident (actions consignées, clôture, écran) : voir [WEBUI.md](WEBUI.md) §15 et `TODO.md`. La connexion, les sessions et la lecture
+Le libre-service (ajout et retrait de ses propres clés, §10), et l'écran des dossiers
+d'incident dans le navigateur : voir [WEBUI.md](WEBUI.md) §15 et `TODO.md`. La connexion, les sessions et la lecture
 (`/api/v1/requests`) existent, mais ne sont pas encore décrites ici. Le certificat
 client (3 mois) se renouvelle à la main pour l'instant. Aucun job de démonstration
 réelle (kind, compose) ne déploie encore la console.
