@@ -320,7 +320,7 @@ jobs:
         with:
           app-id: ${{ secrets.OPENEIDAS_DEPLOY_APP_ID }}
           private-key: ${{ secrets.OPENEIDAS_DEPLOY_APP_PRIVATE_KEY }}
-          owner: open-eidas
+          owner: otspi
           repositories: deploy
 
       - uses: actions/checkout@v4
