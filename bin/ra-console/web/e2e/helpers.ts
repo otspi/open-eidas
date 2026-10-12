@@ -14,6 +14,7 @@ export interface Fixture {
   certificates: string[];
   credential: Credential;
   operators: Record<string, { role: string; credential: Credential }>;
+  s3: { endpoint: string; bucket: string; ca_key: string; ra_key: string };
 }
 
 export const fixture = (): Fixture => JSON.parse(readFileSync(fixturePath, "utf8")) as Fixture;

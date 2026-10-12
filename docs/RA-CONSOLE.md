@@ -272,8 +272,14 @@ construction : [`bin/ra-console/web/`](../bin/ra-console/web/README.md).
 
 ## Ce qui n'existe pas encore
 
-Le libre-service (ajout et retrait de ses propres clés, §10), l'explorateur d'audit
-dans le navigateur (6d, sur `GET /api/v1/audit/search`) et le workflow d'incident :
+L'explorateur d'audit du navigateur (écran « Audit », 6d) lit `GET /api/v1/audit/search` :
+recherche par série et par période, filtres par opérateur et par événement appliqués dans le
+navigateur sur les résultats reçus, détail dépliable de chaque événement avec ses empreintes
+`prev` et `hash`. Si l'une des deux chaînes est rompue, il n'affiche aucun résultat, seulement une
+alerte qui dit quel journal, quelle nature de rupture et quelle entrée. Reste, hors périmètre :
+pas de pagination (chaque requête relit les deux journaux en entier).
+
+Le libre-service (ajout et retrait de ses propres clés, §10) et le workflow d'incident :
 voir [WEBUI.md](WEBUI.md) §15 et `TODO.md`. La connexion, les sessions et la lecture
 (`/api/v1/requests`) existent, mais ne sont pas encore décrites ici. Le certificat
 client (3 mois) se renouvelle à la main pour l'instant. Aucun job de démonstration

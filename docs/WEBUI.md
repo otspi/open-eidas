@@ -803,10 +803,22 @@ GET /api/v1/audit/search?serial=5a3f...&from=2026-09-01T00:00:00Z&to=2026-09-19T
   "chain_verified": true,
   "entries_checked": 14285,
   "results": [
-    {"sequence": 14201, "at": "2026-09-12T10:03:11Z", "operator": "alice", "kind": "REVOKE", "payload": {"serial": "5a3f...", "reason": 4}}
-  ]
+    {"source": "ca-server", "sequence": 14201, "at": "2026-09-12T10:03:11Z", "event": "ca.certificate_revoked",
+     "data": {"serie": "5a3f...", "motif": 4, "operateur": "bob"},
+     "prev": "9c1e...", "hash": "e07b..."}
+  ],
+  "broken": []
 }
 ```
+`source` vaut `ca-server` ou `ra-console`. `prev` et `hash` sont les empreintes
+SHA-256 de l'entrée précédente du même journal et de l'entrée elle-même, de quoi
+recouper le chaînage hors de la console. Quand une chaîne est rompue,
+`chain_verified` est faux, `results` est vide et `broken` dit, pour chaque journal
+rompu, où et pourquoi : `{"source": "ca-server", "kind": "tampered", "sequence": 12044}`.
+`kind` vaut `chain` (empreinte précédente incohérente), `sequence` (entrée retirée
+ou insérée), `tampered` (contenu ≠ empreinte, avec `sequence`) ou `unreadable` (avec
+`line`, numéro de ligne). Aucune empreinte attendue ni aucun contenu n'y figure. Une
+erreur locale de relecture n'est jamais une rupture : la route répond alors 503.
 `chain_verified`/`entries_checked` portent sur l'intégralité du journal
 relu pour cette requête (§7), pas seulement sur les entrées retournées — un
 `chain_verified: false` doit bloquer l'affichage des résultats plutôt que

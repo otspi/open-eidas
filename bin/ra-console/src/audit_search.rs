@@ -32,6 +32,40 @@ pub struct Entry {
     pub event: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub data: Option<serde_json::Value>,
+    /// Empreinte de l'entrée précédente de **ce** journal (chaînage) et
+    /// empreinte de celle-ci : de quoi recouper à la main, hors de la console,
+    /// ce que `chain_verified` affirme (docs/UI-UX.md §3.3).
+    pub prev: String,
+    pub hash: String,
+}
+
+/// Nature d'une rupture, telle que `oe_audit` la constate à la relecture.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum BreakKind {
+    /// L'empreinte précédente d'une entrée ne reprend pas celle de la précédente.
+    Chain,
+    /// La numérotation saute ou revient en arrière (entrée retirée ou insérée).
+    Sequence,
+    /// Le contenu d'une entrée ne correspond plus à son empreinte.
+    Tampered,
+    /// Une ligne n'est pas une entrée de journal.
+    Unreadable,
+}
+
+/// Où et pourquoi un journal n'est pas intègre. Ne porte jamais d'empreinte
+/// attendue ni de contenu : ce que l'opérateur doit savoir pour agir (quel
+/// journal, quelle nature, quelle entrée), pas de quoi forger la suite.
+#[derive(Debug, Clone, Serialize)]
+pub struct Break {
+    pub source: Source,
+    pub kind: BreakKind,
+    /// Numéro de l'entrée en cause, quand la rupture en désigne une.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sequence: Option<u64>,
+    /// Numéro de ligne (à partir de 1) d'une ligne illisible.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub line: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -39,6 +73,9 @@ pub struct Report {
     pub chain_verified: bool,
     pub entries_checked: u64,
     pub results: Vec<Entry>,
+    /// Vide quand `chain_verified` est vrai ; sinon une rupture par journal
+    /// rompu (les deux peuvent l'être).
+    pub broken: Vec<Break>,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -53,6 +90,11 @@ pub struct Query {
 pub enum Error {
     #[error("récupération du journal {0} sur S3 : {1}")]
     Fetch(&'static str, #[source] oe_s3::S3Error),
+    /// Le journal a été reçu mais n'a pas pu être relu pour une raison locale
+    /// (fichier temporaire) : ce n'est pas un constat d'intégrité et ne doit
+    /// jamais s'afficher comme une rupture.
+    #[error("relecture locale du journal {0} : {1}")]
+    Read(&'static str, #[source] std::io::Error),
 }
 
 /// Relit `bytes` comme un journal `oe-audit` : `oe_audit::read` exige un
@@ -110,17 +152,42 @@ fn matches(entry: &oe_audit::Record, q: &Query) -> bool {
     true
 }
 
-/// Récupère et relit un journal depuis S3. `Ok(None)` signale une chaîne
-/// rompue ou illisible (jamais mélangée aux résultats, voir `search`) ;
-/// `Err` signale que S3 lui-même n'a pas répondu (indisponibilité, pas un
-/// constat d'intégrité).
+/// Récupère et relit un journal depuis S3. `Ok(Err(rupture))` signale une
+/// chaîne rompue ou illisible (jamais mélangée aux résultats, voir `search`) ;
+/// `Err` signale que S3 ou la relecture locale n'a pas abouti
+/// (indisponibilité, pas un constat d'intégrité).
 async fn fetch_and_read(
     client: &oe_s3::Client,
     key: &str,
-    source: &'static str,
-) -> Result<Option<Vec<oe_audit::Record>>, Error> {
-    let bytes = client.get(key).await.map_err(|e| Error::Fetch(source, e))?;
-    Ok(read_journal(&bytes).ok())
+    source: Source,
+) -> Result<Result<Vec<oe_audit::Record>, Break>, Error> {
+    let name = match source {
+        Source::CaServer => "ca-server",
+        Source::RaConsole => "ra-console",
+    };
+    let bytes = client.get(key).await.map_err(|e| Error::Fetch(name, e))?;
+    match read_journal(&bytes) {
+        Ok(records) => Ok(Ok(records)),
+        Err(oe_audit::AuditError::Io(e)) => Err(Error::Read(name, e)),
+        Err(e) => Ok(Err(classify(source, &e))),
+    }
+}
+
+fn classify(source: Source, error: &oe_audit::AuditError) -> Break {
+    use oe_audit::AuditError::{BrokenChain, BrokenSequence, TamperedRecord, UnreadableLine};
+    let (kind, sequence, line) = match error {
+        BrokenChain { seq, .. } => (BreakKind::Chain, Some(*seq), None),
+        BrokenSequence { found, .. } => (BreakKind::Sequence, Some(*found), None),
+        TamperedRecord { seq, .. } => (BreakKind::Tampered, Some(*seq), None),
+        UnreadableLine { line, .. } => (BreakKind::Unreadable, None, Some(*line)),
+        _ => (BreakKind::Unreadable, None, None),
+    };
+    Break {
+        source,
+        kind,
+        sequence,
+        line,
+    }
 }
 
 /// Relit et vérifie les deux journaux, filtre, et rend le tout trié
@@ -139,16 +206,23 @@ pub async fn search(s3: &S3Config, query: &Query) -> Result<Report, Error> {
         .map_err(|e| Error::Fetch("ca-server", e))?,
     );
 
-    let ca = fetch_and_read(&client, &s3.ca_key, "ca-server").await?;
-    let ra = fetch_and_read(&client, &s3.key, "ra-console").await?;
+    let ca = fetch_and_read(&client, &s3.ca_key, Source::CaServer).await?;
+    let ra = fetch_and_read(&client, &s3.key, Source::RaConsole).await?;
 
-    let chain_verified = ca.is_some() && ra.is_some();
+    let mut broken = Vec::new();
+    let mut journals = Vec::new();
+    for (source, journal) in [(Source::CaServer, ca), (Source::RaConsole, ra)] {
+        match journal {
+            Ok(records) => journals.push((source, records)),
+            Err(b) => broken.push(b),
+        }
+    }
+    let chain_verified = broken.is_empty();
     let mut entries_checked = 0u64;
     let mut results = Vec::new();
 
     if chain_verified {
-        for (source, records) in [(Source::CaServer, ca), (Source::RaConsole, ra)] {
-            let records = records.unwrap_or_default();
+        for (source, records) in journals {
             entries_checked += records.len() as u64;
             for r in records.into_iter().filter(|r| matches(r, query)) {
                 results.push(Entry {
@@ -159,6 +233,8 @@ pub async fn search(s3: &S3Config, query: &Query) -> Result<Report, Error> {
                     data: r
                         .data
                         .map(|d| serde_json::Value::Object(d.into_iter().collect())),
+                    prev: r.prev,
+                    hash: r.hash,
                 });
             }
         }
@@ -172,5 +248,6 @@ pub async fn search(s3: &S3Config, query: &Query) -> Result<Report, Error> {
         // résultats à côté d'une alerte (docs/WEBUI.md §7) : personne ne
         // peut l'ignorer par inattention.
         results: if chain_verified { results } else { Vec::new() },
+        broken,
     })
 }

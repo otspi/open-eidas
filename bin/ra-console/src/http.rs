@@ -973,7 +973,7 @@ async fn handle_audit_search(
     match audit_search::search(s3, &query).await {
         Ok(report) => Json(report).into_response(),
         Err(e) => {
-            tracing::error!(erreur = %e, "audit/search : stockage S3 indisponible");
+            tracing::error!(erreur = %e, "audit/search : journal indisponible");
             error(
                 StatusCode::SERVICE_UNAVAILABLE,
                 "unavailable",

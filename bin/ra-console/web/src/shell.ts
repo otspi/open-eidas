@@ -1,9 +1,10 @@
 // Le poste de travail une fois connecté (docs/UI-UX.md §2) : barre de
 // sécurité (environnement, identité et rôle relus sur le serveur), navigation
 // latérale avec les compteurs des files, zone de travail. Les écrans métier
-// commencent par la file des demandes (6b) ; révocation, quorum et audit suivent.
+// commencent par la file des demandes (6b) ; révocation, quorum, opérateurs et audit.
 
 import { call, isError, type ConsoleInfo, type Me } from "./api";
+import { auditView } from "./audit";
 import { banner } from "./banner";
 import { h, replace } from "./dom";
 import { certificatesView } from "./certificates";
@@ -44,6 +45,7 @@ export function renderShell(root: HTMLElement, info: ConsoleInfo, me: Me, onLogo
     ["certificates", "Certificats", null, () => certificatesView(refresh)],
     ["quorum", "Quorum ", quorum, () => quorumView(me, refresh)],
     ["operators", "Opérateurs", null, () => operatorsView(me)],
+    ["audit", "Audit", null, () => auditView()],
   ];
   const buttons = views.map(([id, label, count, make]) => {
     const button = h("button", { type: "button", class: "nav", "data-testid": `nav-${id}` }, label, count);
