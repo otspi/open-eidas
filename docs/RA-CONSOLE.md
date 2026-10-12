@@ -28,8 +28,9 @@ pose ce que tout le reste suppose :
   `internal_server`, et couvre le nom auquel elle se connecte. Les connexions ne sont
   pas réutilisées : `ca-server` ne contrôle le certificat client (révocation comprise)
   qu'à la poignée de main, et une connexion gardée ouverte survivrait à la révocation.
-- **Ses propres tables** (migration 0006) : challenges de connexion, sessions,
-  compteurs de signatures des connexions. Rien de ce qui touche la PKI.
+- **Ses propres tables** (migrations 0006 et 0008) : challenges de connexion, sessions,
+  compteurs de signatures des connexions, dossiers d'incident. Rien de ce qui touche la
+  PKI.
 
 ## Enregistrement de la clé d'un opérateur (relais)
 
@@ -169,6 +170,32 @@ d'une action à plusieurs signatures (`status`, `signatures`, `required`, `signe
 - Identifiant de clé : base64url, 1 024 caractères au plus ; nom d'opérateur : 1 à 256
   caractères. Toute autre forme est refusée avant relais.
 
+## Dossiers d'incident (ouverture et lecture)
+
+Un dossier d'incident regroupe et justifie ([WEBUI.md](WEBUI.md) §6) : il ne donne aucun
+pouvoir sur la PKI, et `ca-server` n'en voit rien passer.
+
+| Route | Qui | Effet |
+|---|---|---|
+| `POST /api/v1/incidents` (`{"title": "…"}`) | `ra_operateur`, `ca_operateur` | Ouvre un dossier au nom de l'opérateur de la session ; `201` et le dossier |
+| `GET /api/v1/incidents?state=OUVERT\|CLOS` | toute session | Les dossiers, les plus récents d'abord |
+| `GET /api/v1/incidents/{id}` | toute session | Un dossier ; `404 unknown_incident` s'il n'existe pas |
+
+- **La console contrôle elle-même le rôle** de qui ouvre un dossier (`403 forbidden`
+  pour un `auditeur` ou un `admin`). C'est le seul contrôle de rôle de la console qui
+  soit une barrière : partout ailleurs, c'est `ca-server` qui juge.
+- **Le journal d'abord** : l'ouverture est consignée dans le journal de la console
+  (`ra.incident_opened` : identifiant, titre, opérateur) avant que le dossier n'existe en
+  base. Si le journal local ne peut pas être écrit, la route répond `503` et aucun
+  dossier n'est créé. La copie S3 reste « au mieux », comme pour le reste de ce journal.
+- Le nom de qui ouvre vient de la session, jamais du corps (un champ en trop est
+  refusé). Titre : 1 à 200 caractères, sans caractère de contrôle, blancs de bord retirés.
+- Le rôle PostgreSQL de la console n'a que `SELECT` et `INSERT` sur `incidents` : un
+  dossier ouvert ne se réécrit pas et ne s'efface pas. **Rejouer
+  `ra_console_grants.sql` après la migration 0008** (le Job du chart l'attend).
+- Pas encore : consigner une action dans un dossier, le clore, et l'écran du navigateur.
+  Pas de pagination.
+
 ## Frontend (étape 6a : socle)
 
 La console sert elle-même son interface (docs/UI-UX.md) : `/` et `/assets/*`, embarqués
@@ -279,8 +306,8 @@ navigateur sur les résultats reçus, détail dépliable de chaque événement a
 alerte qui dit quel journal, quelle nature de rupture et quelle entrée. Reste, hors périmètre :
 pas de pagination (chaque requête relit les deux journaux en entier).
 
-Le libre-service (ajout et retrait de ses propres clés, §10) et le workflow d'incident :
-voir [WEBUI.md](WEBUI.md) §15 et `TODO.md`. La connexion, les sessions et la lecture
+Le libre-service (ajout et retrait de ses propres clés, §10), et la suite du workflow
+d'incident (actions consignées, clôture, écran) : voir [WEBUI.md](WEBUI.md) §15 et `TODO.md`. La connexion, les sessions et la lecture
 (`/api/v1/requests`) existent, mais ne sont pas encore décrites ici. Le certificat
 client (3 mois) se renouvelle à la main pour l'instant. Aucun job de démonstration
 réelle (kind, compose) ne déploie encore la console.

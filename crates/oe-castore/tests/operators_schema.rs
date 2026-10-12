@@ -365,6 +365,23 @@ async fn ra_console_role_cannot_write_ca_tables() {
             assert!(allowed, "{privilege} sur {table} devrait être accordé");
         }
     }
+    // Les dossiers d'incident (§6) : la console les ouvre et les lit, elle ne
+    // les réécrit pas et ne les efface pas.
+    for (privilege, expected) in [
+        ("SELECT", true),
+        ("INSERT", true),
+        ("UPDATE", false),
+        ("DELETE", false),
+        ("TRUNCATE", false),
+    ] {
+        let allowed: bool =
+            sqlx::query_scalar("SELECT has_table_privilege(current_user, 'incidents', $1)")
+                .bind(privilege)
+                .fetch_one(&mut *conn)
+                .await
+                .unwrap();
+        assert_eq!(allowed, expected, "{privilege} sur incidents");
+    }
     // Et rien de plus : ni ses tables, ni celles de ca-server ne lui donnent le
     // droit de les redéfinir ou de les vider.
     for table in ["operators", "webauthn_credentials", "webauthn_challenges"] {
@@ -426,4 +443,56 @@ async fn ra_console_tables_enforce_their_invariants() {
     // Un type inconnu : refusé.
     let err = insert("autre", None, 5).await.expect_err("type inconnu");
     assert_eq!(sqlstate(&err).as_deref(), Some("23514"));
+}
+
+/// Un dossier d'incident (§6) est imputable par construction : un titre, et
+/// une clôture qui dit qui, quand et pourquoi — ou aucune trace de clôture.
+#[tokio::test]
+async fn an_incident_is_imputable_from_opening_to_closing() {
+    let pool = require_pool!();
+    let insert = |title: &'static str| {
+        let pool = pool.clone();
+        async move {
+            sqlx::query_scalar::<_, String>(
+                "INSERT INTO incidents (id, title, opened_by, opened_at)
+                 VALUES (gen_random_uuid(), $1, 'rachel', now()) RETURNING id::text",
+            )
+            .bind(title)
+            .fetch_one(&pool)
+            .await
+        }
+    };
+    let id = insert("clé TSU suspecte").await.expect("dossier ouvert");
+    for title in ["", "   "] {
+        let err = insert(title).await.expect_err("titre vide");
+        assert_eq!(sqlstate(&err).as_deref(), Some("23514"), "{title:?}");
+    }
+
+    let close = |set: &'static str| {
+        let pool = pool.clone();
+        let id = id.clone();
+        async move {
+            sqlx::query(&format!("UPDATE incidents SET {set} WHERE id = $1::uuid"))
+                .bind(id)
+                .execute(&pool)
+                .await
+        }
+    };
+    // Clos sans dire qui, quand ou pourquoi ; ou ouvert avec une trace de clôture.
+    for set in [
+        "state = 'CLOS'",
+        "state = 'CLOS', closed_by = 'rachel', closed_at = now()",
+        "state = 'CLOS', closed_by = 'rachel', closed_at = now(), closing_note = '  '",
+        "state = 'CLOS', closed_by = '', closed_at = now(), closing_note = 'faux positif'",
+        "state = 'CLOS', closed_by = 'rachel', closing_note = 'faux positif'",
+        "closed_by = 'rachel'",
+        "closing_note = 'faux positif'",
+        "state = 'SUSPENDU'",
+    ] {
+        let err = close(set).await.expect_err(set);
+        assert_eq!(sqlstate(&err).as_deref(), Some("23514"), "{set}");
+    }
+    close("state = 'CLOS', closed_by = 'rachel', closed_at = now(), closing_note = 'faux positif'")
+        .await
+        .expect("clôture imputable");
 }

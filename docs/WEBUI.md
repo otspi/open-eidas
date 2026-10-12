@@ -587,6 +587,7 @@ Dans les tableaux qui suivent, « rôle minimal » désigne donc le rôle que
 | `POST /api/v1/certificates/{serial}/revoke` | `ca_operateur`, double contrôle | Idem, voir §8 |
 | `GET /api/v1/audit/search` | `auditeur` | Recherche dans le journal chaîné (par série, opérateur, période) — lecture seule, ne modifie jamais le journal |
 | `POST /api/v1/incidents` | `ra_operateur` | Ouvre un dossier d'investigation, voir §6 |
+| `GET /api/v1/incidents?state=OUVERT` | `auditeur` | Liste des dossiers ; `GET /api/v1/incidents/{id}` en rend un |
 | `POST /api/v1/incidents/{id}/actions` | selon l'action liée | Consigne une action dans le dossier |
 | `POST /api/v1/incidents/{id}/close` | `ra_operateur` | Clôture avec justification obligatoire |
 | `GET /api/v1/quorum?state=PENDING` | tout rôle concerné par l'action | Actions M-sur-N en attente, voir §8 |
@@ -860,6 +861,16 @@ CREATE TABLE incident_actions (
     detail      TEXT        NOT NULL DEFAULT ''
 );
 ```
+
+**État (étape 5a).** `incidents` existe (migration 0008), avec l'ouverture
+et la lecture ; `incident_actions` et la clôture viennent ensuite. Trois
+précisions par rapport à ce qui précède : `ra-console` contrôle elle-même le
+rôle de qui écrit dans un dossier (`ca-server` n'en voit rien passer, c'est
+donc ici une barrière et non un affichage, à la différence du §3) ; le
+journal est écrit **avant** le dossier, qui n'est pas créé si le journal
+refuse ; un dossier ouvert ne porte aucune trace de clôture (`closing_note`
+nul, contrainte plus stricte que ci-dessus). Voir
+[RA-CONSOLE.md](RA-CONSOLE.md).
 
 Ces deux tables appartiennent à `ra-console` : un dossier n'a aucun pouvoir
 sur la PKI, il regroupe et justifie. Chaque `incident_action` est écrite

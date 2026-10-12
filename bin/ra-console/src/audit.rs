@@ -26,6 +26,10 @@ pub const EVENT_ACTION_CHALLENGE: &str = "ra.action_challenge";
 /// 5 à 7), avec la réponse de `ca-server` : qui a signé selon son registre,
 /// et le statut rendu.
 pub const EVENT_ACTION_RELAYED: &str = "ra.action_relayed";
+/// Un dossier d'incident ouvert (docs/WEBUI.md §6) : son identifiant, son
+/// titre et l'opérateur de la session. Écrit **avant** le dossier, par
+/// [`Recorder::record`] : pas de dossier sans trace.
+pub const EVENT_INCIDENT_OPENED: &str = "ra.incident_opened";
 
 /// Même forme que `oe_ca_core::Recorder` / `oe_raflow::Recorder`, dupliquée
 /// plutôt que partagée (ce sont des traits d'un seul étage, la duplication
@@ -35,13 +39,29 @@ pub const EVENT_ACTION_RELAYED: &str = "ra.action_relayed";
 /// du service.
 pub trait Recorder: Send + Sync {
     fn append(&self, event: &str, data: serde_json::Value);
+
+    /// L'écriture dont l'échec compte : un dossier d'incident est une pièce
+    /// d'imputabilité (§6), il n'existe pas sans sa trace. L'appelant écrit
+    /// ici **d'abord** et renonce si le journal refuse. Seule l'écriture
+    /// locale est attendue ; la copie S3 reste détachée, comme pour
+    /// [`Recorder::append`].
+    fn record(&self, event: &str, data: serde_json::Value) -> Result<(), JournalError>;
 }
+
+/// Le journal local n'a pas pu être écrit.
+#[derive(Debug, thiserror::Error)]
+#[error("journal d'audit : {0}")]
+pub struct JournalError(pub String);
 
 /// Aucune écriture — pour les tests qui n'exercent pas le journal.
 pub struct NullRecorder;
 
 impl Recorder for NullRecorder {
     fn append(&self, _event: &str, _data: serde_json::Value) {}
+
+    fn record(&self, _event: &str, _data: serde_json::Value) -> Result<(), JournalError> {
+        Ok(())
+    }
 }
 
 /// Copie best-effort du journal sur un stockage objet compatible S3, auto-hébergé
@@ -67,6 +87,12 @@ impl AuditRecorder {
 
 impl Recorder for AuditRecorder {
     fn append(&self, event: &str, data: serde_json::Value) {
+        if let Err(e) = self.record(event, data) {
+            tracing::error!(erreur = %e, evenement = event, "journal d'audit : échec d'écriture locale");
+        }
+    }
+
+    fn record(&self, event: &str, data: serde_json::Value) -> Result<(), JournalError> {
         let data = match data {
             serde_json::Value::Object(map) => Some(map.into_iter().collect()),
             serde_json::Value::Null => None,
@@ -76,10 +102,9 @@ impl Recorder for AuditRecorder {
                 Some(m)
             }
         };
-        if let Err(e) = self.log.append(event, data) {
-            tracing::error!(erreur = %e, evenement = event, "journal d'audit : échec d'écriture locale");
-            return;
-        }
+        self.log
+            .append(event, data)
+            .map_err(|e| JournalError(e.to_string()))?;
         // L'envoi S3 n'attend jamais l'appelant (connexion/déconnexion) : détaché,
         // son échec ne se voit que dans les logs du service, jamais dans la réponse.
         if let Some((client, key)) = self.s3.clone() {
@@ -98,5 +123,6 @@ impl Recorder for AuditRecorder {
                 }
             });
         }
+        Ok(())
     }
 }

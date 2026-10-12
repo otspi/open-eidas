@@ -48,7 +48,7 @@ spec:
             - -c
             - |
               set -eu
-              until psql -tAc "SELECT to_regclass('public.sessions') IS NOT NULL AND to_regclass('public.actions') IS NOT NULL" 2>/dev/null | grep -q t; do
+              until psql -tAc "SELECT to_regclass('public.sessions') IS NOT NULL AND to_regclass('public.actions') IS NOT NULL AND to_regclass('public.incidents') IS NOT NULL" 2>/dev/null | grep -q t; do
                 echo "migrations de ca-server pas encore appliquées, nouvel essai dans 5 s"
                 sleep 5
               done
