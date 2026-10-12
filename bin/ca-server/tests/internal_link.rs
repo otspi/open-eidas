@@ -35,7 +35,10 @@ fn unique(prefix: &str) -> String {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    format!("{prefix}-{nanos}")
+    format!("{prefix}-{nanos}_{}_{}", std::process::id(), {
+        static SEQ: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    })
 }
 
 async fn call(
