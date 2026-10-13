@@ -16,7 +16,10 @@ import { assert } from "./webauthn";
 
 interface Issued {
   challenge_id: string;
-  body: Record<string, unknown>;
+  /// Un objet quand ca-server fige une action ; une chaîne quand la console
+  /// fige elle-même ce qu'elle fera (clôture d'un dossier d'incident) : c'est
+  /// alors le texte exact que l'empreinte couvre.
+  body: Record<string, unknown> | string;
   body_hash: string;
   webauthn: Parameters<typeof assert>[0];
 }
@@ -30,6 +33,11 @@ export interface Signing {
   action: Record<string, unknown>;
   /// La route qui relaie l'assertion (ex. /api/v1/requests/{id}/approve).
   route: string;
+  /// Qui fige le corps et émet le challenge, et avec quelle demande. Par
+  /// défaut : ca-server, par /api/v1/webauthn/challenge, pour `action`.
+  prepare?: { route: string; body: unknown };
+  /// Ce que la modale annonce une fois la signature acceptée.
+  done?: string;
 }
 
 const MESSAGES: Record<string, string> = {
@@ -39,6 +47,11 @@ const MESSAGES: Record<string, string> = {
   denied: "Action refusée par l'autorité (rôle ou état de la demande).",
   signature_rejected: "Signature refusée par l'autorité.",
   unauthenticated: "Session expirée : reconnectez-vous.",
+  forbidden: "Votre rôle ne permet pas cette action.",
+  invalid_assertion: "Signature refusée : relancez.",
+  challenge_mismatch: "Cette signature a été demandée pour un autre dossier.",
+  incident_closed: "Ce dossier est déjà clos.",
+  no_active_key: "Aucune clé active pour signer.",
 };
 
 function explain(body: unknown, fallback: string): string {
@@ -82,7 +95,8 @@ export function sign(signing: Signing): Promise<Record<string, unknown> | null> 
     const prepare = async (): Promise<boolean> => {
       signButton.disabled = true;
       status.textContent = "Préparation de l'action par l'autorité…";
-      const reply = await call<Issued>("POST", "/api/v1/webauthn/challenge", signing.action);
+      const prepare = signing.prepare ?? { route: "/api/v1/webauthn/challenge", body: signing.action };
+      const reply = await call<Issued>("POST", prepare.route, prepare.body);
       if (reply.status !== 200 || reply.body === null || isError(reply.body)) {
         status.textContent = explain(reply.body, "L'autorité n'a pas pu préparer l'action.");
         return false;
@@ -90,8 +104,12 @@ export function sign(signing: Signing): Promise<Record<string, unknown> | null> 
       issued = reply.body;
       replace(
         frozen,
-        h("p", { class: "muted" }, "Corps exact qui sera exécuté (figé par l'autorité) :"),
-        h("pre", { class: "mono", "data-testid": "frozen-body" }, JSON.stringify(issued.body, null, 2)),
+        h("p", { class: "muted" }, "Corps exact qui sera exécuté (figé côté serveur) :"),
+        h(
+          "pre",
+          { class: "mono", "data-testid": "frozen-body" },
+          typeof issued.body === "string" ? issued.body : JSON.stringify(issued.body, null, 2),
+        ),
         h("p", { class: "muted" }, "Empreinte de la requête (SHA-256) :"),
         h("p", { class: "mono hash", "data-testid": "body-hash" }, groupedHash(issued.body_hash)),
       );
@@ -118,7 +136,7 @@ export function sign(signing: Signing): Promise<Record<string, unknown> | null> 
           done = true;
           const result = reply.body;
           status.textContent =
-            result.status === "AWAITING_QUORUM" ? "✓ Signature enregistrée." : "✓ Action signée et exécutée.";
+            signing.done ?? (result.status === "AWAITING_QUORUM" ? "✓ Signature enregistrée." : "✓ Action signée et exécutée.");
           window.setTimeout(() => close(result), 800);
           return;
         }

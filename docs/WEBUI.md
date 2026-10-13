@@ -862,8 +862,8 @@ CREATE TABLE incident_actions (
 );
 ```
 
-**État (étapes 5a et 5b).** L'API est en place : ouverture, lecture,
-entrées, clôture (migrations 0008 et 0009) ; l'écran reste à faire. Ce qui
+**État (étape 5, livrée).** L'API (ouverture, lecture, entrées, clôture :
+migrations 0008 et 0009) et l'écran du navigateur sont en place. Ce qui
 s'écarte de ce qui précède, par décision :
 
 - `ra-console` contrôle elle-même le rôle de qui écrit dans un dossier

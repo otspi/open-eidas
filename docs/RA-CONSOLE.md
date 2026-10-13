@@ -220,7 +220,7 @@ pouvoir sur la PKI, et `ca-server` n'en voit rien passer.
   `UPDATE` sur les seules colonnes de clôture d'`incidents`. **Rejouer
   `ra_console_grants.sql` après les migrations 0008 et 0009** (le Job du chart les
   attend).
-- Pas encore : l'écran du navigateur. Pas de pagination. La liaison entre le challenge
+- Pas de pagination. La liaison entre le challenge
   signé et le corps figé tient à l'enregistrement de la console (challenge et corps
   conservés ensemble), pas à la signature elle-même.
 
@@ -266,7 +266,16 @@ construction : [`bin/ra-console/web/`](../bin/ra-console/web/README.md).
   bande** (§10), révoque une clé (motif obligatoire) et change un rôle (le rôle `admin`
   exige un second administrateur, en salle de quorum). Pour les autres rôles, ces
   boutons sont désactivés — affichage seulement, `ca-server` juge.
-- L'explorateur d'audit suit (6d, après #51).
+- **Dossiers d'incident (5c)** : compteur des dossiers ouverts dans la navigation ; liste
+  filtrable par état, et pour le dossier choisi sa chronologie (notes, actions
+  rattachées avec leur identifiant, l'empreinte de leur corps et leur état chez
+  l'autorité) puis, s'il est clos, sa clôture (qui, quand, justification, empreinte
+  signée, clé). Un `ra_operateur` ou un `ca_operateur` y ouvre un dossier, consigne une
+  note et rattache une action par son identifiant (celui qu'affichent la salle de
+  quorum et l'audit). « Clore le dossier… » demande une **justification obligatoire**,
+  puis ouvre la modale de signature sur le corps que la console a figé, affiché en
+  entier avec son empreinte SHA-256. Pour les autres rôles, l'écran est en lecture
+  seule — affichage seulement, la console refuse de toute façon.
 
 ## Variables d'environnement
 
@@ -334,8 +343,7 @@ navigateur sur les résultats reçus, détail dépliable de chaque événement a
 alerte qui dit quel journal, quelle nature de rupture et quelle entrée. Reste, hors périmètre :
 pas de pagination (chaque requête relit les deux journaux en entier).
 
-Le libre-service (ajout et retrait de ses propres clés, §10), et l'écran des dossiers
-d'incident dans le navigateur : voir [WEBUI.md](WEBUI.md) §15 et `TODO.md`. La connexion, les sessions et la lecture
+Le libre-service (ajout et retrait de ses propres clés, §10) : voir [WEBUI.md](WEBUI.md) §15 et `TODO.md`. La connexion, les sessions et la lecture
 (`/api/v1/requests`) existent, mais ne sont pas encore décrites ici. Le certificat
 client (3 mois) se renouvelle à la main pour l'instant. Aucun job de démonstration
 réelle (kind, compose) ne déploie encore la console.
