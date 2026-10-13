@@ -462,6 +462,19 @@ jobs:
             exit 1
           fi
           helm template open-eidas deploy/helm/open-eidas --set production=true > /dev/null
+      - name: helm template refuse une copie S3 du journal à moitié configurée
+        # Constat J-1 : un point d'accès sans compartiment ni identifiants ne
+        # doit pas rendre un service qui ne copie rien en silence.
+        run: |
+          if helm template open-eidas deploy/helm/open-eidas \
+              --set tsa.audit.s3.endpoint=https://s3.example.test > /dev/null 2>&1; then
+            echo "le chart accepte tsa.audit.s3.endpoint sans compartiment ni Secret" >&2
+            exit 1
+          fi
+          helm template open-eidas deploy/helm/open-eidas \
+            --set tsa.audit.s3.endpoint=https://s3.example.test \
+            --set tsa.audit.s3.bucket=journaux \
+            --set tsa.audit.s3.existingSecret=s3-journal > /dev/null
       - name: helm lint et rendu avec ra-console
         run: |
           helm lint deploy/helm/open-eidas -f deploy/helm/open-eidas/ci/ra-console-values.yaml

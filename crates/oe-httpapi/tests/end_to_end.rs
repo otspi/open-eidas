@@ -66,6 +66,7 @@ async fn serves_a_verifiable_token_over_http() {
         max_request_bytes: 64 * 1024,
         version: "test".to_string(),
         cors_allowed_origin: None,
+        journal: None,
     });
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -174,6 +175,7 @@ async fn cors_header_present_only_when_configured() {
         max_request_bytes: 64 * 1024,
         version: "test".to_string(),
         cors_allowed_origin: None,
+        journal: None,
     });
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -196,6 +198,7 @@ async fn cors_header_present_only_when_configured() {
         max_request_bytes: 64 * 1024,
         version: "test".to_string(),
         cors_allowed_origin: Some("https://demo.open-eidas.eu".to_string()),
+        journal: None,
     });
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -224,4 +227,86 @@ async fn cors_header_present_only_when_configured() {
         .await
         .unwrap();
     assert!(resp.headers().get("access-control-allow-origin").is_none());
+}
+
+/// Constat J-1 de l'audit du 2026-09-25 : /healthz dit où en sont le
+/// scellement et la copie hors site du journal. Un journal dégradé se voit,
+/// mais ne coupe pas le service (/healthz est aussi la sonde de vivacité).
+#[tokio::test]
+async fn health_reports_the_journal_without_taking_the_service_down() {
+    struct Journal(Option<&'static str>);
+    impl oe_httpapi::JournalHealth for Journal {
+        fn report(&self) -> oe_httpapi::JournalReport {
+            oe_httpapi::JournalReport {
+                degraded: self.0.map(str::to_string),
+                detail: serde_json::json!({ "degraded": self.0.is_some(), "seal_failures": 3 }),
+            }
+        }
+    }
+    let serve = |journal: Option<Arc<dyn oe_httpapi::JournalHealth>>, policy| async move {
+        let app = oe_httpapi::router(oe_httpapi::Options {
+            authority: load_authority(),
+            // Une source injoignable, jamais sondée : sous `enforce`,
+            // l'heure n'est donc pas traçable.
+            time_source: oe_timesource::Monitor::new(oe_timesource::Options {
+                servers: vec!["127.0.0.1:9".to_string()],
+                policy,
+                ..Default::default()
+            })
+            .unwrap(),
+            max_request_bytes: 64 * 1024,
+            version: "test".to_string(),
+            cors_allowed_origin: None,
+            journal,
+        });
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        let resp = reqwest::get(format!("http://{addr}/healthz"))
+            .await
+            .unwrap();
+        let status = resp.status();
+        (status, resp.json::<serde_json::Value>().await.unwrap())
+    };
+    let disabled = oe_timesource::Policy::Disabled;
+
+    // Sans scellement branché : rien n'est dit du journal.
+    let (status, body) = serve(None, disabled).await;
+    assert_eq!(status, reqwest::StatusCode::OK);
+    assert_eq!(body["status"], "ok");
+    assert!(body.get("journal").is_none(), "{body}");
+
+    // Journal sain.
+    let (status, body) = serve(Some(Arc::new(Journal(None))), disabled).await;
+    assert_eq!(status, reqwest::StatusCode::OK);
+    assert_eq!(body["status"], "ok");
+    assert_eq!(body["journal"]["degraded"], false);
+
+    // Journal dégradé : toujours 200, mais dit.
+    let reason = "scellement en échec depuis 3 passes";
+    let (status, body) = serve(Some(Arc::new(Journal(Some(reason)))), disabled).await;
+    assert_eq!(status, reqwest::StatusCode::OK, "{body}");
+    assert_eq!(
+        body["status"],
+        format!("dégradé — journal d'audit : {reason}")
+    );
+    assert_eq!(body["journal"]["degraded"], true);
+
+    // L'heure non traçable sous `enforce` reste un 503, et son libellé prime.
+    let (status, body) = serve(
+        Some(Arc::new(Journal(Some(reason)))),
+        oe_timesource::Policy::Enforce,
+    )
+    .await;
+    assert_eq!(status, reqwest::StatusCode::SERVICE_UNAVAILABLE, "{body}");
+    assert!(
+        body["status"]
+            .as_str()
+            .unwrap()
+            .starts_with("heure non traçable"),
+        "{body}"
+    );
+    assert_eq!(body["journal"]["degraded"], true);
 }

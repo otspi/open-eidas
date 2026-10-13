@@ -9,13 +9,12 @@ estimations pour ces services. Un service produisant des signatures
 cryptographiques pour un tiers de confiance mérite mieux qu'un chiffre au
 doigt mouillé.
 
-Le réplica d'audit (WebDAV) et le conteneur Helm `ra-autoapprove` n'ont pas
-été mesurés : leurs valeurs (24/96 Mio, 16/64 Mio) sont des estimations par
-analogie avec les services mesurés, pas des résultats de test. `[À
-COMPLÉTER — mesurer effectivement ces deux services]`
+Le conteneur Helm `ra-autoapprove` n'a pas été mesuré : ses valeurs
+(16/64 Mio) sont une estimation par analogie avec les services mesurés, pas un
+résultat de test. `[À COMPLÉTER — mesurer effectivement ce service]`
 
-Les limites CPU de `postgres`, `tsa`, `ocsp-responder` et du réplica
-d'audit, elles, ne sont pas issues d'une mesure de plancher de rupture :
+Les limites CPU de `postgres`, `tsa` et `ocsp-responder`, elles, ne sont pas
+issues d'une mesure de plancher de rupture :
 faute d'opération CPU-bound comparable à la cérémonie de clé chez ces
 services, elles reprennent un ratio raisonnable par rapport à leur RAM
 retenue plutôt qu'un chiffre mesuré. `[À COMPLÉTER — mesurer effectivement
@@ -122,19 +121,18 @@ notion de requête CPU.
 | `tsa` | 25m | 250m | 32Mi | 128Mi |
 | `ocsp-responder` | 15m | 150m | 24Mi | 96Mi |
 | `postgres` | 50m | 500m | 64Mi | 256Mi |
-| réplica d'audit (WebDAV) | 10m | 100m | 24Mi | 96Mi |
 
-**Total `docker-compose.yml`** (`ca`, `tsa`, `ocsp-responder`, `postgres`,
-réplica d'audit — l'approbation RA y est une boucle dans
+**Total `docker-compose.yml`** (`ca`, `tsa`, `ocsp-responder`, `postgres`
+— l'approbation RA y est une boucle dans
 `scripts/bootstrap.sh`, pas un conteneur séparé) : Compose ne déclare qu'une
 limite CPU par service (`cpus`, pas de réservation) et une réservation/limite
 mémoire (`mem_reservation`/`mem_limit`) ; il n'y a donc pas de total de CPU
-« demandé » pour cette pile, seulement ~2,0 CPU cumulés en limite et ~176 Mio
-de RAM réservée (~704 Mio en limite).
+« demandé » pour cette pile, seulement ~1,9 CPU cumulés en limite et ~152 Mio
+de RAM réservée (~608 Mio en limite).
 
 **Total chart Helm** (les mêmes, plus le conteneur `ra-autoapprove`) : Helm
-déclare requêtes *et* limites CPU/RAM par service : ~205m CPU demandés
-(2,05 CPU en limite), ~192 Mio de RAM demandée (~768 Mio en limite).
+déclare requêtes *et* limites CPU/RAM par service : ~195m CPU demandés
+(1,95 CPU en limite), ~168 Mio de RAM demandée (~672 Mio en limite).
 
 Sur un unique nœud modeste dans les deux cas, là où la pile OpenXPKI
 précédente exigeait 4 conteneurs supplémentaires (MariaDB compris) pour un

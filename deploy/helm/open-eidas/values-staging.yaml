@@ -26,7 +26,7 @@
 
 secrets:
   # Contient postgres-password, tsa-pin, ocsp-pin, ca-root-pin,
-  # ca-issuing-pin, webdav-password, enroll-hmac-key — les mêmes clés que
+  # ca-issuing-pin, enroll-hmac-key — les mêmes clés que
   # templates/secrets/generated.yaml, mais scellées et committées plutôt que
   # générées sur le cluster : reproductible sur un autre cluster, à la
   # différence du motif `lookup`.

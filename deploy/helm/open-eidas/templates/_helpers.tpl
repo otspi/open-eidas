@@ -43,7 +43,7 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end -}}
 
 {{/*
-Labels/nom d'un composant particulier (tsa, ca, postgres, ocsp, audit-replica).
+Labels/nom d'un composant particulier (tsa, ca, postgres, ocsp, ra-console).
 */}}
 {{- define "open-eidas.componentName" -}}
 {{- printf "%s-%s" (include "open-eidas.fullname" .context) .component -}}

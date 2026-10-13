@@ -2,8 +2,8 @@
 #
 # Ce chart reproduit, en Kubernetes, exactement la pile du docker-compose de
 # démonstration : PostgreSQL, l'autorité de certification maison (racine +
-# CA émettrice, cf. cmd/ca-server), un serveur WebDAV de réplication du
-# journal d'audit, le répondeur OCSP et le service d'horodatage lui-même. Il
+# CA émettrice, cf. cmd/ca-server), le répondeur OCSP et le service
+# d'horodatage lui-même. Il
 # est destiné à un déploiement piloté par ArgoCD (voir
 # deploy/argocd/application.yaml) mais s'installe aussi bien en `helm install`
 # direct.
@@ -65,7 +65,19 @@ tsa:
   crossTSA:
     urls: "https://freetsa.org/tsr,http://timestamp.digicert.com"
   audit:
+    # À chaque intervalle, la TSU horodate la tête de son journal d'audit
+    # (log.sealed) puis en dépose une copie hors site (constat J-1).
     sealInterval: 1h
+    # Copie hors site sur un stockage objet compatible S3, auto-hébergé
+    # (MinIO, Garage, Ceph…). Vide = journal purement local : /healthz le dit
+    # (journal.offsite_copy). existingSecret nomme un Secret portant les clés
+    # `access-key` et `secret-key`.
+    s3:
+      endpoint: ""
+      bucket: ""
+      region: us-east-1
+      key: tsa-server/audit.log
+      existingSecret: ""
   # PIN du token PKCS#11, généré aléatoirement et conservé dans un Secret
   # si laissé vide (voir templates/secret-generated.yaml).
   pin: ""
@@ -298,23 +310,10 @@ postgres:
 # Nom d'un Secret existant à utiliser à la place de celui généré par
 # templates/secrets/generated.yaml (motif `lookup`, voir ce fichier). Doit
 # contenir les mêmes clés (postgres-password, tsa-pin, ocsp-pin,
-# ca-root-pin, ca-issuing-pin, webdav-password, enroll-hmac-key, et, avec
+# ca-root-pin, ca-issuing-pin, enroll-hmac-key, et, avec
 # raConsole.enabled, ra-console-db-password et ra-console-decoy-secret) : c'est le
 # mécanisme prévu pour committer ces secrets scellés (kubeseal) dans un dépôt
 # de déploiement plutôt que de les laisser générer sur le cluster.
 secrets:
   existingSecret: ""
 
-auditReplica:
-  image:
-    repository: bytemark/webdav
-    tag: "2.4"
-  username: openeidas
-  # Mot de passe généré aléatoirement si laissé vide.
-  password: ""
-  resources:
-    requests: { cpu: 10m, memory: 24Mi }
-    limits: { cpu: 100m, memory: 96Mi }
-  persistence:
-    size: 512Mi
-    storageClassName: ""

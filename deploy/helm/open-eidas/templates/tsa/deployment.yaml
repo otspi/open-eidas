@@ -1,6 +1,5 @@
 {{- $fullname := include "open-eidas.fullname" . -}}
 {{- $name := printf "%s-tsa" $fullname -}}
-{{- $auditReplicaHost := printf "%s-audit-replica" $fullname -}}
 {{- $secretName := include "open-eidas.secretName" . -}}
 apiVersion: apps/v1
 kind: Deployment
@@ -65,15 +64,29 @@ spec:
               value: {{ .Values.tsa.audit.sealInterval | quote }}
             - name: OPENEIDAS_CROSS_TSA_URLS
               value: {{ .Values.tsa.crossTSA.urls | quote }}
-            - name: OPENEIDAS_AUDIT_REPLICA_URL
-              value: {{ printf "http://%s/" $auditReplicaHost | quote }}
-            - name: OPENEIDAS_AUDIT_REPLICA_USER
-              value: {{ .Values.auditReplica.username | quote }}
-            - name: OPENEIDAS_AUDIT_REPLICA_PASSWORD
+            {{- /* Copie hors site du journal, déposée à chaque scellement
+                   (constat J-1). Sans point d'accès, le journal reste local. */}}
+            {{- if .Values.tsa.audit.s3.endpoint }}
+            {{- $s3Secret := required "tsa.audit.s3.existingSecret est obligatoire dès que tsa.audit.s3.endpoint est renseigné" .Values.tsa.audit.s3.existingSecret }}
+            - name: OPENEIDAS_S3_ENDPOINT
+              value: {{ .Values.tsa.audit.s3.endpoint | quote }}
+            - name: OPENEIDAS_S3_BUCKET
+              value: {{ required "tsa.audit.s3.bucket est obligatoire dès que tsa.audit.s3.endpoint est renseigné" .Values.tsa.audit.s3.bucket | quote }}
+            - name: OPENEIDAS_S3_REGION
+              value: {{ .Values.tsa.audit.s3.region | quote }}
+            - name: OPENEIDAS_S3_KEY
+              value: {{ .Values.tsa.audit.s3.key | quote }}
+            - name: OPENEIDAS_S3_ACCESS_KEY
               valueFrom:
                 secretKeyRef:
-                  name: {{ $secretName }}
-                  key: webdav-password
+                  name: {{ $s3Secret }}
+                  key: access-key
+            - name: OPENEIDAS_S3_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $s3Secret }}
+                  key: secret-key
+            {{- end }}
             - name: OPENEIDAS_CERT_FILE
               value: /var/lib/open-eidas/state/tsu.pem
             - name: OPENEIDAS_CHAIN_FILE

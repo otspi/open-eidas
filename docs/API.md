@@ -198,13 +198,14 @@ Toutes les options sont pilotées par variables d'environnement.
 | `OPENEIDAS_SIGNING_DIGEST` | `sha256` | Empreinte utilisée pour signer le jeton |
 | `OPENEIDAS_MAX_REQUEST_BYTES` | `65536` | Taille maximale d'une requête |
 | `OPENEIDAS_AUDIT_FILE` | `/var/lib/open-eidas/audit.log` | Journal d'audit chaîné par hachage |
-| `OPENEIDAS_AUDIT_SEAL_INTERVAL` | `1h` | Période de scellement de la tête de chaîne (`0` désactive). **Lue mais pas encore exploitée** : aucun scellement n'a lieu (écart J-1) |
+| `OPENEIDAS_AUDIT_SEAL_INTERVAL` | `1h` | Période à laquelle la TSU horodate la tête de son journal (`log.sealed`, avec le jeton RFC 3161), puis en dépose une copie hors site. Une passe a lieu au démarrage |
 | `OPENEIDAS_CROSS_TSA_URLS` | `https://freetsa.org/tsr,http://timestamp.digicert.com` | TSA tierces contresignant chaque scellement, séparées par des virgules. **Lue mais pas encore exploitée** (écart J-1) |
 | `OPENEIDAS_CROSS_TSA_TIMEOUT` | `15s` | Délai d'attente par TSA tierce |
-| `OPENEIDAS_AUDIT_REPLICA_URL` | — | Base WebDAV où répliquer le journal à chaque scellement (vide = désactivé). **Lue mais pas encore exploitée** (écart J-1) |
-| `OPENEIDAS_AUDIT_REPLICA_USER` | — | Utilisateur WebDAV |
-| `OPENEIDAS_AUDIT_REPLICA_PASSWORD` | — | Mot de passe WebDAV |
-| `OPENEIDAS_AUDIT_REPLICA_TIMEOUT` | `30s` | Délai d'attente de la réplication |
+| `OPENEIDAS_S3_ENDPOINT` | — | Stockage objet compatible S3, auto-hébergé, où déposer le journal entier à chaque scellement (`log.replicated`). Vide = journal purement local |
+| `OPENEIDAS_S3_BUCKET`, `OPENEIDAS_S3_ACCESS_KEY`, `OPENEIDAS_S3_SECRET_KEY` | — | Obligatoires dès que le point d'accès est renseigné : le service refuse de démarrer sinon |
+| `OPENEIDAS_S3_REGION` | `us-east-1` | Région de signature (SigV4) |
+| `OPENEIDAS_S3_KEY` | `tsa-server/audit.log` | Clé de l'objet qui reçoit le journal |
+| `OPENEIDAS_S3_TIMEOUT` | `30s` | Délai d'attente d'un dépôt |
 | `OPENEIDAS_TIME_POLICY` | `enforce` | `enforce` (refus de signer si l'heure n'est pas traçable), `monitor` ou `disabled` |
 | `OPENEIDAS_TIME_SOURCES` | `ntp.obspm.fr,ptbtime1.ptb.de` | Serveurs de temps de référence, séparés par des virgules |
 | `OPENEIDAS_TIME_MIN_SOURCES` | `2` | Nombre de sources devant répondre pour établir la traçabilité |

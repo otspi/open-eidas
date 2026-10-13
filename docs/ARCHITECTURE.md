@@ -222,23 +222,32 @@ Deux propriétés rendent le dispositif exploitable :
 Le chaînage SHA-256 n'utilise pas de clé : quiconque peut écrire dans le
 fichier peut en tronquer la fin ou le réécrire en recalculant la chaîne, sans
 que `verify-audit` le voie. Ce qui ancre la tête de chaîne hors du système
-**n'est pas encore en service** (constat J-1) :
+**n'est en service qu'en partie** (constat J-1) :
 
-- **Scellement périodique** par la TSU elle-même (`log.sealed`) : le format
-  est prévu (`oe_audit::EVENT_SEALED`, compté par `verify-audit`), mais aucun
-  service ne scelle.
+- **Scellement périodique** par la TSU elle-même : **en service dans
+  `tsa-server`**. Au démarrage puis à chaque `OPENEIDAS_AUDIT_SEAL_INTERVAL`,
+  le service fait horodater la tête de chaîne par sa propre autorité et
+  consigne `log.sealed` avec la tête scellée et le jeton RFC 3161, certificat
+  compris : `openssl ts -verify -digest <tête>` le vérifie sans rien d'Open
+  eIDAS. Réécrire le journal avant un sceau demanderait de reforger un jeton
+  signé par la clé du module cryptographique. Les journaux de `ca-server` et
+  de `ra-console` ne sont pas encore scellés.
+- **Copie hors site** sur un stockage objet compatible S3, auto-hébergé :
+  `tsa-server` y dépose son journal entier après chaque scellement
+  (`log.replicated`) ; `ca-server` le fait à chaque écriture, de façon
+  bloquante, et `ra-console` au mieux. Pour la TSA la copie est périodique —
+  son journal reçoit une entrée par jeton — et l'émission n'en dépend pas.
 - **Contreseing par des TSA tierces** indépendantes (`oe-crosstsa`, protocole
-  RFC 3161 standard, vérifiable par `openssl ts -verify` sans rien d'Open
-  eIDAS) : bibliothèque écrite et testée contre un vrai serveur, non câblée.
-- **Réplication hors site** : `oe-replicate` (WebDAV) est écrit et testé, non
-  câblé ; une copie vers un stockage objet compatible S3 auto-hébergé est en
-  cours (PR #49 et #50).
+  RFC 3161 standard) : bibliothèque écrite et testée contre un vrai serveur,
+  **non câblée**. Tant qu'elle ne l'est pas, le sceau reste auto-référentiel :
+  il ne prouve rien à qui ne fait pas déjà confiance à la TSU.
 
-Les variables `OPENEIDAS_AUDIT_SEAL_INTERVAL`, `OPENEIDAS_CROSS_TSA_URLS` et
-`OPENEIDAS_AUDIT_REPLICA_*` du `docker-compose.yml` et du chart Helm sont
-lues sans être exploitées. D'ici là, l'intégrité du journal revient au
-contrôle d'accès de son volume (voir [CPS.md](CPS.md) B.3 et
-[CONFORMITE-ETSI.md](CONFORMITE-ETSI.md)).
+Un scellement ou une copie en échec ne suspend pas l'émission. Un scellement
+en échec est retenté après une minute au plus (au démarrage, l'heure peut ne
+pas être encore traçable) ; au-delà de trois passes consécutives en échec, `/healthz` se déclare dégradé (`journal.degraded`),
+sans passer en erreur : c'est à la supervision d'alerter. `oe-replicate`
+(WebDAV) reste disponible mais n'est appelé par aucun binaire. Voir
+[CPS.md](CPS.md) B.3 et [CONFORMITE-ETSI.md](CONFORMITE-ETSI.md).
 
 ## 8. Écarts assumés du prototype vis-à-vis d'une TSA qualifiée
 

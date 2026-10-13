@@ -41,6 +41,8 @@ enum Command {
     Version,
 }
 
+mod seal;
+
 fn die(context: &str, err: impl std::fmt::Display) -> ! {
     eprintln!("tsa-server: {context}: {err}");
     std::process::exit(1);
@@ -223,12 +225,36 @@ async fn run_serve() {
         .unwrap_or_else(|e| die("construction de l'autorité", e)),
     );
 
+    // Scellement périodique de la tête du journal par la TSU, et copie hors
+    // site (constat J-1) : voir `seal`.
+    let s3 = cfg.s3.as_ref().map(|c| {
+        let client = oe_s3::Client::new(oe_s3::Options {
+            endpoint: c.endpoint.clone(),
+            bucket: c.bucket.clone(),
+            region: c.region.clone(),
+            access_key: c.access_key.clone(),
+            secret_key: c.secret_key.clone(),
+            timeout: c.timeout,
+        })
+        .unwrap_or_else(|e| die("client S3 du journal", e));
+        (client, c.key.clone())
+    });
+    let sealer = Arc::new(seal::Sealer::new(
+        log.clone(),
+        cfg.audit_file.clone(),
+        authority.clone(),
+        s3,
+    ));
+    let journal: Arc<dyn oe_httpapi::JournalHealth> = sealer.health();
+    sealer.spawn_periodic(cfg.audit_seal_interval);
+
     let app = oe_httpapi::router(oe_httpapi::Options {
         authority,
         time_source: monitor,
         max_request_bytes: cfg.max_request_bytes.max(0) as usize,
         version: env!("CARGO_PKG_VERSION").to_string(),
         cors_allowed_origin: cfg.cors_allowed_origin.clone(),
+        journal: Some(journal),
     });
 
     let listener = tokio::net::TcpListener::bind(bind_addr(&cfg.listen))
