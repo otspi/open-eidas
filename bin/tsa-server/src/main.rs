@@ -225,8 +225,8 @@ async fn run_serve() {
         .unwrap_or_else(|e| die("construction de l'autorité", e)),
     );
 
-    // Scellement périodique de la tête du journal par la TSU, et copie hors
-    // site (constat J-1) : voir `seal`.
+    // Scellement périodique de la tête du journal par la TSU, contreseing par
+    // des TSA tierces et copie hors site (constat J-1) : voir `seal`.
     let s3 = cfg.s3.as_ref().map(|c| {
         let client = oe_s3::Client::new(oe_s3::Options {
             endpoint: c.endpoint.clone(),
@@ -243,6 +243,8 @@ async fn run_serve() {
         log.clone(),
         cfg.audit_file.clone(),
         authority.clone(),
+        cfg.cross_tsa_urls.clone(),
+        cfg.cross_tsa_timeout,
         s3,
     ));
     let journal: Arc<dyn oe_httpapi::JournalHealth> = sealer.health();

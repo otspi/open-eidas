@@ -785,18 +785,18 @@ pub fn system_matrix() -> Matrix {
         Entry {
             requirement: Requirement { standard: "ETSI EN 319 401", version: "V3.2.1 (2026-01)", clause: "§7.10", ids: &["REQ-7.10-02", "REQ-7.10-08"], title: "Intégrité démontrable des enregistrements d'audit" },
             status: Status::Gap,
-            mechanism: "Chaînage par hachage vérifié intégralement à l'ouverture ; verrou de fichier partagé entre plusieurs écrivains : oe-audit::Log. Le chaînage n'a pas de clé : une réécriture complète du fichier avec recalcul de la chaîne n'est pas détectée tant que la tête n'est pas ancrée hors du système. tsa-server fait horodater la tête de son journal par sa propre TSU, au démarrage puis périodiquement (log.sealed, jeton RFC 3161 conservé), et en dépose une copie sur un stockage S3 auto-hébergé s'il est configuré ; ca-server copie le sien à chaque écriture. Le sceau reste auto-référentiel et les journaux de ca-server et de ra-console ne sont pas scellés.",
+            mechanism: "Chaînage par hachage vérifié intégralement à l'ouverture ; verrou de fichier partagé entre plusieurs écrivains : oe-audit::Log. Le chaînage n'a pas de clé : une réécriture complète du fichier avec recalcul de la chaîne n'est pas détectée tant que la tête n'est pas ancrée hors du système. tsa-server fait horodater la tête de son journal par sa propre TSU, au démarrage puis périodiquement (log.sealed, jeton RFC 3161 conservé), la fait contresigner par des TSA tierces (log.cross_sealed, jetons conservés), et en dépose une copie sur un stockage S3 auto-hébergé s'il est configuré ; ca-server copie le sien à chaque écriture. Les journaux de ca-server et de ra-console ne sont ni scellés ni contresignés.",
             test: "crates/oe-audit/src/lib.rs (deux_ecrivains_partagent_la_meme_chaine, verify_detects_modified_record, verify_detects_truncated_and_rewritten_tail)",
             in_service: "",
-            target: "Constat J-1 : contreseing du sceau par une TSA tierce (log.cross_sealed) et scellement des journaux de ca-server et de ra-console par la TSA.",
+            target: "Constat J-1 : scellement et contreseing des journaux de ca-server et de ra-console par la TSA.",
         },
         Entry {
             requirement: Requirement { standard: "ETSI EN 319 401", version: "V3.2.1 (2026-01)", clause: "§7.11.1, §7.11.2", ids: &["REQ-7.11.1-01", "REQ-7.11.2-01"], title: "Copies de sauvegarde et plan de sauvegarde" },
             status: Status::Implemented,
-            mechanism: "Contreseing du journal par une TSA tierce (oe-crosstsa) et réplication WebDAV hors site (oe-replicate) écrits et testés contre un vrai serveur, mais appelés par aucun binaire. La copie hors site en service passe par un stockage S3 auto-hébergé (oe-s3) : périodique pour tsa-server, à chaque écriture pour ca-server ; elle est facultative, et sans elle la survie du journal repose sur la sauvegarde de son volume.",
+            mechanism: "Réplication WebDAV hors site (oe-replicate) écrite et testée contre un vrai serveur, mais appelée par aucun binaire. La copie hors site en service passe par un stockage S3 auto-hébergé (oe-s3) : périodique pour tsa-server, à chaque écriture pour ca-server ; elle est facultative, et sans elle la survie du journal repose sur la sauvegarde de son volume.",
             test: "crates/oe-crosstsa/tests/against_local_server.rs (seals_a_digest_against_a_real_rfc3161_server), crates/oe-replicate/tests/against_local_server.rs (replicates_content_via_webdav_put)",
             in_service: "",
-            target: "Constat J-1 : câbler le contreseing tiers (log.cross_sealed) dans tsa-server serve, puis le scellement dans ca-server serve et ra-console, testés de bout en bout sur le binaire.",
+            target: "Constat J-1 : rendre la copie hors site obligatoire en production, et câbler le scellement dans ca-server serve et ra-console, testés de bout en bout sur le binaire.",
         },
         Entry {
             requirement: Requirement { standard: "ETSI EN 319 401", version: "V3.2.1 (2026-01)", clause: "§7.12", ids: &["REQ-7.12-02", "REQ-7.12-10"], title: "Plan de cessation d'activité" },

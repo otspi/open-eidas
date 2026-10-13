@@ -574,6 +574,7 @@ jobs:
             --set tsa.image.repository=openeidas-tsa \
             --set tsa.image.tag=ci \
             --set tsa.time.policy=monitor \
+            --set tsa.crossTSA.urls= \
             --set ocsp.image.repository=openeidas-ocsp-responder \
             --set ocsp.image.tag=ci
 
@@ -678,6 +679,9 @@ jobs:
         # tsa.time.policy=monitor.
         env:
           OPENEIDAS_TIME_POLICY: monitor
+          # Pas de TSA publique sollicitée à chaque exécution de la CI : le
+          # contreseing est prouvé par bin/tsa-server/tests/serve.rs.
+          OPENEIDAS_CROSS_TSA_URLS: ""
         run: ./scripts/bootstrap.sh
 
       - name: Horodate un fichier et vérifie le jeton (openssl ts)

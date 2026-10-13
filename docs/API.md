@@ -199,7 +199,7 @@ Toutes les options sont pilotées par variables d'environnement.
 | `OPENEIDAS_MAX_REQUEST_BYTES` | `65536` | Taille maximale d'une requête |
 | `OPENEIDAS_AUDIT_FILE` | `/var/lib/open-eidas/audit.log` | Journal d'audit chaîné par hachage |
 | `OPENEIDAS_AUDIT_SEAL_INTERVAL` | `1h` | Période à laquelle la TSU horodate la tête de son journal (`log.sealed`, avec le jeton RFC 3161), puis en dépose une copie hors site. Une passe a lieu au démarrage |
-| `OPENEIDAS_CROSS_TSA_URLS` | `https://freetsa.org/tsr,http://timestamp.digicert.com` | TSA tierces contresignant chaque scellement, séparées par des virgules. **Lue mais pas encore exploitée** (écart J-1) |
+| `OPENEIDAS_CROSS_TSA_URLS` | `https://freetsa.org/tsr,http://timestamp.digicert.com` | TSA tierces qui horodatent, à chaque scellement, la même tête de chaîne (`log.cross_sealed`, un enregistrement par autorité qui a répondu). Seule l'empreinte leur est envoyée. Séparées par des virgules ; **posée à vide, la variable désactive le contreseing** |
 | `OPENEIDAS_CROSS_TSA_TIMEOUT` | `15s` | Délai d'attente par TSA tierce |
 | `OPENEIDAS_S3_ENDPOINT` | — | Stockage objet compatible S3, auto-hébergé, où déposer le journal entier à chaque scellement (`log.replicated`). Vide = journal purement local |
 | `OPENEIDAS_S3_BUCKET`, `OPENEIDAS_S3_ACCESS_KEY`, `OPENEIDAS_S3_SECRET_KEY` | — | Obligatoires dès que le point d'accès est renseigné : le service refuse de démarrer sinon |

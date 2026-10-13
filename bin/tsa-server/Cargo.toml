@@ -24,6 +24,7 @@ oe-timesource = { path = "../../crates/oe-timesource" }
 oe-tsa-core = { path = "../../crates/oe-tsa-core" }
 oe-httpapi = { path = "../../crates/oe-httpapi" }
 oe-enroll = { path = "../../crates/oe-enroll" }
+oe-crosstsa = { path = "../../crates/oe-crosstsa" }
 oe-s3 = { path = "../../crates/oe-s3" }
 oe-rfc3161-asn1 = { path = "../../crates/oe-rfc3161-asn1" }
 clap = { version = "4", features = ["derive"] }

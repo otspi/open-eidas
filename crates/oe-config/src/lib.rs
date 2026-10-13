@@ -231,9 +231,10 @@ impl Config {
                 Duration::from_secs(3600),
             )?,
 
-            cross_tsa_urls: split_list(&env_str(
-                "OPENEIDAS_CROSS_TSA_URLS",
-                "https://freetsa.org/tsr,http://timestamp.digicert.com",
+            // Posée mais vide, la variable désactive le contreseing : c'est un
+            // choix explicite, pas un oubli à combler par le défaut.
+            cross_tsa_urls: split_list(&env::var("OPENEIDAS_CROSS_TSA_URLS").unwrap_or_else(
+                |_| "https://freetsa.org/tsr,http://timestamp.digicert.com".to_string(),
             )),
             cross_tsa_timeout: env_duration(
                 "OPENEIDAS_CROSS_TSA_TIMEOUT",
@@ -445,6 +446,29 @@ mod tests {
         env::set_var("OPENEIDAS_KEY_BITS", "2048");
         let err = Config::load().unwrap_err();
         assert!(matches!(err, ConfigError::KeyBitsTooSmall(2048)));
+        clear_env();
+    }
+
+    /// Constat J-1 : deux TSA tierces par défaut ; la variable posée mais vide
+    /// désactive le contreseing, elle ne retombe pas sur le défaut.
+    #[test]
+    #[serial]
+    fn third_party_tsas_default_to_two_and_an_empty_list_disables_them() {
+        clear_env();
+        env::set_var("OPENEIDAS_PIN", "1234");
+        assert_eq!(Config::load().unwrap().cross_tsa_urls.len(), 2);
+
+        env::set_var("OPENEIDAS_CROSS_TSA_URLS", "");
+        assert!(Config::load().unwrap().cross_tsa_urls.is_empty());
+
+        env::set_var(
+            "OPENEIDAS_CROSS_TSA_URLS",
+            " https://tsa.example.test/tsr ,",
+        );
+        assert_eq!(
+            Config::load().unwrap().cross_tsa_urls,
+            ["https://tsa.example.test/tsr"]
+        );
         clear_env();
     }
 

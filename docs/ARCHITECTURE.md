@@ -238,13 +238,20 @@ que `verify-audit` le voie. Ce qui ancre la tête de chaîne hors du système
   bloquante, et `ra-console` au mieux. Pour la TSA la copie est périodique —
   son journal reçoit une entrée par jeton — et l'émission n'en dépend pas.
 - **Contreseing par des TSA tierces** indépendantes (`oe-crosstsa`, protocole
-  RFC 3161 standard) : bibliothèque écrite et testée contre un vrai serveur,
-  **non câblée**. Tant qu'elle ne l'est pas, le sceau reste auto-référentiel :
-  il ne prouve rien à qui ne fait pas déjà confiance à la TSU.
+  RFC 3161 standard) : **en service dans `tsa-server`**. La tête que la TSU
+  vient de sceller est aussi horodatée par chaque autorité de
+  `OPENEIDAS_CROSS_TSA_URLS` ; chaque réponse est consignée (`log.cross_sealed`)
+  avec son jeton, vérifiable par `openssl ts -verify` et le certificat de
+  l'autorité, sans rien d'Open eIDAS. C'est ce qui sort le sceau de
+  l'auto-référence. Le service contrôle que le jeton porte l'empreinte
+  soumise ; il n'en vérifie pas la signature, faute d'ancres de confiance
+  pour ces autorités : cette vérification se fait après coup. Les journaux de
+  `ca-server` et de `ra-console` ne sont pas encore contresignés.
 
-Un scellement ou une copie en échec ne suspend pas l'émission. Un scellement
-en échec est retenté après une minute au plus (au démarrage, l'heure peut ne
-pas être encore traçable) ; au-delà de trois passes consécutives en échec, `/healthz` se déclare dégradé (`journal.degraded`),
+Un scellement, un contreseing ou une copie en échec ne suspend pas l'émission.
+Un scellement en échec est retenté après une minute au plus (au démarrage, l'heure peut ne
+pas être encore traçable) ; au-delà de trois passes consécutives en échec (pour le
+contreseing : trois passes sans aucune autorité tierce), `/healthz` se déclare dégradé (`journal.degraded`),
 sans passer en erreur : c'est à la supervision d'alerter. `oe-replicate`
 (WebDAV) reste disponible mais n'est appelé par aucun binaire. Voir
 [CPS.md](CPS.md) B.3 et [CONFORMITE-ETSI.md](CONFORMITE-ETSI.md).
