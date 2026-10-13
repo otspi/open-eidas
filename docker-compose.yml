@@ -112,11 +112,12 @@ services:
       OPENEIDAS_AUDIT_FILE: /var/lib/open-eidas/state/audit.log
       # À chaque intervalle, la TSU horodate la tête de son journal (log.sealed)
       # puis en dépose une copie sur un stockage objet compatible S3, s'il est
-      # configuré (OPENEIDAS_S3_ENDPOINT vide = journal purement local). Le
-      # contreseing par une TSA tierce est lu par la configuration mais PAS
-      # encore exploité (écart J-1, docs/ARCHITECTURE.md §7).
+      # configuré (OPENEIDAS_S3_ENDPOINT vide = journal purement local). La
+      # même tête est contresignée par les TSA tierces ci-dessous : seule
+      # l'empreinte de la tête de chaîne leur est envoyée. Poser la variable
+      # à vide désactive ce contreseing (docs/ARCHITECTURE.md §7).
       OPENEIDAS_AUDIT_SEAL_INTERVAL: 1h
-      OPENEIDAS_CROSS_TSA_URLS: ${OPENEIDAS_CROSS_TSA_URLS:-https://freetsa.org/tsr,http://timestamp.digicert.com}
+      OPENEIDAS_CROSS_TSA_URLS: ${OPENEIDAS_CROSS_TSA_URLS-https://freetsa.org/tsr,http://timestamp.digicert.com}
       OPENEIDAS_S3_ENDPOINT: ${OPENEIDAS_S3_ENDPOINT:-}
       OPENEIDAS_S3_BUCKET: ${OPENEIDAS_S3_BUCKET:-}
       OPENEIDAS_S3_REGION: ${OPENEIDAS_S3_REGION:-us-east-1}

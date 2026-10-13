@@ -3413,6 +3413,7 @@ dependencies = [
  "oe-certs",
  "oe-config",
  "oe-conformance",
+ "oe-crosstsa",
  "oe-enroll",
  "oe-hsm",
  "oe-httpapi",

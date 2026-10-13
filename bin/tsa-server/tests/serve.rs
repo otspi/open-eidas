@@ -70,6 +70,8 @@ impl Fixture {
             .env("OPENEIDAS_CHAIN_FILE", self.dir.join("chain.pem"))
             .env("OPENEIDAS_AUDIT_FILE", self.dir.join(audit))
             .env("OPENEIDAS_LISTEN", format!("127.0.0.1:{port}"))
+            // Pas de TSA tierce par défaut : le test ne sort pas de la machine.
+            .env("OPENEIDAS_CROSS_TSA_URLS", "")
             .env("OPENEIDAS_TIME_POLICY", policy)
             // Aucune source joignable : l'heure n'est jamais traçable.
             .env("OPENEIDAS_TIME_SOURCES", "127.0.0.1:9")
@@ -81,12 +83,26 @@ impl Fixture {
     }
 
     async fn serve(&self, cert: &str, policy: &str, audit: &str) -> (Server, String) {
+        self.serve_with(cert, policy, audit, &[]).await
+    }
+
+    async fn serve_with(
+        &self,
+        cert: &str,
+        policy: &str,
+        audit: &str,
+        env: &[(&str, &str)],
+    ) -> (Server, String) {
         let port = std::net::TcpListener::bind("127.0.0.1:0")
             .unwrap()
             .local_addr()
             .unwrap()
             .port();
-        let child = self.command(cert, policy, port, audit).spawn().unwrap();
+        let child = self
+            .command(cert, policy, port, audit)
+            .envs(env.iter().copied())
+            .spawn()
+            .unwrap();
         let server = Server(child);
         for _ in 0..100 {
             if tokio::net::TcpStream::connect(("127.0.0.1", port))
@@ -472,6 +488,82 @@ async fn the_binary_applies_what_the_matrix_declares() {
             has_fraction(&again)
         };
         assert!(fractional, "genTime sans fraction de seconde : {text}");
+
+        // Constat J-1, contreseing : une seconde instance du binaire prend la
+        // première pour TSA tierce. La tête qu'elle scelle elle-même est aussi
+        // horodatée par l'autre, et ce jeton-là se vérifie de la même façon.
+        {
+            let tierce = format!("{base}/tsa");
+            let (_second, second) = fx
+                .serve_with(
+                    "tsu.pem",
+                    "monitor",
+                    "audit-cross.log",
+                    &[("OPENEIDAS_CROSS_TSA_URLS", tierce.as_str())],
+                )
+                .await;
+            let mut journal = serde_json::Value::Null;
+            for _ in 0..100 {
+                let health: serde_json::Value = reqwest::get(format!("{second}/healthz"))
+                    .await
+                    .unwrap()
+                    .json()
+                    .await
+                    .unwrap();
+                journal = health["journal"].clone();
+                if journal["last_cross_seal"].is_string() {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            assert_eq!(journal["cross_tsas"], 1, "{journal}");
+            assert_eq!(journal["last_cross_seal_count"], 1, "{journal}");
+            assert_eq!(journal["degraded"], false, "{journal}");
+            let records = oe_audit::read(fx.dir.join("audit-cross.log")).unwrap();
+            let own = records
+                .iter()
+                .find(|r| r.event == "log.sealed")
+                .and_then(|r| r.data.clone())
+                .expect("sceau de la TSU");
+            let cross = records
+                .iter()
+                .find(|r| r.event == "log.cross_sealed")
+                .and_then(|r| r.data.clone())
+                .expect("contreseing tiers");
+            assert_eq!(cross["sealed_head"], own["sealed_head"]);
+            std::fs::write(
+                fx.dir.join("cross.tsr"),
+                base64::engine::general_purpose::STANDARD
+                    .decode(cross["token"].as_str().unwrap())
+                    .unwrap(),
+            )
+            .unwrap();
+            let verify = fx.openssl(&[
+                "ts",
+                "-verify",
+                "-digest",
+                cross["sealed_head"].as_str().unwrap(),
+                "-in",
+                "cross.tsr",
+                "-CAfile",
+                "chain.pem",
+            ]);
+            assert!(
+                verify.status.success(),
+                "{}{}",
+                String::from_utf8_lossy(&verify.stdout),
+                String::from_utf8_lossy(&verify.stderr)
+            );
+            // Ce contreseing est un jeton de plus dans le journal de la première.
+            let first = oe_audit::read(fx.dir.join("audit-monitor.log")).unwrap();
+            assert!(
+                first.iter().any(|r| r.event == "timestamp.granted"
+                    && r.data
+                        .as_ref()
+                        .is_some_and(|d| d["message_imprint"] == cross["sealed_head"])),
+                "la TSA tierce n'a pas journalisé le jeton du contreseing"
+            );
+        }
 
         let text = fx.timestamp(&base, "-sha1", "sha1").await;
         assert!(text.contains("Status: Rejected"), "{text}");
