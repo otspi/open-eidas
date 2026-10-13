@@ -56,6 +56,7 @@ async fn start_local_tsa() -> String {
         max_request_bytes: 64 * 1024,
         version: "test".to_string(),
         cors_allowed_origin: None,
+        journal: None,
     });
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

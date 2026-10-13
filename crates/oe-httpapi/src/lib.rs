@@ -39,6 +39,23 @@ pub struct Options {
     /// (`/api/v1/timestamp`, `/api/v1/certificate`, `/api/v1/policy`).
     /// `None` = pas de couche CORS, comportement par défaut.
     pub cors_allowed_origin: Option<String>,
+    /// L'état du scellement et de la copie hors site du journal d'audit,
+    /// rendu par `/healthz`. `None` : le service ne scelle pas (tests).
+    pub journal: Option<Arc<dyn JournalHealth>>,
+}
+
+/// Ce que `/healthz` dit du journal d'audit (constat J-1 de l'audit du
+/// 2026-09-25) : un scellement ou une copie hors site en échec prolongé doit
+/// se voir et déclencher une alerte.
+pub trait JournalHealth: Send + Sync {
+    fn report(&self) -> JournalReport;
+}
+
+pub struct JournalReport {
+    /// `Some(raison)` quand le journal n'est plus scellé ou copié comme prévu.
+    pub degraded: Option<String>,
+    /// Le détail rendu tel quel sous la clé `journal`.
+    pub detail: serde_json::Value,
 }
 
 #[derive(Clone)]
@@ -46,6 +63,7 @@ struct AppState {
     authority: Arc<Authority>,
     time_source: Arc<oe_timesource::Monitor>,
     version: Arc<str>,
+    journal: Option<Arc<dyn JournalHealth>>,
 }
 
 pub fn router(opts: Options) -> Router {
@@ -53,6 +71,7 @@ pub fn router(opts: Options) -> Router {
         authority: opts.authority,
         time_source: opts.time_source,
         version: Arc::from(opts.version.as_str()),
+        journal: opts.journal,
     };
     let mut router = Router::new()
         .route("/tsa", post(handle_rfc3161))
@@ -294,11 +313,23 @@ async fn handle_health(State(state): State<AppState>) -> Response {
         } else {
             (StatusCode::OK, "ok".to_string())
         };
-    let payload = serde_json::json!({
+    let journal = state.journal.as_ref().map(|j| j.report());
+    // Un journal qui n'est plus scellé ou copié ne suspend pas l'émission :
+    // `/healthz` sert aussi de sonde de vivacité, un 503 ferait redémarrer le
+    // service. Il le dit, pour que la supervision alerte. L'heure non
+    // traçable, plus grave, garde la priorité dans le libellé.
+    let state_str = match journal.as_ref().and_then(|j| j.degraded.as_deref()) {
+        Some(reason) if state_str == "ok" => format!("dégradé — journal d'audit : {reason}"),
+        _ => state_str,
+    };
+    let mut payload = serde_json::json!({
         "status": state_str,
         "time_source": time_source_json(&state.time_source),
         "version": state.version.as_ref(),
     });
+    if let Some(journal) = journal {
+        payload["journal"] = journal.detail;
+    }
     (code, Json(payload)).into_response()
 }
 

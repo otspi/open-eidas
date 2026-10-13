@@ -31,6 +31,8 @@ pub enum ConfigError {
     InvalidBool { key: &'static str, value: String },
     #[error("OPENEIDAS_KEY_BITS={0}: ETSI TS 119 312 impose au moins 3072 bits pour RSA")]
     KeyBitsTooSmall(i64),
+    #[error("{0} est obligatoire dès qu'OPENEIDAS_S3_ENDPOINT est configuré")]
+    IncompleteS3(&'static str),
     /// Constat T-1 de l'audit du 2026-09-25 (EN 319 421 `TIS-7.7.1-05/-06`,
     /// `TIS-7.7.2-03`) : sans cette garde, l'écart entre `genTime` et l'UTC
     /// peut dépasser l'exactitude annoncée sans que rien ne le détecte.
@@ -57,6 +59,60 @@ pub enum ConfigError {
 }
 
 /// Configuration complète du service, entièrement pilotée par l'environnement.
+/// Stockage objet compatible S3, auto-hébergé (MinIO, Garage, Ceph… jamais
+/// un service géré, décision de l'association — voir `oe-s3`). Mêmes variables
+/// que `ca-server` et `ra-console` ; `OPENEIDAS_S3_KEY` distingue les journaux.
+#[derive(Clone)]
+pub struct S3Config {
+    pub endpoint: String,
+    pub bucket: String,
+    pub region: String,
+    pub access_key: String,
+    pub secret_key: String,
+    /// Clé de l'objet qui reçoit le journal entier à chaque copie.
+    pub key: String,
+    pub timeout: Duration,
+}
+
+// Jamais de secret dans une trace : la clé secrète n'est pas affichée.
+impl std::fmt::Debug for S3Config {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("S3Config")
+            .field("endpoint", &self.endpoint)
+            .field("bucket", &self.bucket)
+            .field("region", &self.region)
+            .field("key", &self.key)
+            .finish_non_exhaustive()
+    }
+}
+
+/// `None` si `OPENEIDAS_S3_ENDPOINT` est vide (journal purement local).
+/// Sinon, compartiment et identifiants sont obligatoires : une copie hors site
+/// à moitié configurée ne doit pas démarrer en silence sans rien copier.
+fn s3_config() -> Result<Option<S3Config>, ConfigError> {
+    let endpoint = env_str("OPENEIDAS_S3_ENDPOINT", "");
+    if endpoint.is_empty() {
+        return Ok(None);
+    }
+    let required = |name: &'static str| {
+        let value = env_str(name, "");
+        if value.is_empty() {
+            Err(ConfigError::IncompleteS3(name))
+        } else {
+            Ok(value)
+        }
+    };
+    Ok(Some(S3Config {
+        endpoint,
+        bucket: required("OPENEIDAS_S3_BUCKET")?,
+        region: env_str("OPENEIDAS_S3_REGION", "us-east-1"),
+        access_key: required("OPENEIDAS_S3_ACCESS_KEY")?,
+        secret_key: required("OPENEIDAS_S3_SECRET_KEY")?,
+        key: env_str("OPENEIDAS_S3_KEY", "tsa-server/audit.log"),
+        timeout: env_duration("OPENEIDAS_S3_TIMEOUT", Duration::from_secs(30))?,
+    }))
+}
+
 #[derive(Debug, Clone)]
 pub struct Config {
     pub listen: String,
@@ -78,10 +134,10 @@ pub struct Config {
     pub cross_tsa_urls: Vec<String>,
     pub cross_tsa_timeout: Duration,
 
-    pub audit_replica_url: String,
-    pub audit_replica_user: String,
-    pub audit_replica_password: String,
-    pub audit_replica_timeout: Duration,
+    /// Copie hors site du journal sur un stockage objet compatible S3,
+    /// auto-hébergé : `None` si `OPENEIDAS_S3_ENDPOINT` est vide. Déposée à
+    /// chaque scellement (`audit_seal_interval`), jamais à chaque jeton.
+    pub s3: Option<S3Config>,
 
     pub policy_oid: ObjectIdentifier,
     /// Mode production : refuse de démarrer avec un OID de politique de test.
@@ -184,14 +240,7 @@ impl Config {
                 Duration::from_secs(15),
             )?,
 
-            audit_replica_url: env_str("OPENEIDAS_AUDIT_REPLICA_URL", ""),
-            audit_replica_user: env_str("OPENEIDAS_AUDIT_REPLICA_USER", ""),
-            audit_replica_password: env::var("OPENEIDAS_AUDIT_REPLICA_PASSWORD")
-                .unwrap_or_default(),
-            audit_replica_timeout: env_duration(
-                "OPENEIDAS_AUDIT_REPLICA_TIMEOUT",
-                Duration::from_secs(30),
-            )?,
+            s3: s3_config()?,
 
             policy_oid,
             production,
@@ -396,6 +445,34 @@ mod tests {
         env::set_var("OPENEIDAS_KEY_BITS", "2048");
         let err = Config::load().unwrap_err();
         assert!(matches!(err, ConfigError::KeyBitsTooSmall(2048)));
+        clear_env();
+    }
+
+    /// Constat J-1 : la copie hors site est tout ou rien. Sans point d'accès,
+    /// le journal reste local ; avec, il manque quelque chose → refus de
+    /// démarrer plutôt que de ne rien copier en silence.
+    #[test]
+    #[serial]
+    fn offsite_copy_is_absent_complete_or_refused() {
+        clear_env();
+        env::set_var("OPENEIDAS_PIN", "1234");
+        assert!(Config::load().unwrap().s3.is_none());
+
+        env::set_var("OPENEIDAS_S3_ENDPOINT", "https://s3.example.test");
+        env::set_var("OPENEIDAS_S3_BUCKET", "journaux");
+        env::set_var("OPENEIDAS_S3_ACCESS_KEY", "cle");
+        let err = Config::load().unwrap_err();
+        assert!(
+            matches!(err, ConfigError::IncompleteS3("OPENEIDAS_S3_SECRET_KEY")),
+            "{err}"
+        );
+
+        env::set_var("OPENEIDAS_S3_SECRET_KEY", "secret-a-ne-pas-afficher");
+        let s3 = Config::load().unwrap().s3.expect("copie configurée");
+        assert_eq!(s3.bucket, "journaux");
+        assert_eq!(s3.key, "tsa-server/audit.log");
+        assert_eq!(s3.region, "us-east-1");
+        assert!(!format!("{s3:?}").contains("secret-a-ne-pas-afficher"));
         clear_env();
     }
 

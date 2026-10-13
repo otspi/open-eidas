@@ -2,7 +2,7 @@
 
 Déploie la même pile que le `docker-compose.yml` de démonstration —
 PostgreSQL, l'autorité de certification maison (racine + CA émettrice,
-`cmd/ca-server`), un serveur WebDAV de réplication du journal d'audit, le
+`cmd/ca-server`), le
 répondeur OCSP et le service d'horodatage — sur Kubernetes, pilotable par
 ArgoCD.
 
@@ -93,10 +93,9 @@ dans le dépôt [otspi/deploy](https://github.com/otspi/deploy).
 |---|---|
 | `<release>-postgres` (StatefulSet) | Registre de la CA : autorités, certificats émis, demandes d'enrôlement, historique des CRL |
 | `<release>-ca` (Deployment) | Autorité de certification et d'enregistrement. Deux conteneurs : `ca` (cérémonie, émission, publication de la CRL) et `ra-autoapprove` (approbation automatique — voir ci-dessous). PVC pour ses deux tokens SoftHSM et son journal d'audit |
-| `<release>-audit-replica` (Deployment) | Serveur WebDAV cible de la réplication du journal d'audit |
 | `<release>-tsa` (Deployment) | Service d'horodatage, avec PVC pour le token SoftHSM et l'état (certificat, journal d'audit) |
 | `<release>-ocsp` (Deployment) | Répondeur OCSP (RFC 6960) pour la CA émettrice — PVC dédié pour son propre token SoftHSM et son état |
-| `<release>-generated` (Secret) | Mot de passe PostgreSQL, PIN SoftHSM (un par token : TSU, OCSP, racine, émettrice), mot de passe WebDAV, secret HMAC d'enrôlement — générés une fois et stables d'un `helm upgrade` à l'autre (motif `lookup`) |
+| `<release>-generated` (Secret) | Mot de passe PostgreSQL, PIN SoftHSM (un par token : TSU, OCSP, racine, émettrice), secret HMAC d'enrôlement — générés une fois et stables d'un `helm upgrade` à l'autre (motif `lookup`) |
 
 Le Pod `ca` est le seul à détenir les clés d'autorité, et il n'a qu'un
 réplica : les tokens PKCS#11 et le journal d'audit chaîné vivent sur des
@@ -263,7 +262,9 @@ Voir `values.yaml` pour la liste complète. Les plus utiles :
 | `tsa.image.repository` / `tsa.image.tag` | Image du service d'horodatage |
 | `tsa.time.policy` | `enforce`, `monitor` ou `disabled` — passer à `monitor` si le cluster n'a pas de sortie UDP/123 |
 | `tsa.gateway.enabled` / `tsa.gateway.name` / `tsa.gateway.namespace` / `tsa.gateway.host` | Exposition HTTP(S) du service via une `HTTPRoute` Gateway API |
-| `tsa.pin` / `ocsp.pin` / `auditReplica.password` | Valeurs explicites plutôt que générées aléatoirement |
+| `tsa.pin` / `ocsp.pin` | Valeurs explicites plutôt que générées aléatoirement |
+| `tsa.audit.sealInterval` | Période de scellement du journal de la TSA par sa propre autorité |
+| `tsa.audit.s3.endpoint` / `.bucket` / `.region` / `.key` / `.existingSecret` | Copie hors site du journal de la TSA sur un stockage objet compatible S3, à chaque scellement ; `existingSecret` nomme un Secret portant `access-key` et `secret-key`. Vide = journal local seulement |
 | `ca.publicURL` / `ca.gateway.enabled` / `ca.gateway.host` | Adresse publique gravée dans les points CRL et AIA des certificats émis — à fixer si les certificats seront vérifiés par des tiers hors du cluster |
 | `production` | Déploiement de qualification ou de production : refuse le rendu si un raccourci de démonstration reste actif (`ca.autoApprove.enabled`) |
 | `ca.autoApprove.enabled` / `ca.autoApprove.operator` | Approbation RA automatique, désactivée par défaut (voir ci-dessus) |
@@ -274,7 +275,7 @@ Voir `values.yaml` pour la liste complète. Les plus utiles :
 | `raConsole.enabled`, `raConsole.gateway.*`, `raConsole.networkPolicy.enabled` | Console d'exploitation (voir ci-dessus), désactivée par défaut |
 | `secrets.existingSecret` | Secret existant (ex. scellé via kubeseal) à utiliser à la place de celui généré par le motif `lookup` |
 | `postgres.external.enabled` / `postgres.external.host` / `postgres.external.port` | PostgreSQL externe (ex. CloudNativePG) à la place du StatefulSet intégré |
-| `postgres.persistence.size`, `tsa.persistence.*.size`, `ocsp.persistence.*.size`, `auditReplica.persistence.size` | Tailles des volumes persistants |
+| `postgres.persistence.size`, `tsa.persistence.*.size`, `ocsp.persistence.*.size` | Tailles des volumes persistants |
 
 ## Développement local (kind)
 

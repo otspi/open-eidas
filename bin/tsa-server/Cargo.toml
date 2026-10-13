@@ -24,16 +24,22 @@ oe-timesource = { path = "../../crates/oe-timesource" }
 oe-tsa-core = { path = "../../crates/oe-tsa-core" }
 oe-httpapi = { path = "../../crates/oe-httpapi" }
 oe-enroll = { path = "../../crates/oe-enroll" }
+oe-s3 = { path = "../../crates/oe-s3" }
+oe-rfc3161-asn1 = { path = "../../crates/oe-rfc3161-asn1" }
 clap = { version = "4", features = ["derive"] }
 der = "0.8"
 serde_json = "1"
 time = { version = "0.3", features = ["std"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal"] }
+tracing = "0.1"
 tracing-subscriber = "0.3"
+spki = "0.8"
+base64 = "0.22"
 axum = "0.8"
 
 [dev-dependencies]
 oe-ca-core = { path = "../../crates/oe-ca-core" }
 oe-castore = { path = "../../crates/oe-castore" }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
-base64 = "0.22"
+pem = "3"
+x509-cert = "0.3"

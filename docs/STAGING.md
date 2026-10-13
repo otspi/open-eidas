@@ -103,7 +103,6 @@ kubectl create secret generic open-eidas-generated \
     --from-literal=ocsp-pin="$(shuf -i 10000000-99999999 -n1)" \
     --from-literal=ca-root-pin="$(shuf -i 10000000-99999999 -n1)" \
     --from-literal=ca-issuing-pin="$(shuf -i 10000000-99999999 -n1)" \
-    --from-literal=webdav-password="$(openssl rand -base64 18)" \
     --from-literal=enroll-hmac-key="$(openssl rand -base64 36)" \
     > /tmp/open-eidas-generated.yaml
 ```

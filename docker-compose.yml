@@ -80,27 +80,6 @@ services:
       db:
         condition: service_healthy
 
-  # Cible de réplication hors site du journal d'audit pour la démonstration
-  # locale : n'importe quel serveur WebDAV authentifié convient en
-  # production (Nextcloud, stockage d'objets exposé en WebDAV, etc.).
-  audit-replica:
-    container_name: openeidas_audit_replica
-    image: bytemark/webdav:2.4
-    mem_reservation: 24m
-    mem_limit: 96m
-    cpus: 0.10
-    environment:
-      AUTH_TYPE: Basic
-      USERNAME: ${OPENEIDAS_AUDIT_REPLICA_USER:-openeidas}
-      PASSWORD: ${OPENEIDAS_AUDIT_REPLICA_PASSWORD:-changeme}
-    volumes:
-      - auditreplica:/var/lib/dav
-    healthcheck:
-      test: ["CMD-SHELL", "wget -q -O /dev/null --header=\"Authorization: Basic $$(printf '%s:%s' \"$$USERNAME\" \"$$PASSWORD\" | base64)\" http://localhost/"]
-      interval: 5s
-      timeout: 3s
-      retries: 10
-
   tsa:
     container_name: openeidas_tsa
     # Enrôlement (1x RSA-3072) et signature de jetons sous charge stables
@@ -131,13 +110,19 @@ services:
       OPENEIDAS_TIME_MIN_SOURCES: "2"
       OPENEIDAS_TIME_MAX_OFFSET: 500ms
       OPENEIDAS_AUDIT_FILE: /var/lib/open-eidas/state/audit.log
-      # Scellement, contreseing tiers et réplication du journal : lus par la
-      # configuration mais PAS encore exploités (écart J-1, docs/ARCHITECTURE.md §7).
+      # À chaque intervalle, la TSU horodate la tête de son journal (log.sealed)
+      # puis en dépose une copie sur un stockage objet compatible S3, s'il est
+      # configuré (OPENEIDAS_S3_ENDPOINT vide = journal purement local). Le
+      # contreseing par une TSA tierce est lu par la configuration mais PAS
+      # encore exploité (écart J-1, docs/ARCHITECTURE.md §7).
       OPENEIDAS_AUDIT_SEAL_INTERVAL: 1h
       OPENEIDAS_CROSS_TSA_URLS: ${OPENEIDAS_CROSS_TSA_URLS:-https://freetsa.org/tsr,http://timestamp.digicert.com}
-      OPENEIDAS_AUDIT_REPLICA_URL: http://audit-replica/
-      OPENEIDAS_AUDIT_REPLICA_USER: ${OPENEIDAS_AUDIT_REPLICA_USER:-openeidas}
-      OPENEIDAS_AUDIT_REPLICA_PASSWORD: ${OPENEIDAS_AUDIT_REPLICA_PASSWORD:-changeme}
+      OPENEIDAS_S3_ENDPOINT: ${OPENEIDAS_S3_ENDPOINT:-}
+      OPENEIDAS_S3_BUCKET: ${OPENEIDAS_S3_BUCKET:-}
+      OPENEIDAS_S3_REGION: ${OPENEIDAS_S3_REGION:-us-east-1}
+      OPENEIDAS_S3_ACCESS_KEY: ${OPENEIDAS_S3_ACCESS_KEY:-}
+      OPENEIDAS_S3_SECRET_KEY: ${OPENEIDAS_S3_SECRET_KEY:-}
+      OPENEIDAS_S3_KEY: tsa-server/audit.log
       OPENEIDAS_CERT_FILE: /var/lib/open-eidas/state/tsu.pem
       OPENEIDAS_CHAIN_FILE: /var/lib/open-eidas/state/chain.pem
       # Adresse INTERNE de la CA : le certificat, lui, portera l'adresse
@@ -156,8 +141,6 @@ services:
       retries: 5
     depends_on:
       ca:
-        condition: service_healthy
-      audit-replica:
         condition: service_healthy
 
   # Répondeur OCSP (RFC 6960) pour la CA émettrice. Il s'appuie sur la CRL
@@ -210,6 +193,5 @@ volumes:
   castate:
   softhsmtokens:
   tsastate:
-  auditreplica:
   ocsptokens:
   ocspstate:

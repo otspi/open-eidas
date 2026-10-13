@@ -3416,13 +3416,19 @@ dependencies = [
  "oe-enroll",
  "oe-hsm",
  "oe-httpapi",
+ "oe-rfc3161-asn1",
+ "oe-s3",
  "oe-timesource",
  "oe-tsa-core",
+ "pem",
  "reqwest",
  "serde_json",
+ "spki 0.8.0",
  "time",
  "tokio",
+ "tracing",
  "tracing-subscriber",
+ "x509-cert",
 ]
 
 [[package]]

@@ -12,6 +12,7 @@ use std::process::{Child, Command, Output, Stdio};
 use std::sync::Arc;
 use std::time::Duration;
 
+use base64::Engine;
 use der::Encode;
 use oe_ca_core::ceremony::{run_ceremony, CeremonyOptions};
 use oe_ca_core::{profile, Issuer, Options as CaOptions};
@@ -29,7 +30,6 @@ fn have_tools() -> bool {
 }
 
 fn pem(label: &str, der: &[u8]) -> String {
-    use base64::Engine;
     let b64 = base64::engine::general_purpose::STANDARD.encode(der);
     let mut out = format!("-----BEGIN {label}-----\n");
     for chunk in b64.as_bytes().chunks(64) {
@@ -334,6 +334,60 @@ async fn the_binary_applies_what_the_matrix_declares() {
     // empreinte SHA-1 est refusée (badAlg).
     {
         let (_server, base) = fx.serve("tsu.pem", "monitor", "audit-monitor.log").await;
+
+        // EN 319 401 REQ-7.10-02, REQ-7.10-08 (constat J-1) : dès le démarrage,
+        // le service fait horodater la tête de son journal par sa propre TSU,
+        // et /healthz dit où en sont le scellement et la copie hors site.
+        let mut journal = serde_json::Value::Null;
+        for _ in 0..100 {
+            let health: serde_json::Value = reqwest::get(format!("{base}/healthz"))
+                .await
+                .unwrap()
+                .json()
+                .await
+                .unwrap();
+            journal = health["journal"].clone();
+            if journal["last_seal"].is_string() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        assert!(journal["last_seal"].is_string(), "{journal}");
+        assert_eq!(journal["degraded"], false, "{journal}");
+        assert_eq!(journal["offsite_copy"], "non configurée", "{journal}");
+        let sealed: Vec<_> = oe_audit::read(fx.dir.join("audit-monitor.log"))
+            .unwrap()
+            .into_iter()
+            .filter(|r| r.event == "log.sealed")
+            .collect();
+        assert_eq!(sealed.len(), 1, "{sealed:?}");
+        let seal = sealed[0].data.as_ref().expect("données du sceau");
+        // Le jeton du sceau, relu par openssl : signé par la clé du token, sur
+        // la tête de chaîne que le sceau déclare.
+        std::fs::write(
+            fx.dir.join("seal.tsr"),
+            base64::engine::general_purpose::STANDARD
+                .decode(seal["token"].as_str().unwrap())
+                .unwrap(),
+        )
+        .unwrap();
+        let verify = fx.openssl(&[
+            "ts",
+            "-verify",
+            "-digest",
+            seal["sealed_head"].as_str().unwrap(),
+            "-in",
+            "seal.tsr",
+            "-CAfile",
+            "chain.pem",
+        ]);
+        assert!(
+            verify.status.success(),
+            "{}{}",
+            String::from_utf8_lossy(&verify.stdout),
+            String::from_utf8_lossy(&verify.stderr)
+        );
+
         let text = fx.timestamp(&base, "-sha256", "granted").await;
         assert!(text.contains("Status: Granted"), "{text}");
         let verify = fx.openssl(&[
@@ -363,11 +417,27 @@ async fn the_binary_applies_what_the_matrix_declares() {
             .trim()
             .to_ascii_lowercase();
         let records = oe_audit::read(fx.dir.join("audit-monitor.log")).unwrap();
+        // Le jeton du sceau est un jeton comme un autre : il est journalisé
+        // lui aussi. Celui du client se reconnaît à son empreinte, qui n'est
+        // pas la tête de chaîne scellée.
         let granted: Vec<_> = records
             .iter()
             .filter(|r| r.event == "timestamp.granted")
+            .filter(|r| {
+                r.data
+                    .as_ref()
+                    .is_some_and(|d| d["message_imprint"] != seal["sealed_head"])
+            })
             .collect();
         assert_eq!(granted.len(), 1, "{records:?}");
+        assert_eq!(
+            records
+                .iter()
+                .filter(|r| r.event == "timestamp.granted")
+                .count(),
+            2,
+            "{records:?}"
+        );
         let data = granted[0].data.as_ref().expect("données du jeton");
         let journaled = data["serial_number"]
             .as_str()
