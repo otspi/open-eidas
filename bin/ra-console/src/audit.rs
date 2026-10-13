@@ -30,6 +30,14 @@ pub const EVENT_ACTION_RELAYED: &str = "ra.action_relayed";
 /// titre et l'opérateur de la session. Écrit **avant** le dossier, par
 /// [`Recorder::record`] : pas de dossier sans trace.
 pub const EVENT_INCIDENT_OPENED: &str = "ra.incident_opened";
+/// Une note ou la référence d'une action consignée dans un dossier ouvert.
+pub const EVENT_INCIDENT_ACTION: &str = "ra.incident_action";
+/// Un dossier clos : qui, pourquoi, avec quelle clé, et l'empreinte du corps
+/// que son assertion couvre (la preuve complète est dans `incident_closures`).
+pub const EVENT_INCIDENT_CLOSED: &str = "ra.incident_closed";
+/// Une réassertion refusée (clôture d'un dossier), avec sa vraie raison —
+/// même forme que [`EVENT_LOGIN_REFUSED`].
+pub const EVENT_REASSERTION_REFUSED: &str = "ra.reassertion_refused";
 
 /// Même forme que `oe_ca_core::Recorder` / `oe_raflow::Recorder`, dupliquée
 /// plutôt que partagée (ce sont des traits d'un seul étage, la duplication

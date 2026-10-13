@@ -382,6 +382,47 @@ async fn ra_console_role_cannot_write_ca_tables() {
                 .unwrap();
         assert_eq!(allowed, expected, "{privilege} sur incidents");
     }
+    // La clôture : ses seules colonnes. Un titre, un auteur ou une date
+    // d'ouverture ne se réécrivent pas.
+    for (column, expected) in [
+        ("state", true),
+        ("closed_by", true),
+        ("closed_at", true),
+        ("closing_note", true),
+        ("title", false),
+        ("opened_by", false),
+        ("opened_at", false),
+        ("id", false),
+    ] {
+        let allowed: bool = sqlx::query_scalar(
+            "SELECT has_column_privilege(current_user, 'incidents', $1, 'UPDATE')",
+        )
+        .bind(column)
+        .fetch_one(&mut *conn)
+        .await
+        .unwrap();
+        assert_eq!(allowed, expected, "UPDATE de incidents.{column}");
+    }
+    // Ce qui est consigné dans un dossier et la preuve d'une clôture
+    // s'écrivent une fois.
+    for table in ["incident_actions", "incident_closures"] {
+        for (privilege, expected) in [
+            ("SELECT", true),
+            ("INSERT", true),
+            ("UPDATE", false),
+            ("DELETE", false),
+            ("TRUNCATE", false),
+        ] {
+            let allowed: bool =
+                sqlx::query_scalar("SELECT has_table_privilege(current_user, $1, $2)")
+                    .bind(table)
+                    .bind(privilege)
+                    .fetch_one(&mut *conn)
+                    .await
+                    .unwrap();
+            assert_eq!(allowed, expected, "{privilege} sur {table}");
+        }
+    }
     // Et rien de plus : ni ses tables, ni celles de ca-server ne lui donnent le
     // droit de les redéfinir ou de les vider.
     for table in ["operators", "webauthn_credentials", "webauthn_challenges"] {
@@ -446,7 +487,8 @@ async fn ra_console_tables_enforce_their_invariants() {
 }
 
 /// Un dossier d'incident (§6) est imputable par construction : un titre, et
-/// une clôture qui dit qui, quand et pourquoi — ou aucune trace de clôture.
+/// une clôture qui dit qui, quand et pourquoi, avec sa preuve — ou aucune trace
+/// de clôture. Une fois clos, il ne change plus et rien ne s'y ajoute.
 #[tokio::test]
 async fn an_incident_is_imputable_from_opening_to_closing() {
     let pool = require_pool!();
@@ -462,15 +504,9 @@ async fn an_incident_is_imputable_from_opening_to_closing() {
             .await
         }
     };
-    let id = insert("clé TSU suspecte").await.expect("dossier ouvert");
-    for title in ["", "   "] {
-        let err = insert(title).await.expect_err("titre vide");
-        assert_eq!(sqlstate(&err).as_deref(), Some("23514"), "{title:?}");
-    }
-
-    let close = |set: &'static str| {
+    let update = |id: &str, set: &'static str| {
         let pool = pool.clone();
-        let id = id.clone();
+        let id = id.to_string();
         async move {
             sqlx::query(&format!("UPDATE incidents SET {set} WHERE id = $1::uuid"))
                 .bind(id)
@@ -478,7 +514,54 @@ async fn an_incident_is_imputable_from_opening_to_closing() {
                 .await
         }
     };
-    // Clos sans dire qui, quand ou pourquoi ; ou ouvert avec une trace de clôture.
+    let note = |id: &str| {
+        let pool = pool.clone();
+        let id = id.to_string();
+        async move {
+            sqlx::query(
+                "INSERT INTO incident_actions (id, incident_id, at, operator, kind, detail)
+                 VALUES (gen_random_uuid(), $1::uuid, now(), 'rachel', 'note', 'constat')",
+            )
+            .bind(id)
+            .execute(&pool)
+            .await
+        }
+    };
+    const CLOSED: &str =
+        "state = 'CLOS', closed_by = 'rachel', closed_at = now(), closing_note = 'faux positif'";
+
+    let id = insert("clé TSU suspecte").await.expect("dossier ouvert");
+    for title in ["", "   "] {
+        let err = insert(title).await.expect_err("titre vide");
+        assert_eq!(sqlstate(&err).as_deref(), Some("23514"), "{title:?}");
+    }
+    note(&id).await.expect("note dans un dossier ouvert");
+
+    // Sans preuve, même une clôture bien formée est refusée.
+    let err = update(&id, CLOSED).await.expect_err("clôture sans preuve");
+    assert_eq!(
+        constraint(&err).as_deref(),
+        Some("incident_closing_evidence")
+    );
+
+    let operator = insert_operator(&pool, "ra_operateur").await;
+    let key = Cred::valid(&operator);
+    key.insert(&pool).await.expect("clé");
+    sqlx::query(
+        "INSERT INTO incident_closures
+           (incident_id, operator_id, credential_id, body, body_hash, challenge,
+            authenticator_data, client_data_json, signature, verified_at)
+         VALUES ($1::uuid, $2::uuid, $3, '{}', '\\x00', '\\x00', '\\x00', '\\x00', '\\x00', now())",
+    )
+    .bind(&id)
+    .bind(&operator)
+    .bind(&key.id)
+    .execute(&pool)
+    .await
+    .expect("preuve de clôture");
+
+    // Avec la preuve : clos sans dire qui, quand ou pourquoi, ou ouvert avec
+    // une trace de clôture, reste refusé — par la contrainte, cette fois.
     for set in [
         "state = 'CLOS'",
         "state = 'CLOS', closed_by = 'rachel', closed_at = now()",
@@ -487,12 +570,125 @@ async fn an_incident_is_imputable_from_opening_to_closing() {
         "state = 'CLOS', closed_by = 'rachel', closing_note = 'faux positif'",
         "closed_by = 'rachel'",
         "closing_note = 'faux positif'",
-        "state = 'SUSPENDU'",
     ] {
-        let err = close(set).await.expect_err(set);
-        assert_eq!(sqlstate(&err).as_deref(), Some("23514"), "{set}");
+        let err = update(&id, set).await.expect_err(set);
+        assert_eq!(
+            constraint(&err).as_deref(),
+            Some("closing_imputable"),
+            "{set}"
+        );
     }
-    close("state = 'CLOS', closed_by = 'rachel', closed_at = now(), closing_note = 'faux positif'")
+    let err = update(&id, "state = 'SUSPENDU'")
         .await
-        .expect("clôture imputable");
+        .expect_err("état inconnu");
+    assert_eq!(sqlstate(&err).as_deref(), Some("23514"));
+
+    update(&id, CLOSED).await.expect("clôture imputable");
+
+    // Clos : plus rien ne change, plus rien ne s'ajoute.
+    for set in ["closing_note = 'réécrite'", "title = 'autre'", CLOSED] {
+        let err = update(&id, set).await.expect_err(set);
+        assert_eq!(
+            constraint(&err).as_deref(),
+            Some("incident_closed_is_final"),
+            "{set}"
+        );
+    }
+    let err = note(&id).await.expect_err("note dans un dossier clos");
+    assert_eq!(constraint(&err).as_deref(), Some("incident_open"));
+}
+
+/// Une entrée de dossier est une note avec son texte, ou la référence d'une
+/// action qui existe chez ca-server avec son empreinte — rattachée une fois.
+#[tokio::test]
+async fn an_incident_entry_is_a_note_or_a_reference_to_a_real_action() {
+    let pool = require_pool!();
+    let incident: String = sqlx::query_scalar(
+        "INSERT INTO incidents (id, title, opened_by, opened_at)
+         VALUES (gen_random_uuid(), 'clé TSU suspecte', 'rachel', now()) RETURNING id::text",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    let (action, _) = action_with_challenges(&pool, 0).await;
+    let entry = |kind: &'static str,
+                 action: Option<String>,
+                 hash: Option<&'static str>,
+                 detail: &'static str| {
+        let pool = pool.clone();
+        let incident = incident.clone();
+        async move {
+            sqlx::query(
+                "INSERT INTO incident_actions
+                   (id, incident_id, at, operator, kind, action_id, body_hash, detail)
+                 VALUES (gen_random_uuid(), $1::uuid, now(), 'rachel', $2, $3::uuid,
+                         decode($4, 'hex'), $5)",
+            )
+            .bind(incident)
+            .bind(kind)
+            .bind(action)
+            .bind(hash)
+            .bind(detail)
+            .execute(&pool)
+            .await
+        }
+    };
+
+    entry("note", None, None, "constat").await.expect("note");
+    entry("action_liee", Some(action.clone()), Some("00"), "")
+        .await
+        .expect("référence");
+
+    for (kind, action_id, hash, detail) in [
+        // Une note vide, ou qui prétend désigner une action.
+        ("note", None, None, "  "),
+        ("note", Some(action.clone()), Some("00"), "constat"),
+        // Une référence sans action ou sans empreinte.
+        ("action_liee", None, None, "sans action"),
+        ("action_liee", Some(action.clone()), None, "sans empreinte"),
+        ("autre", None, None, "type inconnu"),
+    ] {
+        let err = entry(kind, action_id, hash, detail)
+            .await
+            .expect_err("entrée mal formée");
+        assert_eq!(sqlstate(&err).as_deref(), Some("23514"), "{kind} {detail}");
+    }
+    // Une action qui n'existe pas chez ca-server.
+    let err = entry(
+        "action_liee",
+        Some("00000000-0000-4000-8000-000000000000".into()),
+        Some("00"),
+        "",
+    )
+    .await
+    .expect_err("action inconnue");
+    assert_eq!(sqlstate(&err).as_deref(), Some("23503"));
+    // La même action, une seconde fois.
+    let err = entry("action_liee", Some(action), Some("00"), "")
+        .await
+        .expect_err("déjà rattachée");
+    assert_eq!(sqlstate(&err).as_deref(), Some("23505"));
+}
+
+/// Le challenge d'une clôture est un type à part, toujours lié à un opérateur.
+#[tokio::test]
+async fn a_closing_challenge_names_its_operator() {
+    let pool = require_pool!();
+    let operator = insert_operator(&pool, "ra_operateur").await;
+    let insert = |operator: Option<String>| {
+        let pool = pool.clone();
+        async move {
+            sqlx::query(
+                "INSERT INTO webauthn_challenges (id, kind, challenge, operator_id, created_at, expires_at)
+                 VALUES (gen_random_uuid(), 'incident_close', '\\x01', $1::uuid, now(),
+                         now() + interval '5 minutes')",
+            )
+            .bind(operator)
+            .execute(&pool)
+            .await
+        }
+    };
+    insert(Some(operator)).await.expect("challenge de clôture");
+    let err = insert(None).await.expect_err("opérateur obligatoire");
+    assert_eq!(sqlstate(&err).as_deref(), Some("23514"));
 }

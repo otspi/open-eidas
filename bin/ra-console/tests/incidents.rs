@@ -108,11 +108,12 @@ impl Env {
             .unwrap()
         };
         let verifier = Verifier::new("console.example.com", &origin(), "test", models()).unwrap();
+        let journal = Arc::new(Journal::default());
         let login = LoginService::new(
             registry.clone(),
             Verifier::new("console.example.com", &origin(), "test", models()).unwrap(),
             b"secret-de-test-au-moins-16-octets".to_vec(),
-            Arc::new(ra_console::audit::NullRecorder),
+            journal.clone(),
         );
 
         let pool = PgPoolOptions::new().connect(&dsn).await.unwrap();
@@ -128,7 +129,6 @@ impl Env {
             .port();
         let link = CaLink::new(&ca_pki.files(&dir, &client, dead)).unwrap();
 
-        let journal = Arc::new(Journal::default());
         let console = router(Arc::new(AppState {
             sessions: common::sessions(pool.clone()),
             pool: pool.clone(),
@@ -185,6 +185,108 @@ impl Env {
             serde_json::json!({ "title": title }),
         )
         .await
+    }
+
+    /// Ouvre un dossier et rend son identifiant.
+    async fn opened(&self, cookie: &str, title: &str) -> String {
+        let (status, opened) = self.open(cookie, title).await;
+        assert_eq!(status, StatusCode::CREATED, "{opened}");
+        opened["id"].as_str().unwrap().to_string()
+    }
+
+    async fn add(
+        &self,
+        cookie: &str,
+        incident: &str,
+        entry: serde_json::Value,
+    ) -> (StatusCode, serde_json::Value) {
+        self.post(
+            &format!("{INCIDENTS}/{incident}/actions"),
+            Some(cookie),
+            entry,
+        )
+        .await
+    }
+
+    async fn detail(&self, cookie: &str, incident: &str) -> serde_json::Value {
+        let (status, detail) = self
+            .get(&format!("{INCIDENTS}/{incident}"), Some(cookie))
+            .await;
+        assert_eq!(status, StatusCode::OK, "{detail}");
+        detail
+    }
+
+    /// Une action figée telle que `ca-server` en range : rend son identifiant
+    /// et l'empreinte de son corps.
+    async fn frozen_action(&self, action: &str) -> (String, String) {
+        let row = sqlx::query(
+            "INSERT INTO actions (id, body, body_hash, created_at, expires_at)
+             VALUES (gen_random_uuid(), jsonb_build_object('action', $1::text),
+                     sha256(convert_to($1, 'UTF8')), now(), now() + interval '1 day')
+             RETURNING id::text AS id, encode(body_hash, 'hex') AS hash",
+        )
+        .bind(action)
+        .fetch_one(&self.pool)
+        .await
+        .unwrap();
+        (sqlx::Row::get(&row, "id"), sqlx::Row::get(&row, "hash"))
+    }
+
+    /// Demande le challenge de clôture d'un dossier.
+    async fn close_challenge(
+        &self,
+        cookie: &str,
+        incident: &str,
+        note: &str,
+    ) -> (StatusCode, serde_json::Value) {
+        self.post(
+            &format!("{INCIDENTS}/{incident}/close/challenge"),
+            Some(cookie),
+            serde_json::json!({ "closing_note": note }),
+        )
+        .await
+    }
+
+    /// Signe, avec la clé logicielle, les options WebAuthn rendues par une
+    /// route `…/challenge` ou `login/begin`.
+    fn sign(&mut self, issued: &serde_json::Value) -> serde_json::Value {
+        let options: oe_webauthn::RequestChallengeResponse =
+            serde_json::from_value(serde_json::json!({ "publicKey": issued["webauthn"] })).unwrap();
+        serde_json::to_value(self.authn.do_authentication(origin(), options).unwrap()).unwrap()
+    }
+
+    /// Présente une assertion à la route de clôture d'un dossier.
+    async fn close(
+        &self,
+        cookie: &str,
+        incident: &str,
+        issued: &serde_json::Value,
+        assertion: &serde_json::Value,
+    ) -> (StatusCode, serde_json::Value) {
+        self.post(
+            &format!("{INCIDENTS}/{incident}/close"),
+            Some(cookie),
+            serde_json::json!({
+                "challenge_id": issued["challenge_id"],
+                "assertion": assertion,
+            }),
+        )
+        .await
+    }
+
+    async fn state_of(&self, incident: &str) -> String {
+        sqlx::query_scalar("SELECT state FROM incidents WHERE id = $1::uuid")
+            .bind(incident)
+            .fetch_one(&self.pool)
+            .await
+            .unwrap()
+    }
+
+    async fn count(&self, table: &str) -> i64 {
+        sqlx::query_scalar(&format!("SELECT count(*) FROM {table}"))
+            .fetch_one(&self.pool)
+            .await
+            .unwrap()
     }
 
     async fn stored(&self) -> i64 {
@@ -345,7 +447,11 @@ async fn an_incident_is_opened_in_the_name_of_the_session_and_read_back() {
     let reader = env.session("audrey", Role::Auditeur).await;
     let (status, one) = env.get(&format!("{INCIDENTS}/{id}"), Some(&reader)).await;
     assert_eq!(status, StatusCode::OK, "{one}");
-    assert_eq!(one, opened);
+    for field in ["id", "title", "state", "opened_by", "opened_at"] {
+        assert_eq!(one[field], opened[field], "{field}");
+    }
+    assert!(one["actions"].as_array().unwrap().is_empty(), "{one}");
+    assert!(one["closure"].is_null(), "{one}");
 
     let (status, all) = env.get(INCIDENTS, Some(&reader)).await;
     assert_eq!(status, StatusCode::OK, "{all}");
@@ -438,4 +544,344 @@ async fn no_incident_exists_without_its_journal_entry() {
     assert_eq!(status, StatusCode::CREATED);
     assert_eq!(env.stored().await, 2);
     assert_eq!(env.journal.events("ra.incident_opened").len(), 2);
+}
+
+/// Un dossier désigne, il ne déclenche pas : une note, puis la référence d'une
+/// action que `ca-server` a figée, dont l'empreinte est lue chez lui.
+#[tokio::test]
+async fn notes_and_action_references_are_recorded_in_order() {
+    let mut env = env!();
+    let cookie = env.session("rachel", Role::RaOperateur).await;
+    let incident = env.opened(&cookie, "clé TSU suspecte").await;
+    let (action, hash) = env.frozen_action("revoke_certificate").await;
+
+    let (status, note) = env
+        .add(
+            &cookie,
+            &incident,
+            serde_json::json!({ "kind": "note", "detail": "  signalement reçu\nà 9 h  " }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{note}");
+    assert_eq!(note["detail"], "signalement reçu\nà 9 h");
+    assert_eq!(note["operator"], "rachel");
+
+    let (status, linked) = env
+        .add(
+            &cookie,
+            &incident,
+            serde_json::json!({ "kind": "action_liee", "action_id": action, "detail": "révocation du TSU" }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{linked}");
+    assert_eq!(linked["body_hash"], hash.as_str());
+    assert_eq!(linked["action"], "revoke_certificate");
+    assert_eq!(linked["executed"], false);
+
+    let detail = env.detail(&cookie, &incident).await;
+    let entries = detail["actions"].as_array().unwrap();
+    assert_eq!(entries.len(), 2, "{detail}");
+    assert_eq!(entries[0]["kind"], "note");
+    assert_eq!(entries[1]["kind"], "action_liee");
+    assert_eq!(entries[1]["action_id"], action.as_str());
+    assert_eq!(entries[1]["body_hash"], hash.as_str());
+
+    let journal = env.journal.events("ra.incident_action");
+    assert_eq!(journal.len(), 2, "{journal:?}");
+    assert_eq!(journal[0]["incident_id"], incident.as_str());
+    assert_eq!(journal[1]["action_id"], action.as_str());
+    assert_eq!(journal[1]["body_hash"], hash.as_str());
+
+    // L'empreinte ne se déclare pas, l'action doit exister, et elle ne se
+    // rattache qu'une fois.
+    let refused = [
+        (
+            serde_json::json!({ "kind": "action_liee", "action_id": action, "body_hash": "00" }),
+            StatusCode::BAD_REQUEST,
+            "bad_request",
+        ),
+        (
+            serde_json::json!({ "kind": "action_liee", "action_id": oe_webauthn::Uuid::new_v4() }),
+            StatusCode::NOT_FOUND,
+            "unknown_action",
+        ),
+        (
+            serde_json::json!({ "kind": "action_liee", "action_id": action }),
+            StatusCode::CONFLICT,
+            "already_linked",
+        ),
+        (
+            serde_json::json!({ "kind": "note", "detail": "   " }),
+            StatusCode::BAD_REQUEST,
+            "bad_request",
+        ),
+        (
+            serde_json::json!({ "kind": "revocation", "detail": "exécute" }),
+            StatusCode::BAD_REQUEST,
+            "bad_request",
+        ),
+    ];
+    for (entry, expected, code) in refused {
+        let (status, err) = env.add(&cookie, &incident, entry.clone()).await;
+        assert_eq!(status, expected, "{entry} : {err}");
+        assert_eq!(err["error"], code, "{entry}");
+    }
+    assert_eq!(env.count("incident_actions").await, 2);
+
+    let (status, err) = env
+        .add(
+            &cookie,
+            &oe_webauthn::Uuid::new_v4().to_string(),
+            serde_json::json!({ "kind": "note", "detail": "nulle part" }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{err}");
+    assert_eq!(err["error"], "unknown_incident");
+}
+
+/// Écrire dans un dossier ou le clore relève du même rôle que l'ouvrir, et du
+/// même journal : pas d'entrée sans trace.
+#[tokio::test]
+async fn writing_into_an_incident_needs_the_role_and_the_journal() {
+    let mut env = env!();
+    let cookie = env.session("rachel", Role::RaOperateur).await;
+    let incident = env.opened(&cookie, "clé TSU suspecte").await;
+
+    for (name, role) in [("audrey", Role::Auditeur), ("adam", Role::Admin)] {
+        let other = env.session(name, role).await;
+        let (status, err) = env
+            .add(
+                &other,
+                &incident,
+                serde_json::json!({ "kind": "note", "detail": "sans le rôle" }),
+            )
+            .await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{name} : {err}");
+        let (status, err) = env.close_challenge(&other, &incident, "sans le rôle").await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{name} : {err}");
+    }
+    assert_eq!(env.count("incident_actions").await, 0);
+    assert_eq!(
+        env.count("webauthn_challenges WHERE kind = 'incident_close'")
+            .await,
+        0
+    );
+
+    env.journal.broken.store(true, Ordering::SeqCst);
+    let (action, _) = env.frozen_action("revoke_certificate").await;
+    for entry in [
+        serde_json::json!({ "kind": "note", "detail": "pendant la panne" }),
+        serde_json::json!({ "kind": "action_liee", "action_id": action }),
+    ] {
+        let (status, err) = env.add(&cookie, &incident, entry).await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{err}");
+    }
+    assert_eq!(env.count("incident_actions").await, 0, "entrée sans trace");
+}
+
+/// La clôture porte la signature de l'opérateur sur le corps qui lui a été
+/// montré ; la note enregistrée est celle de ce corps. Après quoi le dossier
+/// ne reçoit plus rien.
+#[tokio::test]
+async fn closing_takes_the_operators_signature_over_the_frozen_note() {
+    let mut env = env!();
+    let cookie = env.session("rachel", Role::RaOperateur).await;
+    let incident = env.opened(&cookie, "clé TSU suspecte").await;
+
+    let (status, issued) = env
+        .close_challenge(&cookie, &incident, "  faux positif, clé intacte  ")
+        .await;
+    assert_eq!(status, StatusCode::OK, "{issued}");
+    let body: serde_json::Value = serde_json::from_str(issued["body"].as_str().unwrap()).unwrap();
+    assert_eq!(body["action"], "close_incident");
+    assert_eq!(body["incident_id"], incident.as_str());
+    assert_eq!(body["closing_note"], "faux positif, clé intacte");
+    assert_eq!(body["operator"], "rachel");
+    // Rien n'est clos tant que rien n'est signé.
+    assert_eq!(env.state_of(&incident).await, "OUVERT");
+
+    let assertion = env.sign(&issued);
+    let (status, closed) = env.close(&cookie, &incident, &issued, &assertion).await;
+    assert_eq!(status, StatusCode::OK, "{closed}");
+    assert_eq!(closed["state"], "CLOS");
+    assert_eq!(closed["closed_by"], "rachel");
+    assert_eq!(closed["closing_note"], "faux positif, clé intacte");
+    assert_eq!(closed["closure"]["body"], issued["body"]);
+    assert_eq!(closed["closure"]["body_hash"], issued["body_hash"]);
+
+    // La preuve brute est conservée : de quoi revérifier la signature.
+    let proof = sqlx::query(
+        "SELECT c.credential_id, o.name, length(c.signature) AS sig,
+                convert_from(c.client_data_json, 'UTF8') AS client_data,
+                encode(sha256(convert_to(c.body, 'UTF8')), 'hex') AS recomputed,
+                encode(c.body_hash, 'hex') AS stored
+         FROM incident_closures c JOIN operators o ON o.id = c.operator_id
+         WHERE c.incident_id = $1::uuid",
+    )
+    .bind(&incident)
+    .fetch_one(&env.pool)
+    .await
+    .unwrap();
+    let get = |c: &str| sqlx::Row::get::<String, _>(&proof, c);
+    assert_eq!(get("name"), "rachel");
+    assert_eq!(get("credential_id"), closed["closure"]["credential_id"]);
+    assert_eq!(get("recomputed"), get("stored"));
+    assert_eq!(get("stored"), issued["body_hash"]);
+    assert!(sqlx::Row::get::<i32, _>(&proof, "sig") > 0);
+    // Le challenge signé est celui qui a été émis pour cette clôture.
+    let challenge = issued["webauthn"]["challenge"].as_str().unwrap();
+    assert!(
+        get("client_data").contains(challenge),
+        "{}",
+        get("client_data")
+    );
+
+    let journal = env.journal.events("ra.incident_closed");
+    assert_eq!(journal.len(), 1, "{journal:?}");
+    assert_eq!(journal[0]["incident_id"], incident.as_str());
+    assert_eq!(journal[0]["operator"], "rachel");
+    assert_eq!(journal[0]["body_hash"], issued["body_hash"]);
+
+    // Clos : ni note, ni nouvelle clôture.
+    let (status, err) = env
+        .add(
+            &cookie,
+            &incident,
+            serde_json::json!({ "kind": "note", "detail": "après coup" }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{err}");
+    assert_eq!(err["error"], "incident_closed");
+    let (status, err) = env.close_challenge(&cookie, &incident, "encore").await;
+    assert_eq!(status, StatusCode::CONFLICT, "{err}");
+    assert_eq!(err["error"], "incident_closed");
+
+    let (_, closed_list) = env
+        .get(&format!("{INCIDENTS}?state=CLOS"), Some(&cookie))
+        .await;
+    assert_eq!(closed_list.as_array().unwrap().len(), 1);
+}
+
+/// Une assertion ne clôt que le dossier pour lequel son challenge a été émis.
+/// Présentée ailleurs, elle est refusée sans être consommée.
+#[tokio::test]
+async fn a_closing_signature_only_closes_its_own_incident() {
+    let mut env = env!();
+    let cookie = env.session("rachel", Role::RaOperateur).await;
+    let first = env.opened(&cookie, "premier dossier").await;
+    let second = env.opened(&cookie, "second dossier").await;
+
+    let (_, issued) = env
+        .close_challenge(&cookie, &first, "note du premier")
+        .await;
+    let assertion = env.sign(&issued);
+
+    let (status, err) = env.close(&cookie, &second, &issued, &assertion).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{err}");
+    assert_eq!(err["error"], "challenge_mismatch");
+    assert_eq!(env.state_of(&second).await, "OUVERT");
+    assert_eq!(env.count("incident_closures").await, 0);
+
+    // Sur la bonne route, la même assertion vaut toujours.
+    let (status, closed) = env.close(&cookie, &first, &issued, &assertion).await;
+    assert_eq!(status, StatusCode::OK, "{closed}");
+    assert_eq!(closed["closing_note"], "note du premier");
+    assert_eq!(env.state_of(&second).await, "OUVERT");
+}
+
+/// Sans la signature de l'opérateur de la session sur un challenge de clôture,
+/// rien ne se clôt : ni avec l'assertion d'un collègue, ni avec celle d'une
+/// connexion, ni avec n'importe quoi.
+#[tokio::test]
+async fn nothing_closes_without_the_session_operators_own_signature() {
+    let mut env = env!();
+    let rachel = env.session("rachel", Role::RaOperateur).await;
+    let carl = env.session("carl", Role::CaOperateur).await;
+    let incident = env.opened(&rachel, "clé TSU suspecte").await;
+
+    // Le challenge de Rachel, signé par sa clé, présenté par la session de Carl.
+    let (_, issued) = env
+        .close_challenge(&rachel, &incident, "note de Rachel")
+        .await;
+    let assertion = env.sign(&issued);
+    let (status, err) = env.close(&carl, &incident, &issued, &assertion).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{err}");
+    assert_eq!(err["error"], "invalid_assertion");
+
+    // Une assertion de connexion n'est pas une assertion de clôture.
+    let (_, login) = env
+        .post(
+            "/api/v1/webauthn/login/begin",
+            None,
+            serde_json::json!({ "name": "rachel" }),
+        )
+        .await;
+    let login_assertion = env.sign(&login);
+    let (status, err) = env
+        .close(&rachel, &incident, &login, &login_assertion)
+        .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{err}");
+
+    // Une assertion qui n'en est pas une, ou un challenge inconnu.
+    let (_, fresh) = env
+        .close_challenge(&rachel, &incident, "note de Rachel")
+        .await;
+    for (challenge, forged) in [
+        (fresh.clone(), serde_json::json!({ "id": "x" })),
+        (
+            serde_json::json!({ "challenge_id": oe_webauthn::Uuid::new_v4() }),
+            assertion.clone(),
+        ),
+        // Le bon challenge, mais l'assertion d'un autre.
+        (fresh.clone(), assertion.clone()),
+    ] {
+        let (status, err) = env.close(&rachel, &incident, &challenge, &forged).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{err}");
+        assert_eq!(err["error"], "invalid_assertion");
+    }
+
+    assert_eq!(env.state_of(&incident).await, "OUVERT");
+    assert_eq!(env.count("incident_closures").await, 0);
+    assert!(env.journal.events("ra.incident_closed").is_empty());
+    assert!(!env.journal.events("ra.reassertion_refused").is_empty());
+}
+
+/// Le journal d'abord, pour la clôture aussi ; et un challenge ne sert qu'une
+/// fois, que la clôture ait abouti ou non.
+#[tokio::test]
+async fn a_closing_challenge_is_single_use_and_waits_for_the_journal() {
+    let mut env = env!();
+    let cookie = env.session("rachel", Role::RaOperateur).await;
+    let incident = env.opened(&cookie, "clé TSU suspecte").await;
+    let (_, issued) = env
+        .close_challenge(&cookie, &incident, "faux positif")
+        .await;
+    let assertion = env.sign(&issued);
+
+    env.journal.broken.store(true, Ordering::SeqCst);
+    let (status, err) = env.close(&cookie, &incident, &issued, &assertion).await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{err}");
+    assert_eq!(env.state_of(&incident).await, "OUVERT", "clos sans trace");
+    assert_eq!(env.count("incident_closures").await, 0);
+
+    // Le journal revient : l'assertion déjà présentée ne se rejoue pas. Le
+    // compteur de signatures la refuserait aussi ; on l'efface pour que seul
+    // l'usage unique du challenge puisse encore l'écarter.
+    env.journal.broken.store(false, Ordering::SeqCst);
+    sqlx::query("DELETE FROM login_counters")
+        .execute(&env.pool)
+        .await
+        .unwrap();
+    let (status, err) = env.close(&cookie, &incident, &issued, &assertion).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{err}");
+    assert_eq!(err["error"], "invalid_assertion");
+    assert_eq!(env.state_of(&incident).await, "OUVERT");
+
+    // Une nouvelle signature, elle, clôt.
+    let (_, again) = env
+        .close_challenge(&cookie, &incident, "faux positif")
+        .await;
+    let assertion = env.sign(&again);
+    let (status, closed) = env.close(&cookie, &incident, &again, &assertion).await;
+    assert_eq!(status, StatusCode::OK, "{closed}");
 }

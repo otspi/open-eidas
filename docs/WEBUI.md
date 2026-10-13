@@ -589,7 +589,7 @@ Dans les tableaux qui suivent, « rôle minimal » désigne donc le rôle que
 | `POST /api/v1/incidents` | `ra_operateur` | Ouvre un dossier d'investigation, voir §6 |
 | `GET /api/v1/incidents?state=OUVERT` | `auditeur` | Liste des dossiers ; `GET /api/v1/incidents/{id}` en rend un |
 | `POST /api/v1/incidents/{id}/actions` | selon l'action liée | Consigne une action dans le dossier |
-| `POST /api/v1/incidents/{id}/close` | `ra_operateur` | Clôture avec justification obligatoire |
+| `POST /api/v1/incidents/{id}/close` | `ra_operateur` | Clôture avec justification obligatoire, signée (challenge par `…/close/challenge`) |
 | `GET /api/v1/quorum?state=PENDING` | tout rôle concerné par l'action | Actions M-sur-N en attente, voir §8 |
 | `POST /api/v1/quorum/{id}/sign` | selon `action_kind` | Ajoute une signature ; exécute dès le seuil atteint |
 | `POST /api/v1/operators` | `admin` | Initie l'onboarding d'un nouvel opérateur (§10), renvoie un lien à usage unique |
@@ -862,15 +862,26 @@ CREATE TABLE incident_actions (
 );
 ```
 
-**État (étape 5a).** `incidents` existe (migration 0008), avec l'ouverture
-et la lecture ; `incident_actions` et la clôture viennent ensuite. Trois
-précisions par rapport à ce qui précède : `ra-console` contrôle elle-même le
-rôle de qui écrit dans un dossier (`ca-server` n'en voit rien passer, c'est
-donc ici une barrière et non un affichage, à la différence du §3) ; le
-journal est écrit **avant** le dossier, qui n'est pas créé si le journal
-refuse ; un dossier ouvert ne porte aucune trace de clôture (`closing_note`
-nul, contrainte plus stricte que ci-dessus). Voir
-[RA-CONSOLE.md](RA-CONSOLE.md).
+**État (étapes 5a et 5b).** L'API est en place : ouverture, lecture,
+entrées, clôture (migrations 0008 et 0009) ; l'écran reste à faire. Ce qui
+s'écarte de ce qui précède, par décision :
+
+- `ra-console` contrôle elle-même le rôle de qui écrit dans un dossier
+  (`ca-server` n'en voit rien passer : c'est ici une barrière et non un
+  affichage, à la différence du §3) ;
+- le journal est écrit **avant** chaque écriture, qui n'a pas lieu s'il
+  refuse ;
+- `incident_actions.kind` ne connaît que `note` et `action_liee` ; une action
+  liée est désignée par `action_id` (clé étrangère vers `actions`) et porte
+  l'empreinte de son corps (`body_hash`), au lieu d'un champ `reference`
+  libre. Le dossier référence après coup, il ne déclenche pas ;
+- la clôture exige une assertion WebAuthn de l'opérateur, vérifiée par
+  `ra-console` et conservée dans `incident_closures`
+  (`POST /api/v1/incidents/{id}/close/challenge`, puis `…/close`) ;
+- un dossier ouvert ne porte aucune trace de clôture, un dossier clos ne
+  change plus et ne reçoit plus rien (déclencheurs).
+
+Voir [RA-CONSOLE.md](RA-CONSOLE.md).
 
 Ces deux tables appartiennent à `ra-console` : un dossier n'a aucun pouvoir
 sur la PKI, il regroupe et justifie. Chaque `incident_action` est écrite
