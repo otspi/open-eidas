@@ -1,13 +1,15 @@
 // Le poste de travail une fois connecté (docs/UI-UX.md §2) : barre de
 // sécurité (environnement, identité et rôle relus sur le serveur), navigation
 // latérale avec les compteurs des files, zone de travail. Les écrans métier
-// commencent par la file des demandes (6b) ; révocation, quorum, opérateurs et audit.
+// commencent par la file des demandes (6b) ; révocation, quorum, incidents,
+// opérateurs et audit.
 
 import { call, isError, type ConsoleInfo, type Me } from "./api";
 import { auditView } from "./audit";
 import { banner } from "./banner";
 import { h, replace } from "./dom";
 import { certificatesView } from "./certificates";
+import { incidentsView } from "./incidents";
 import { operatorsView } from "./operators";
 import { quorumView } from "./quorum";
 import { requestsView } from "./requests";
@@ -37,13 +39,15 @@ export function renderShell(root: HTMLElement, info: ConsoleInfo, me: Me, onLogo
   );
   const requests = h("span", { class: "count", "data-testid": "count-requests" }, "…");
   const quorum = h("span", { class: "count", "data-testid": "count-quorum" }, "…");
-  const refresh = (): void => void refreshCounts(requests, quorum);
+  const incidents = h("span", { class: "count", "data-testid": "count-incidents" }, "…");
+  const refresh = (): void => void refreshCounts(requests, quorum, incidents);
   const work = h("main", { class: "workspace", tabindex: "-1" });
   let current: View | null = null;
   const views: [string, string, HTMLElement | null, () => View][] = [
     ["requests", "Demandes RA ", requests, () => requestsView(refresh)],
     ["certificates", "Certificats", null, () => certificatesView(refresh)],
     ["quorum", "Quorum ", quorum, () => quorumView(me, refresh)],
+    ["incidents", "Incidents ", incidents, () => incidentsView(me, refresh)],
     ["operators", "Opérateurs", null, () => operatorsView(me)],
     ["audit", "Audit", null, () => auditView()],
   ];
@@ -66,15 +70,19 @@ export function renderShell(root: HTMLElement, info: ConsoleInfo, me: Me, onLogo
   return () => current?.dispose();
 }
 
-async function refreshCounts(requests: HTMLElement, quorum: HTMLElement): Promise<void> {
-  const [pending, waiting] = await Promise.all([
+async function refreshCounts(requests: HTMLElement, quorum: HTMLElement, incidents: HTMLElement): Promise<void> {
+  const [pending, waiting, open] = await Promise.all([
     call<unknown[]>("GET", "/api/v1/requests?state=PENDING"),
     call<unknown[]>("GET", "/api/v1/quorum?state=PENDING"),
+    call<unknown[]>("GET", "/api/v1/incidents?state=OUVERT"),
   ]);
-  requests.textContent = Array.isArray(pending.body) ? `(${pending.body.length})` : "(—)";
-  quorum.textContent = Array.isArray(waiting.body) ? `(${waiting.body.length})` : "(—)";
-  if (isError(pending.body) || isError(waiting.body)) {
-    requests.title = quorum.title = "compteur indisponible";
+  for (const [count, reply] of [
+    [requests, pending],
+    [quorum, waiting],
+    [incidents, open],
+  ] as const) {
+    count.textContent = Array.isArray(reply.body) ? `(${reply.body.length})` : "(—)";
+    if (isError(reply.body)) count.title = "compteur indisponible";
   }
 }
 

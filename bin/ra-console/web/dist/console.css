@@ -462,3 +462,62 @@ tr.detail pre {
   padding-left: 20px;
   font-weight: 400;
 }
+
+/* Dossiers d'incident (docs/UI-UX.md §2) */
+.badge.closed {
+  background: var(--bg-surface);
+  color: var(--text-muted);
+  border: 1px solid var(--border-subtle);
+}
+.timeline {
+  list-style: none;
+  margin: 0 0 16px;
+  padding: 0;
+}
+.entry {
+  border-top: 1px solid var(--border-subtle);
+  padding: 8px 0;
+}
+.entry p {
+  margin: 0 0 4px;
+}
+.note {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.key-id {
+  overflow-wrap: anywhere;
+}
+.writing form {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0 0 16px;
+}
+.writing label {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.writing textarea {
+  font: inherit;
+  color: var(--text-main);
+  background: var(--bg-canvas);
+  border: 1px solid var(--border-subtle);
+  border-radius: 4px;
+  padding: 8px;
+}
+.incident-bar {
+  grid-template-columns: minmax(260px, 3fr) auto minmax(140px, 1fr);
+}
+.filters.narrow {
+  max-width: 260px;
+}
+.badge {
+  white-space: nowrap;
+}
+/* Un corps figé en une seule ligne (clôture) doit se lire en entier avant de
+   signer, sans défilement horizontal. */
+.frozen pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
