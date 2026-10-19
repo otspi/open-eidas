@@ -38,6 +38,7 @@ async fn console(environment: Environment) -> Option<axum::Router> {
             sessions: common::sessions(pool),
             journal: Arc::new(ra_console::audit::NullRecorder),
             s3: None,
+            journal_health: None,
         }),
         Console { environment },
     ))

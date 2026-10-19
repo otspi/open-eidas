@@ -53,6 +53,9 @@ pub struct Server {
     registry_guard: Option<Arc<oe_actions::RegistryGuard>>,
     /// Voir `Config::ra_auto_approve`.
     ra_auto_approve: bool,
+    /// L'état du scellement du journal d'audit (constat J-1), rendu par
+    /// `/healthz` sous la clé `journal` ; `None` sans TSA configurée.
+    journal_health: Option<Arc<dyn oe_audit::JournalHealth>>,
 }
 
 impl Server {
@@ -96,7 +99,17 @@ impl Server {
             repository_html,
             registry_guard: None,
             ra_auto_approve: false,
+            journal_health: None,
         }
+    }
+
+    /// Fait dire à `/healthz` où en est le scellement du journal (constat
+    /// J-1). Un journal plus scellé ni copié comme prévu passe le statut en
+    /// « degrade » sans 503 : `/healthz` sert aussi de sonde de vivacité, et
+    /// l'autorité émet toujours.
+    pub fn with_journal_health(mut self, health: Arc<dyn oe_audit::JournalHealth>) -> Server {
+        self.journal_health = Some(health);
+        self
     }
 
     /// Fait dépendre `/healthz` de la garde du registre : un registre qui diverge
@@ -620,7 +633,20 @@ async fn handle_health(State(server): State<Arc<Server>>) -> Response {
         };
     }
 
-    let body = serde_json::json!({
+    // Un journal qui n'est plus scellé ou copié ne suspend pas l'émission :
+    // statut dégradé, mais pas de 503 (sonde de vivacité).
+    let journal = server.journal_health.as_ref().map(|j| j.report());
+    if let Some(reason) = journal.as_ref().and_then(|j| j.degraded.as_deref()) {
+        statut = "degrade";
+        let text = format!("journal d'audit : {reason}");
+        detail = if detail.is_empty() {
+            text
+        } else {
+            format!("{detail} ; {text}")
+        };
+    }
+
+    let mut body = serde_json::json!({
         "statut": statut,
         "version": server.version,
         "emettrice": server.issuer.certificate().tbs_certificate().subject().to_string(),
@@ -630,5 +656,8 @@ async fn handle_health(State(server): State<Arc<Server>>) -> Response {
         "registre_bloque": registry_blocked,
         "approbation_automatique": server.ra_auto_approve,
     });
+    if let Some(journal) = journal {
+        body["journal"] = journal.detail;
+    }
     (status, Json(body)).into_response()
 }

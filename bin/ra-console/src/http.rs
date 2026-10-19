@@ -34,6 +34,9 @@ pub struct AppState {
     /// `None` si non configuré : `/api/v1/audit/search` (étape 2b-D) refuse
     /// alors plutôt que de ne vérifier qu'une moitié des deux journaux.
     pub s3: Option<S3Config>,
+    /// L'état du scellement du journal d'audit (constat J-1), rendu par
+    /// `/healthz` sous la clé `journal` ; `None` sans TSA configurée.
+    pub journal_health: Option<Arc<dyn oe_audit::JournalHealth>>,
 }
 
 /// L'application complète servie par `ra-console` : l'API ([`router`]), le
@@ -91,8 +94,13 @@ async fn handle_health(State(state): State<Arc<AppState>>) -> Response {
         Ok(()) => "ok".to_string(),
         Err(e) => format!("ko : {e}"),
     };
-    let body = serde_json::json!({
-        "statut": if ok { "ok" } else { "degrade" },
+    // Un journal qui n'est plus scellé ou copié comme prévu (constat J-1)
+    // dégrade le statut sans 503 : `/healthz` sert aussi de sonde de
+    // disponibilité, et la console reste utilisable.
+    let journal = state.journal_health.as_ref().map(|j| j.report());
+    let journal_degraded = journal.as_ref().and_then(|j| j.degraded.clone());
+    let mut body = serde_json::json!({
+        "statut": if ok && journal_degraded.is_none() { "ok" } else { "degrade" },
         "version": env!("CARGO_PKG_VERSION"),
         "base": describe(&base),
         "lien_ca": describe(&lien),
@@ -102,6 +110,12 @@ async fn handle_health(State(state): State<Arc<AppState>>) -> Response {
             .format(&time::format_description::well_known::Rfc3339)
             .unwrap_or_default(),
     });
+    if let Some(reason) = journal_degraded {
+        body["detail"] = serde_json::json!(format!("journal d'audit : {reason}"));
+    }
+    if let Some(journal) = journal {
+        body["journal"] = journal.detail;
+    }
     let status = if ok {
         StatusCode::OK
     } else {

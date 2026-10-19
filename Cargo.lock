@@ -319,6 +319,7 @@ dependencies = [
  "oe-hsm",
  "oe-raflow",
  "oe-s3",
+ "oe-seal",
  "oe-webauthn",
  "rand 0.8.8",
  "reqwest",
@@ -1780,6 +1781,7 @@ dependencies = [
  "base64 0.22.1",
  "der 0.8.2",
  "hex",
+ "oe-audit",
  "oe-hsm",
  "oe-rfc3161-asn1",
  "oe-timesource",
@@ -1876,6 +1878,30 @@ dependencies = [
  "thiserror 2.0.20",
  "tokio",
  "url",
+]
+
+[[package]]
+name = "oe-seal"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "axum",
+ "base64 0.22.1",
+ "der 0.8.2",
+ "oe-audit",
+ "oe-crosstsa",
+ "oe-hsm",
+ "oe-httpapi",
+ "oe-s3",
+ "oe-timesource",
+ "oe-tsa-core",
+ "pem",
+ "serde_json",
+ "spki 0.8.0",
+ "time",
+ "tokio",
+ "tracing",
+ "x509-cert",
 ]
 
 [[package]]
@@ -2232,6 +2258,7 @@ dependencies = [
  "oe-hsm",
  "oe-raflow",
  "oe-s3",
+ "oe-seal",
  "oe-webauthn",
  "openssl",
  "rand 0.8.8",
@@ -3404,6 +3431,7 @@ checksum = "e421abadd41a4225275504ea4d6566923418b7f05506fbc9c0fe86ba7396114b"
 name = "tsa-server"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "axum",
  "base64 0.22.1",
  "clap",
@@ -3414,18 +3442,17 @@ dependencies = [
  "oe-certs",
  "oe-config",
  "oe-conformance",
- "oe-crosstsa",
  "oe-enroll",
  "oe-hsm",
  "oe-httpapi",
  "oe-rfc3161-asn1",
  "oe-s3",
+ "oe-seal",
  "oe-timesource",
  "oe-tsa-core",
  "pem",
  "reqwest",
  "serde_json",
- "spki 0.8.0",
  "time",
  "tokio",
  "tracing",

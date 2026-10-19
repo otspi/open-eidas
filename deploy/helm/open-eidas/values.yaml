@@ -61,7 +61,9 @@ tsa:
     maxOffset: 500ms
   # TSA tierces qui contresignent la tête du journal à chaque scellement :
   # seule son empreinte leur est envoyée. Vide = contreseing désactivé (le
-  # sceau de la TSU reste alors auto-référentiel).
+  # sceau de la TSU reste alors auto-référentiel). Les mêmes autorités
+  # contresignent le journal de la CA (ca.audit) ; celui de la console a sa
+  # propre liste (raConsole.crossTSA), sa sortie réseau étant bornée.
   crossTSA:
     urls: "https://freetsa.org/tsr,http://timestamp.digicert.com"
   audit:
@@ -206,6 +208,11 @@ ca:
     # Durée de conservation du journal (ETSI EN 319 401 §7.10). Le service
     # refuse de démarrer en deçà d'un an.
     retention: 8760h
+    # À chaque intervalle, la CA fait horodater la tête de son journal par la
+    # TSA de la release (log.sealed), la fait contresigner par tsa.crossTSA
+    # (log.cross_sealed) et, si tsa.audit.s3 ou OPENEIDAS_S3_* la configure,
+    # en dépose une copie hors site (constat J-1). /healthz le dit (journal).
+    sealInterval: 1h
   # Approbation automatique des demandes d'enrôlement, pour que la
   # démonstration et la CI s'amorcent sans opérateur humain. DÉSACTIVÉE par
   # défaut (constat R-2 de l'audit du 2026-09-25) : une valeur par défaut
@@ -250,6 +257,15 @@ raConsole:
     port: 8330
   # Purge des sessions et challenges expirés (secondes).
   purgeIntervalSeconds: 60
+  audit:
+    # À chaque intervalle (secondes), la console fait horodater la tête de son
+    # journal par la TSA de la release (log.sealed, constat J-1).
+    sealIntervalSeconds: 3600
+  # TSA tierces qui contresignent la tête du journal de la console. Vide par
+  # défaut : sa NetworkPolicy ne la laisse pas sortir du cluster ; renseigner
+  # une liste ouvre l'egress HTTP/HTTPS (ports 80 et 443) vers l'extérieur.
+  crossTSA:
+    urls: ""
   # Délai d'attente de l'approbation du certificat client `internal_client` au
   # premier démarrage, par tentative (secondes).
   enrollTimeoutSeconds: 600

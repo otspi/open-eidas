@@ -12,6 +12,7 @@ workspace = true
 
 [dependencies]
 oe-tsa-core = { path = "../oe-tsa-core" }
+oe-audit = { path = "../oe-audit" }
 oe-rfc3161-asn1 = { path = "../oe-rfc3161-asn1" }
 oe-hsm = { path = "../oe-hsm" }
 oe-timesource = { path = "../oe-timesource" }

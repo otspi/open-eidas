@@ -1,0 +1,34 @@
+[package]
+name = "oe-seal"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Scellement périodique d'un journal d'audit chaîné par une TSA RFC 3161 (maison ou tierce), contreseing et copie hors site — constat J-1."
+
+[lints]
+workspace = true
+
+[dependencies]
+oe-audit = { path = "../oe-audit" }
+oe-crosstsa = { path = "../oe-crosstsa" }
+oe-s3 = { path = "../oe-s3" }
+async-trait = "0.1"
+base64 = "0.22"
+der = "0.8"
+serde_json = "1"
+spki = "0.8"
+time = { version = "0.3", features = ["std", "formatting"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "signal", "sync"] }
+tracing = "0.1"
+
+[dev-dependencies]
+oe-hsm = { path = "../oe-hsm" }
+oe-tsa-core = { path = "../oe-tsa-core" }
+oe-httpapi = { path = "../oe-httpapi" }
+oe-timesource = { path = "../oe-timesource" }
+axum = "0.8"
+pem = "3"
+x509-cert = "0.3"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net"] }

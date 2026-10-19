@@ -136,6 +136,7 @@ impl Env {
             login,
             journal: journal.clone(),
             s3: None,
+            journal_health: None,
         }));
         Some(Env {
             console,

@@ -35,6 +35,8 @@ oe-audit = { path = "../../crates/oe-audit" }
 # Copie best-effort du journal sur un stockage objet compatible S3, auto-hébergé
 # (docs/WEBUI.md §7, §15 étape 2b-C) : jamais AWS, décision de l'association.
 oe-s3 = { path = "../../crates/oe-s3" }
+# Scellement périodique du journal par la TSA de la maison (constat J-1).
+oe-seal = { path = "../../crates/oe-seal" }
 clap = { version = "4", features = ["derive"] }
 axum = "0.8"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal", "time"] }

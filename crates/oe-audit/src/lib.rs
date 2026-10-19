@@ -54,6 +54,22 @@ pub const EVENT_CA_CONFORMANCE_REPORTED: &str = "ca.conformance_reported";
 
 pub type Data = BTreeMap<String, serde_json::Value>;
 
+/// Ce que `/healthz` d'un service dit de son journal d'audit (constat J-1 de
+/// l'audit du 2026-09-25) : scellé, contresigné et copié hors site comme
+/// prévu, ou non. Défini ici, à côté du journal, pour que chaque binaire
+/// (`tsa-server`, `ca-server`, `ra-console`) l'expose de la même façon sans
+/// dépendre de l'API HTTP d'un autre.
+pub trait JournalHealth: Send + Sync {
+    fn report(&self) -> JournalReport;
+}
+
+pub struct JournalReport {
+    /// `Some(raison)` quand le journal n'est plus scellé ou copié comme prévu.
+    pub degraded: Option<String>,
+    /// Le détail rendu tel quel sous la clé `journal`.
+    pub detail: serde_json::Value,
+}
+
 /// Une ligne du journal.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Record {

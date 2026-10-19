@@ -238,16 +238,16 @@ async fn run_serve() {
             timeout: c.timeout,
         })
         .unwrap_or_else(|e| die("client S3 du journal", e));
-        (client, c.key.clone())
+        (Arc::new(client), c.key.clone())
     });
-    let sealer = Arc::new(seal::Sealer::new(
-        log.clone(),
-        cfg.audit_file.clone(),
-        authority.clone(),
-        cfg.cross_tsa_urls.clone(),
-        cfg.cross_tsa_timeout,
+    let sealer = Arc::new(oe_seal::Sealer::new(oe_seal::Options {
+        log: log.clone(),
+        path: cfg.audit_file.clone(),
+        stamper: Arc::new(seal::AuthorityStamper(authority.clone())),
+        cross_tsas: cfg.cross_tsa_urls.clone(),
+        cross_timeout: cfg.cross_tsa_timeout,
         s3,
-    ));
+    }));
     let journal: Arc<dyn oe_httpapi::JournalHealth> = sealer.health();
     sealer.spawn_periodic(cfg.audit_seal_interval);
 

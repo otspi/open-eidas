@@ -51,6 +51,7 @@ async fn healthz_needs_both_the_database_and_the_link() {
         sessions: common::sessions(pool.clone()),
         journal: Arc::new(ra_console::audit::NullRecorder),
         s3: None,
+        journal_health: None,
     }));
     let (status, body) = get(&app).await;
     assert_eq!(status, axum::http::StatusCode::OK, "{body}");
@@ -68,9 +69,10 @@ async fn healthz_needs_both_the_database_and_the_link() {
         pool: pool.clone(),
         link,
         login: common::login_service(pool.clone()),
-        sessions: common::sessions(pool),
+        sessions: common::sessions(pool.clone()),
         journal: Arc::new(ra_console::audit::NullRecorder),
         s3: None,
+        journal_health: None,
     }));
     let (status, body) = get(&app).await;
     assert_eq!(
@@ -84,4 +86,39 @@ async fn healthz_needs_both_the_database_and_the_link() {
         body["lien_ca"].as_str().unwrap().starts_with("ko"),
         "{body}"
     );
+
+    // Journal plus scellé comme prévu (constat J-1) : statut dégradé, avec le
+    // détail sous `journal`, mais pas de 503 — la console reste utilisable.
+    let link = CaLink::new(&pki.files(&dir, &client, port)).unwrap();
+    let app = router(Arc::new(AppState {
+        pool: pool.clone(),
+        link,
+        login: common::login_service(pool.clone()),
+        sessions: common::sessions(pool),
+        journal: Arc::new(ra_console::audit::NullRecorder),
+        s3: None,
+        journal_health: Some(Arc::new(FakeJournal)),
+    }));
+    let (status, body) = get(&app).await;
+    assert_eq!(status, axum::http::StatusCode::OK, "{body}");
+    assert_eq!(body["statut"], "degrade");
+    assert_eq!(body["journal"]["seal_failures"], 3, "{body}");
+    assert!(
+        body["detail"]
+            .as_str()
+            .is_some_and(|d| d.contains("journal d'audit : scellement")),
+        "{body}"
+    );
+}
+
+/// Un journal dont le scellement échoue depuis trois passes.
+struct FakeJournal;
+
+impl oe_audit::JournalHealth for FakeJournal {
+    fn report(&self) -> oe_audit::JournalReport {
+        oe_audit::JournalReport {
+            degraded: Some("scellement en échec depuis 3 passes".to_string()),
+            detail: serde_json::json!({ "degraded": true, "seal_failures": 3 }),
+        }
+    }
 }

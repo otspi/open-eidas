@@ -748,6 +748,26 @@ async fn run_serve() {
 
     let mut server = http::Server::new(issuer.clone(), flow, env!("CARGO_PKG_VERSION").to_string())
         .with_ra_auto_approve(cfg.ra_auto_approve);
+    // Scellement périodique de la tête du journal par la TSA de la maison,
+    // contreseing tiers et copie hors site (constat J-1) : voir oe-seal.
+    let sealer = if cfg.tsa_url.is_empty() {
+        tracing::warn!("OPENEIDAS_TSA_URL vide : le journal d'audit n'est pas scellé");
+        None
+    } else {
+        let sealer = Arc::new(oe_seal::Sealer::new(oe_seal::Options {
+            log: audit.log.clone(),
+            path: cfg.audit_file.clone(),
+            stamper: Arc::new(oe_seal::HttpStamper::new(
+                cfg.tsa_url.clone(),
+                cfg.cross_tsa_timeout,
+            )),
+            cross_tsas: cfg.cross_tsa_urls.clone(),
+            cross_timeout: cfg.cross_tsa_timeout,
+            s3: audit.s3.clone(),
+        }));
+        server = server.with_journal_health(sealer.health());
+        Some(sealer)
+    };
     if cfg.ra_auto_approve {
         tracing::warn!("approbation automatique des demandes déclarée (OPENEIDAS_RA_AUTO_APPROVE) : mode démonstration");
     }
@@ -757,6 +777,9 @@ async fn run_serve() {
     let server = Arc::new(server);
 
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+    if let Some(sealer) = sealer {
+        sealer.spawn_periodic_until(cfg.audit_seal_interval, shutdown_rx.clone());
+    }
     if let Some((_, guard, registry)) = &internal_service {
         registry_check::spawn_periodic(
             registry.clone(),

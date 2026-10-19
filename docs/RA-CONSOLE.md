@@ -295,6 +295,10 @@ construction : [`bin/ra-console/web/`](../bin/ra-console/web/README.md).
 | `OPENEIDAS_LOGIN_DECOY_SECRET` | — (obligatoire, 16 octets au moins) | Secret des réponses de connexion uniformes (clé factice d'un nom inconnu) |
 | `OPENEIDAS_PURGE_INTERVAL_SECONDS` | 60 | Purge des sessions et challenges expirés |
 | `OPENEIDAS_RA_AUDIT_FILE` | `/var/lib/open-eidas/state/ra-console-audit.log` | Journal d'audit chaîné de la console |
+| `OPENEIDAS_TSA_URL` | — (pas de scellement) | TSA de la maison (`tsa-server`, `POST /tsa`) qui horodate la tête du journal à chaque scellement (`log.sealed`, jeton RFC 3161 conservé) |
+| `OPENEIDAS_AUDIT_SEAL_INTERVAL_SECONDS` | 3600 | Période du scellement, du contreseing et de la copie hors site (`log.replicated`, avec `OPENEIDAS_S3_*`) |
+| `OPENEIDAS_CROSS_TSA_URLS` | `https://freetsa.org/tsr,http://timestamp.digicert.com` | TSA tierces qui horodatent la même tête (`log.cross_sealed`) ; **posée à vide, la variable désactive le contreseing** (le chart la laisse vide : la console ne sort pas du cluster) |
+| `OPENEIDAS_CROSS_TSA_TIMEOUT_SECONDS` | 15 | Délai de réponse des TSA, maison comprise |
 | `OPENEIDAS_CA_CHAIN_URL` | — | (image, premier démarrage) d'où l'entrypoint récupère le certificat de la CA |
 
 ## Déploiement
@@ -332,7 +336,9 @@ construction : [`bin/ra-console/web/`](../bin/ra-console/web/README.md).
    La console n'approuve **jamais** la demande de son propre certificat : ce serait
    une confiance circulaire. La clé (0600) et la demande survivent à un redémarrage.
 4. `ra-console serve`. `/healthz` est sain seulement si la base répond **et** si le lien
-   vers `ca-server` fonctionne.
+   vers `ca-server` fonctionne. Avec `OPENEIDAS_TSA_URL`, il rend aussi l'état du
+   scellement du journal (clé `journal`) : trois passes sans sceau, sans contreseing ou
+   sans copie passent le statut en `degrade`, sans 503 (la console reste utilisable).
 
 ## Ce qui n'existe pas encore
 

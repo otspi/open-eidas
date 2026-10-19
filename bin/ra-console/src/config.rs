@@ -24,6 +24,16 @@ pub struct Config {
     /// décision déjà prise pour ce journal (voir `ra_console::audit::Recorder`), non
     /// remise en cause par l'ajout de S3.
     pub s3: Option<S3Config>,
+    /// TSA de la maison (`tsa-server`, `POST /tsa`) qui horodate la tête du
+    /// journal à chaque scellement (`log.sealed`, constat J-1). Vide = pas de
+    /// scellement : le journal n'est alors chaîné que par hachage, sans clé.
+    pub tsa_url: String,
+    /// Période du scellement, du contreseing et de la copie hors site.
+    pub audit_seal_interval: Duration,
+    /// TSA tierces qui contresignent la même tête (`log.cross_sealed`) ; vide
+    /// = contreseing désactivé. Seule l'empreinte leur est envoyée.
+    pub cross_tsa_urls: Vec<String>,
+    pub cross_tsa_timeout: Duration,
     /// Environnement annoncé par le frontend (docs/UI-UX.md §1, principe 4).
     pub environment: crate::web::Environment,
 }
@@ -105,6 +115,16 @@ pub struct EnrollConfig {
     pub timeout: Duration,
 }
 
+/// Une liste séparée par des virgules, entrées vides ignorées.
+fn split_list(value: &str) -> Vec<String> {
+    value
+        .split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
 fn required(key: &str) -> Result<String, String> {
     match std::env::var(key).ok().filter(|v| !v.is_empty()) {
         Some(v) => Ok(v),
@@ -161,6 +181,15 @@ impl Config {
                 "/var/lib/open-eidas/state/ra-console-audit.log",
             ),
             s3: s3_config()?,
+            tsa_url: optional("OPENEIDAS_TSA_URL", ""),
+            audit_seal_interval: duration_seconds("OPENEIDAS_AUDIT_SEAL_INTERVAL_SECONDS", 3600)?,
+            // Absente : les mêmes autorités publiques que tsa-server ; posée à
+            // vide : contreseing désactivé (la console n'a souvent aucune
+            // sortie vers l'extérieur, voir le chart).
+            cross_tsa_urls: split_list(&std::env::var("OPENEIDAS_CROSS_TSA_URLS").unwrap_or_else(
+                |_| "https://freetsa.org/tsr,http://timestamp.digicert.com".to_string(),
+            )),
+            cross_tsa_timeout: duration_seconds("OPENEIDAS_CROSS_TSA_TIMEOUT_SECONDS", 15)?,
             environment: crate::web::Environment::parse(
                 &std::env::var("OPENEIDAS_RA_ENVIRONMENT").unwrap_or_default(),
             )?,

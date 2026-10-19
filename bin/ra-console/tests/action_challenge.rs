@@ -191,6 +191,7 @@ impl Env {
             sessions: common::sessions(pool),
             journal: journal.clone(),
             s3: None,
+            journal_health: None,
         }));
 
         Some(Env {

@@ -105,6 +105,15 @@ spec:
                   key: ra-console-decoy-secret
             - name: OPENEIDAS_PURGE_INTERVAL_SECONDS
               value: {{ .Values.raConsole.purgeIntervalSeconds | quote }}
+            # Scellement de la tête du journal par la TSA de la release, en
+            # HTTP (constat J-1) ; contreseing tiers seulement si
+            # raConsole.crossTSA.urls est renseigné (sortie réseau bornée).
+            - name: OPENEIDAS_TSA_URL
+              value: {{ printf "http://%s-tsa:%d/tsa" $fullname (.Values.tsa.service.port | int) | quote }}
+            - name: OPENEIDAS_AUDIT_SEAL_INTERVAL_SECONDS
+              value: {{ .Values.raConsole.audit.sealIntervalSeconds | quote }}
+            - name: OPENEIDAS_CROSS_TSA_URLS
+              value: {{ .Values.raConsole.crossTSA.urls | quote }}
           volumeMounts:
             - name: state
               mountPath: /var/lib/open-eidas/state
