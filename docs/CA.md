@@ -462,11 +462,11 @@ CDP ni AIA vers la racine : seules les émettrices créées depuis en bénéfici
 |---|---|---|
 | Vol de la clé de la CA émettrice | La clé ne quitte jamais le token PKCS#11 ; seul le conteneur `ca` y accède | SoftHSM2 est logiciel : qui obtient le volume et le PIN obtient la clé. Un HSM certifié lève ce point |
 | Vol du secret HMAC d'enrôlement | Il authentifie le demandeur, il ne décide pas : toute demande reste soumise à approbation | Une clé volée permet de déposer des demandes, pas d'en faire émettre |
-| Compromission d'un opérateur RA | Chaque décision est consignée avec son auteur dans le journal chaîné | Un opérateur seul peut approuver : il n'y a pas de double validation. Le journal n'est ni scellé ni répliqué hors site (écart J-1) : un accès en écriture à son volume permet de le réécrire |
+| Compromission d'un opérateur RA | Chaque décision est consignée avec son auteur dans le journal chaîné | Un opérateur seul peut approuver : il n'y a pas de double validation. Entre deux sceaux de la TSA (`OPENEIDAS_AUDIT_SEAL_INTERVAL`), un accès en écriture au volume du journal permet encore de réécrire les dernières entrées |
 | Numéro de série prédit ou rejoué | 128 bits sur `crypto/rand`, unicité portée par la clé primaire du registre | — |
 | Certificat non conforme émis | Le DER produit est relu et re-contrôlé avant d'être enregistré ; l'émission est annulée sinon | — |
 | CRL ancienne rejouée pour masquer une révocation | `CRLNumber` strictement croissant, servi par une séquence PostgreSQL ; le répondeur OCSP refuse de répondre plutôt que de servir un statut obsolète | — |
-| Altération du journal d'audit | Chaînage par hachage vérifié à l'ouverture ; un journal altéré empêche le démarrage | Chaînage sans clé : une réécriture complète avec recalcul de la chaîne n'est pas détectée tant que la tête n'est pas scellée hors du système (écart J-1) |
+| Altération du journal d'audit | Chaînage par hachage vérifié à l'ouverture ; un journal altéré empêche le démarrage | Chaînage sans clé : la tête est scellée par la TSA (`OPENEIDAS_TSA_URL`, `log.sealed`), contresignée par des TSA tierces et copiée hors site à chaque intervalle ; seules les entrées postérieures au dernier sceau restent réécrivables sans trace |
 | Perte de l'instance | Registre PostgreSQL sauvegardable | Journal non répliqué hors site (écart J-1) ; sauvegarde et restauration non encore testées de bout en bout |
 
 ## 8. Continuité et cessation d'activité

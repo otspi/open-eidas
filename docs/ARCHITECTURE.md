@@ -238,38 +238,47 @@ Deux propriétés rendent le dispositif exploitable :
 
 Le chaînage SHA-256 n'utilise pas de clé : quiconque peut écrire dans le
 fichier peut en tronquer la fin ou le réécrire en recalculant la chaîne, sans
-que `verify-audit` le voie. Ce qui ancre la tête de chaîne hors du système
-**n'est en service qu'en partie** (constat J-1) :
+que `verify-audit` le voie. La tête de chaîne est donc ancrée hors du système,
+périodiquement, par le crate `oe-seal`, **en service dans les trois services**
+(constat J-1 ; décision du 2026-10-13 : scellement par la TSA maison, en HTTP) :
 
-- **Scellement périodique** par la TSU elle-même : **en service dans
-  `tsa-server`**. Au démarrage puis à chaque `OPENEIDAS_AUDIT_SEAL_INTERVAL`,
-  le service fait horodater la tête de chaîne par sa propre autorité et
-  consigne `log.sealed` avec la tête scellée et le jeton RFC 3161, certificat
-  compris : `openssl ts -verify -digest <tête>` le vérifie sans rien d'Open
-  eIDAS. Réécrire le journal avant un sceau demanderait de reforger un jeton
-  signé par la clé du module cryptographique. Les journaux de `ca-server` et
-  de `ra-console` ne sont pas encore scellés.
+- **Scellement périodique** par la TSA de la maison. Au démarrage puis à chaque
+  `OPENEIDAS_AUDIT_SEAL_INTERVAL`, `tsa-server` fait horodater la tête de son
+  journal par sa propre autorité, en mémoire ; `ca-server` et `ra-console` font
+  horodater la leur par `tsa-server` (`OPENEIDAS_TSA_URL`), **en HTTP, comme
+  n'importe quel client RFC 3161**. Chacun consigne `log.sealed` avec la tête
+  scellée et le jeton, certificat compris (et, pour un sceau obtenu en HTTP, le
+  nom de l'autorité) : `openssl ts -verify -digest <tête>` le vérifie sans rien
+  d'Open eIDAS. Réécrire un journal avant un sceau demanderait de reforger un
+  jeton signé par la clé du module cryptographique de la TSA. Sans
+  `OPENEIDAS_TSA_URL`, la CA et la console le disent au démarrage et ne scellent
+  pas.
 - **Copie hors site** sur un stockage objet compatible S3, auto-hébergé :
-  `tsa-server` y dépose son journal entier après chaque scellement
-  (`log.replicated`) ; `ca-server` le fait à chaque écriture, de façon
-  bloquante, et `ra-console` au mieux. Pour la TSA la copie est périodique —
-  son journal reçoit une entrée par jeton — et l'émission n'en dépend pas.
+  chaque service y dépose son journal entier après chaque scellement
+  (`log.replicated`) ; `ca-server` le fait de plus à chaque écriture, de façon
+  bloquante, et `ra-console` au mieux. La copie périodique n'attend aucune
+  écriture — le journal de la TSA reçoit une entrée par jeton — et l'émission
+  n'en dépend pas.
 - **Contreseing par des TSA tierces** indépendantes (`oe-crosstsa`, protocole
-  RFC 3161 standard) : **en service dans `tsa-server`**. La tête que la TSU
-  vient de sceller est aussi horodatée par chaque autorité de
-  `OPENEIDAS_CROSS_TSA_URLS` ; chaque réponse est consignée (`log.cross_sealed`)
-  avec son jeton, vérifiable par `openssl ts -verify` et le certificat de
-  l'autorité, sans rien d'Open eIDAS. C'est ce qui sort le sceau de
-  l'auto-référence. Le service contrôle que le jeton porte l'empreinte
-  soumise ; il n'en vérifie pas la signature, faute d'ancres de confiance
-  pour ces autorités : cette vérification se fait après coup. Les journaux de
-  `ca-server` et de `ra-console` ne sont pas encore contresignés.
+  RFC 3161 standard). La tête qui vient d'être scellée est aussi horodatée par
+  chaque autorité de `OPENEIDAS_CROSS_TSA_URLS` ; chaque réponse est consignée
+  (`log.cross_sealed`) avec son jeton, vérifiable par `openssl ts -verify` et le
+  certificat de l'autorité, sans rien d'Open eIDAS. C'est ce qui sort le sceau
+  de l'auto-référence. Le service contrôle que le jeton porte l'empreinte
+  soumise ; il n'en vérifie pas la signature, faute d'ancres de confiance pour
+  ces autorités : cette vérification se fait après coup. La variable posée à
+  vide désactive le contreseing (la CI, un réseau sans sortie : la console, dont
+  la NetworkPolicy du chart ne s'ouvre vers l'extérieur que si
+  `raConsole.crossTSA.urls` est renseigné).
 
-Un scellement, un contreseing ou une copie en échec ne suspend pas l'émission.
-Un scellement en échec est retenté après une minute au plus (au démarrage, l'heure peut ne
-pas être encore traçable) ; au-delà de trois passes consécutives en échec (pour le
-contreseing : trois passes sans aucune autorité tierce), `/healthz` se déclare dégradé (`journal.degraded`),
-sans passer en erreur : c'est à la supervision d'alerter. `oe-replicate`
+Un scellement, un contreseing ou une copie en échec ne suspend ni l'émission ni
+le service. Un scellement en échec est retenté après une minute au plus (au
+démarrage, l'heure de la TSA peut ne pas être encore traçable, ou la TSA pas
+encore enrôlée : la CA démarre avant elle) ; au-delà de trois passes consécutives
+en échec (pour le contreseing : trois passes sans aucune autorité tierce),
+`/healthz` se déclare dégradé (`journal.degraded`, statut `degrade`), sans passer
+en erreur : c'est à la supervision d'alerter. La démonstration de la CI vérifie
+que la CA a bien fait sceller son journal par la TSA. `oe-replicate`
 (WebDAV) reste disponible mais n'est appelé par aucun binaire. Voir
 [CPS.md](CPS.md) B.3 et [CONFORMITE-ETSI.md](CONFORMITE-ETSI.md).
 
