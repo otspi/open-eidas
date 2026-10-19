@@ -56,6 +56,9 @@ tsa:
     commonName: "Open eIDAS Time-Stamping Unit 1"
   time:
     policy: enforce # enforce | monitor | disabled
+    # `nts://hôte` authentifie une source par NTS (RFC 8915) : la PTB le
+    # propose (nts://ptbtime1.ptb.de), l'Observatoire de Paris non. Sortie
+    # TCP/4460 nécessaire vers la source en plus d'UDP/123.
     sources: "ntp.obspm.fr,ptbtime1.ptb.de"
     minSources: 2
     maxOffset: 500ms

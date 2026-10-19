@@ -154,6 +154,9 @@ pub struct Config {
     pub time_timeout: Duration,
     /// Aller-retour maximal d'une mesure NTP (constat T-2).
     pub time_max_rtt: Duration,
+    /// Fichier PEM d'ancres de confiance supplémentaires pour NTS-KE
+    /// (sources `nts://…`) ; vide = racines publiques seulement.
+    pub time_nts_ca_file: String,
 
     pub enroll_endpoint: String,
     pub enroll_ca_file: String,
@@ -261,6 +264,7 @@ impl Config {
             time_poll: env_duration("OPENEIDAS_TIME_POLL", Duration::from_secs(300))?,
             time_timeout: env_duration("OPENEIDAS_TIME_TIMEOUT", Duration::from_secs(5))?,
             time_max_rtt: env_duration("OPENEIDAS_TIME_MAX_RTT", Duration::from_secs(1))?,
+            time_nts_ca_file: env_str("OPENEIDAS_TIME_NTS_CA_FILE", ""),
 
             enroll_endpoint: env_str("OPENEIDAS_ENROLL_ENDPOINT", ""),
             enroll_ca_file: env_str("OPENEIDAS_ENROLL_CA_FILE", ""),

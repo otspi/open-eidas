@@ -113,7 +113,9 @@ services:
       # dépasse le seuil ou si le quorum de sources n'est plus joignable.
       # Sans accès sortant en UDP/123, basculer sur OPENEIDAS_TIME_POLICY=monitor.
       OPENEIDAS_TIME_POLICY: ${OPENEIDAS_TIME_POLICY:-enforce}
-      OPENEIDAS_TIME_SOURCES: ${OPENEIDAS_TIME_SOURCES:-ntp.obspm.fr,ptbtime1.ptb.de}
+      # La PTB propose NTS (RFC 8915) : sa source est authentifiée (nts://),
+      # celle de l'Observatoire de Paris ne peut pas l'être.
+      OPENEIDAS_TIME_SOURCES: ${OPENEIDAS_TIME_SOURCES:-ntp.obspm.fr,nts://ptbtime1.ptb.de}
       OPENEIDAS_TIME_MIN_SOURCES: "2"
       OPENEIDAS_TIME_MAX_OFFSET: 500ms
       OPENEIDAS_AUDIT_FILE: /var/lib/open-eidas/state/audit.log

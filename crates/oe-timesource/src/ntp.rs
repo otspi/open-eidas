@@ -81,7 +81,7 @@ pub fn query(server: &str, timeout: StdDuration, max_rtt: Duration) -> Result<Nt
 
 /// La requête : LI = 0, version 4, mode client, *transmit* = `t1` dont les
 /// bits de poids faible de la fraction sont aléatoires.
-fn build_request(t1: OffsetDateTime) -> [u8; 48] {
+pub(crate) fn build_request(t1: OffsetDateTime) -> [u8; 48] {
     let mut packet = [0u8; 48];
     packet[0] = 0b00_100_011; // LI=0 (no warning), VN=4, Mode=3 (client)
     write_ntp_timestamp(&mut packet[40..48], t1);
@@ -97,7 +97,7 @@ fn build_request(t1: OffsetDateTime) -> [u8; 48] {
 /// Contrôle et dépouille une réponse. `request` est le paquet envoyé (son
 /// *transmit* est le nonce attendu), `t1` et `t4` les instants d'envoi et
 /// de réception locaux.
-fn parse_response(
+pub(crate) fn parse_response(
     request: &[u8; 48],
     buf: &[u8],
     t1: OffsetDateTime,
@@ -169,6 +169,19 @@ fn parse_response(
     })
 }
 
+/// Une réponse de serveur bien formée (strate 2), qui reprend le *transmit*
+/// de la requête et date la réception et l'émission à `t1 + offset` — pour
+/// les serveurs de test de ce crate et de [`crate::testing`].
+pub(crate) fn server_reply(request: &[u8; 48], t1: OffsetDateTime, offset: Duration) -> [u8; 48] {
+    let mut r = [0u8; 48];
+    r[0] = 0b00_100_100; // LI=0, VN=4, mode 4 (serveur)
+    r[1] = 2; // strate 2
+    r[24..32].copy_from_slice(&request[40..48]); // originate = notre transmit
+    write_ntp_timestamp(&mut r[32..40], t1 + offset); // receive
+    write_ntp_timestamp(&mut r[40..48], t1 + offset); // transmit
+    r
+}
+
 fn write_ntp_timestamp(buf: &mut [u8], t: OffsetDateTime) {
     let seconds = (t.unix_timestamp() + NTP_UNIX_EPOCH_OFFSET) as u32;
     let frac = ((t.nanosecond() as u64) << 32) / 1_000_000_000;
@@ -185,7 +198,7 @@ fn read_ntp_timestamp(buf: &[u8]) -> OffsetDateTime {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     #[test]
@@ -216,16 +229,8 @@ mod tests {
         );
     }
 
-    /// Une réponse de serveur bien formée, qui reprend le *transmit* de la
-    /// requête et date la réception et l'émission à `t1 + offset`.
     fn reply(request: &[u8; 48], t1: OffsetDateTime, offset: Duration) -> [u8; 48] {
-        let mut r = [0u8; 48];
-        r[0] = 0b00_100_100; // LI=0, VN=4, mode 4 (serveur)
-        r[1] = 2; // strate 2
-        r[24..32].copy_from_slice(&request[40..48]); // originate = notre transmit
-        write_ntp_timestamp(&mut r[32..40], t1 + offset); // receive
-        write_ntp_timestamp(&mut r[40..48], t1 + offset); // transmit
-        r
+        server_reply(request, t1, offset)
     }
 
     fn t1() -> OffsetDateTime {

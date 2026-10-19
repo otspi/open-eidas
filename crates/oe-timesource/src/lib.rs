@@ -9,12 +9,15 @@
 //! séparation `query`/`evaluate` du code Go de référence.
 
 mod ntp;
+pub mod nts;
+#[doc(hidden)]
+pub mod testing;
 
 use std::collections::HashMap;
 use std::fmt;
 use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 use std::thread::JoinHandle;
 use std::time::Duration as StdDuration;
 
@@ -97,6 +100,11 @@ pub struct Sample {
     pub offset: Duration,
     pub rtt: Duration,
     pub stratum: u8,
+    /// Mesure authentifiée par NTS (RFC 8915, source `nts://…`) : la réponse
+    /// a été vérifiée sous la clé de session, elle ne peut venir que du
+    /// serveur négocié en TLS. Une source NTP simple reste vulnérable à un
+    /// attaquant en chemin.
+    pub authenticated: bool,
     /// Indicateur de saut de la source (RFC 5905 §7.3) : 1 = une seconde
     /// sera insérée en fin de jour UTC, 2 = retirée, 0 sinon.
     pub leap: u8,
@@ -115,6 +123,7 @@ impl Sample {
             "offset": format_duration(self.offset),
             "rtt": format_duration(self.rtt),
             "stratum": self.stratum,
+            "authenticated": self.authenticated,
             "leap": self.leap,
             "at": self.at.format(&time::format_description::well_known::Rfc3339).unwrap_or_default(),
             "error": self.err,
@@ -174,6 +183,10 @@ pub struct Options {
     /// Aller-retour maximal d'une mesure (constat T-2) : au-delà, l'écart
     /// mesuré est trop incertain pour compter.
     pub max_rtt: Duration,
+    /// Ancres de confiance supplémentaires pour les certificats des serveurs
+    /// NTS-KE (`nts://…`), en plus des racines publiques embarquées
+    /// (`webpki-roots`) : un serveur NTS privé, ou de test.
+    pub nts_extra_roots: Vec<rustls::pki_types::CertificateDer<'static>>,
     pub recorder: Option<Arc<dyn Recorder>>,
 }
 
@@ -188,6 +201,7 @@ impl Default for Options {
             poll_interval: StdDuration::from_secs(5 * 60),
             timeout: StdDuration::from_secs(5),
             max_rtt: Duration::SECOND,
+            nts_extra_roots: Vec::new(),
             recorder: None,
         }
     }
@@ -202,11 +216,19 @@ pub enum NewMonitorError {
         min_sources: usize,
         configured: usize,
     },
+    #[error("timesource: ancre de confiance NTS illisible: {0}")]
+    InvalidNtsRoot(String),
 }
 
 pub struct Monitor {
     opts: Options,
     status: RwLock<Status>,
+    /// Ancres de confiance de NTS-KE : racines publiques et extras.
+    nts_roots: Arc<rustls::RootCertStore>,
+    /// Sessions NTS en cours, par source `nts://…` ; retirée à la première
+    /// réponse non authentifiée ou à court de cookies, renégociée à la
+    /// mesure suivante.
+    nts_sessions: Mutex<HashMap<String, nts::Session>>,
 }
 
 impl fmt::Debug for Monitor {
@@ -248,9 +270,18 @@ impl Monitor {
             }
         };
 
+        let mut nts_roots = rustls::RootCertStore::empty();
+        nts_roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+        for cert in &opts.nts_extra_roots {
+            nts_roots
+                .add(cert.clone())
+                .map_err(|e| NewMonitorError::InvalidNtsRoot(e.to_string()))?;
+        }
         Ok(Arc::new(Monitor {
             opts,
             status: RwLock::new(status),
+            nts_roots: Arc::new(nts_roots),
+            nts_sessions: Mutex::new(HashMap::new()),
         }))
     }
 
@@ -305,7 +336,7 @@ impl Monitor {
             .opts
             .servers
             .iter()
-            .map(|server| query_one(server, self.opts.timeout, self.opts.max_rtt))
+            .map(|server| self.query_source(server))
             .collect();
         let mut status = evaluate(&samples, &self.opts, OffsetDateTime::now_utc());
         let previous_leap = self.status().leap;
@@ -412,32 +443,67 @@ impl Monitor {
     }
 }
 
-fn query_one(server: &str, timeout: StdDuration, max_rtt: Duration) -> Sample {
-    let at = OffsetDateTime::now_utc();
-    match ntp::query(server, timeout, max_rtt) {
-        Ok(NtpSample {
-            offset,
-            rtt,
-            stratum,
-            leap,
-        }) => Sample {
-            server: server.to_string(),
-            offset,
-            rtt,
-            stratum,
-            leap,
-            at,
-            err: None,
-        },
-        Err(e) => Sample {
-            server: server.to_string(),
-            offset: Duration::ZERO,
-            rtt: Duration::ZERO,
-            stratum: 0,
-            leap: 0,
-            at,
-            err: Some(e.to_string()),
-        },
+impl Monitor {
+    /// Une mesure auprès d'une source : NTP simple, ou NTS (`nts://…`) avec
+    /// la session en cours — négociée au besoin — et une réponse qui ne
+    /// compte que vérifiée.
+    fn query_source(&self, server: &str) -> Sample {
+        let at = OffsetDateTime::now_utc();
+        let (result, authenticated) = match nts::parse_source(server) {
+            Some((host, port)) => (self.query_nts(server, &host, port), true),
+            None => (
+                ntp::query(server, self.opts.timeout, self.opts.max_rtt).map_err(|e| e.to_string()),
+                false,
+            ),
+        };
+        match result {
+            Ok(NtpSample {
+                offset,
+                rtt,
+                stratum,
+                leap,
+            }) => Sample {
+                server: server.to_string(),
+                offset,
+                rtt,
+                stratum,
+                authenticated,
+                leap,
+                at,
+                err: None,
+            },
+            Err(e) => Sample {
+                server: server.to_string(),
+                offset: Duration::ZERO,
+                rtt: Duration::ZERO,
+                stratum: 0,
+                authenticated: false,
+                leap: 0,
+                at,
+                err: Some(e),
+            },
+        }
+    }
+
+    fn query_nts(&self, server: &str, host: &str, port: u16) -> Result<NtpSample, String> {
+        let mut sessions = self.nts_sessions.lock().expect("verrou des sessions NTS");
+        if sessions.get(server).is_none_or(|s| s.cookies_left() == 0) {
+            let session = nts::key_exchange(host, port, self.nts_roots.clone(), self.opts.timeout)
+                .map_err(|e| e.to_string())?;
+            sessions.insert(server.to_string(), session);
+        }
+        let session = sessions
+            .get_mut(server)
+            .expect("session tout juste insérée");
+        match nts::query(session, self.opts.timeout, self.opts.max_rtt) {
+            Ok(sample) => Ok(sample),
+            Err(e) => {
+                // Réponse non authentifiée, NAK ou cookies épuisés : la
+                // session ne vaut plus rien, la prochaine mesure renégocie.
+                sessions.remove(server);
+                Err(e.to_string())
+            }
+        }
     }
 }
 
@@ -585,6 +651,7 @@ mod tests {
             offset: Duration::milliseconds(offset_ms),
             rtt: Duration::ZERO,
             stratum: 1,
+            authenticated: false,
             leap: 0,
             at,
             err: None,
@@ -597,10 +664,78 @@ mod tests {
             offset: Duration::ZERO,
             rtt: Duration::ZERO,
             stratum: 0,
+            authenticated: false,
             leap: 0,
             at,
             err: Some(err.to_string()),
         }
+    }
+
+    /// Constat T-2 (tranche T-c) : une source `nts://` est mesurée par une
+    /// session NTS négociée en TLS, la mesure est marquée authentifiée et
+    /// la session réutilisée tant qu'elle a des cookies ; une source NTP
+    /// simple ne l'est pas.
+    #[test]
+    fn an_nts_source_yields_authenticated_measurements_through_one_session() {
+        let server = crate::testing::local_nts_server(crate::testing::Tamper::None);
+        let ca = server.roots.clone();
+        let m = Monitor::new(Options {
+            servers: vec![format!("nts://{}", server.ke_addr)],
+            policy: Policy::Enforce,
+            min_sources: 1,
+            timeout: StdDuration::from_secs(3),
+            ..test_options()
+        })
+        .unwrap();
+        // Les ancres de la CA de test : les racines publiques ne connaissent
+        // pas le serveur local.
+        let m = Arc::new(Monitor {
+            nts_roots: ca,
+            ..Arc::try_unwrap(m).ok().expect("Arc unique")
+        });
+        m.poll_once();
+        let status = m.status();
+        assert!(status.traceable, "{}", status.reason);
+        assert_eq!(status.sources.len(), 1);
+        assert!(status.sources[0].authenticated);
+        assert_eq!(status.sources[0].stratum, 1);
+        m.poll_once();
+        assert!(m.status().traceable);
+        assert_eq!(server.requests.load(std::sync::atomic::Ordering::SeqCst), 2);
+        assert_eq!(m.nts_sessions.lock().unwrap().len(), 1);
+    }
+
+    /// Une source NTS dont les réponses ne vérifient pas ne donne aucune
+    /// mesure : l'heure n'est pas traçable, et la session est abandonnée.
+    #[test]
+    fn a_forging_nts_source_gives_no_measurement() {
+        let server = crate::testing::local_nts_server(crate::testing::Tamper::Authenticator);
+        let ca = server.roots.clone();
+        let m = Monitor::new(Options {
+            servers: vec![format!("nts://{}", server.ke_addr)],
+            policy: Policy::Enforce,
+            min_sources: 1,
+            timeout: StdDuration::from_secs(3),
+            ..test_options()
+        })
+        .unwrap();
+        let m = Arc::new(Monitor {
+            nts_roots: ca,
+            ..Arc::try_unwrap(m).ok().expect("Arc unique")
+        });
+        m.poll_once();
+        let status = m.status();
+        assert!(!status.traceable);
+        assert!(
+            status.sources[0]
+                .err
+                .as_deref()
+                .unwrap_or("")
+                .contains("non authentifiée"),
+            "{:?}",
+            status.sources[0].err
+        );
+        assert!(m.nts_sessions.lock().unwrap().is_empty());
     }
 
     /// Constat T-4 : une source qui lève l'indicateur de saut suffit à ce que

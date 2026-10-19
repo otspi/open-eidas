@@ -948,11 +948,11 @@ pub fn system_matrix() -> Matrix {
         },
         Entry {
             requirement: Requirement { standard: "ETSI EN 319 421", version: "V1.3.1 (2025-07)", clause: "§7.7.2", ids: &["TIS-7.7.2-04", "TIS-7.7.2-05"], title: "Protection de l'horloge contre un changement non détecté" },
-            status: Status::Gap,
-            mechanism: "Plusieurs sources UTC(k) avec quorum et seuil de dérive (oe_timesource::Monitor). Client SNTP durci (constat T-2) : transmit aléatoire dont l'originate de la réponse doit être la copie exacte (réponse non sollicitée refusée), version 3 ou 4, mode serveur, LI ≠ 3, strate 1 à 15, horodatages non nuls, aller-retour borné (OPENEIDAS_TIME_MAX_RTT) ; port source éphémère. Sans authentification des sources : un attaquant en chemin reste possible.",
-            test: "crates/oe-timesource/src/ntp.rs (a_reply_to_another_request_is_refused, an_unsynchronized_source_is_refused, a_malformed_reply_is_refused, a_slow_round_trip_is_refused, queries_a_local_server_and_rejects_a_spoofing_one)",
-            in_service: "",
-            target: "Constat T-2 : NTS (RFC 8915) avec les laboratoires qui le proposent (tranche T-c).",
+            status: Status::Covered,
+            mechanism: "Plusieurs sources UTC(k) avec quorum et seuil de dérive (oe_timesource::Monitor). Client SNTP durci (constat T-2) : transmit aléatoire dont l'originate de la réponse doit être la copie exacte (réponse non sollicitée refusée), version 3 ou 4, mode serveur, LI ≠ 3, strate 1 à 15, horodatages non nuls, aller-retour borné (OPENEIDAS_TIME_MAX_RTT) ; port source éphémère. Sources nts:// authentifiées par NTS (RFC 8915, oe_timesource::nts) : NTS-KE en TLS 1.3 contre les racines publiques (webpki-roots, plus OPENEIDAS_TIME_NTS_CA_FILE), clés par l'exportateur TLS, chaque réponse vérifiée sous AES-SIV-CMAC-256 et par son identifiant unique, session renégociée à la première réponse non authentifiée ; la mesure est marquée authenticated au journal et dans /healthz. Limite : une source NTP simple reste exposée à un attaquant en chemin — la PTB propose NTS (ptbtime1.ptb.de), pas l'Observatoire de Paris ; le choix des sources est une décision de déploiement.",
+            test: "crates/oe-timesource/src/ntp.rs (a_reply_to_another_request_is_refused, an_unsynchronized_source_is_refused, a_malformed_reply_is_refused, a_slow_round_trip_is_refused, queries_a_local_server_and_rejects_a_spoofing_one), crates/oe-timesource/src/nts.rs (the_authenticator_binds_key_packet_and_nonce, key_exchange_then_authenticated_measurements_replenish_cookies, a_reply_with_a_forged_authenticator_is_refused, key_exchange_refuses_an_untrusted_server), crates/oe-timesource/src/lib.rs (an_nts_source_yields_authenticated_measurements_through_one_session, a_forging_nts_source_gives_no_measurement)",
+            in_service: "bin/tsa-server/tests/serve.rs (the_binary_applies_what_the_matrix_declares)",
+            target: "",
         },
         Entry {
             requirement: Requirement { standard: "ETSI EN 319 421", version: "V1.3.1 (2025-07)", clause: "§7.7.2", ids: &["TIS-7.7.2-07", "TIS-7.7.2-08", "TIS-7.7.2-09"], title: "Secondes intercalaires" },
