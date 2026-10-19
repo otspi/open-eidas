@@ -691,7 +691,7 @@ mod tests {
         // pas le serveur local.
         let m = Arc::new(Monitor {
             nts_roots: ca,
-            ..Arc::try_unwrap(m).ok().expect("Arc unique")
+            ..Arc::try_unwrap(m).expect("Arc unique")
         });
         m.poll_once();
         let status = m.status();
@@ -721,7 +721,7 @@ mod tests {
         .unwrap();
         let m = Arc::new(Monitor {
             nts_roots: ca,
-            ..Arc::try_unwrap(m).ok().expect("Arc unique")
+            ..Arc::try_unwrap(m).expect("Arc unique")
         });
         m.poll_once();
         let status = m.status();
