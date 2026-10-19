@@ -1882,6 +1882,7 @@ dependencies = [
 name = "oe-timesource"
 version = "0.1.0"
 dependencies = [
+ "rand 0.8.8",
  "serde_json",
  "thiserror 2.0.20",
  "time",

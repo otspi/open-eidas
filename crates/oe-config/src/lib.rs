@@ -152,6 +152,8 @@ pub struct Config {
     pub time_max_age: Duration,
     pub time_poll: Duration,
     pub time_timeout: Duration,
+    /// Aller-retour maximal d'une mesure NTP (constat T-2).
+    pub time_max_rtt: Duration,
 
     pub enroll_endpoint: String,
     pub enroll_ca_file: String,
@@ -257,6 +259,7 @@ impl Config {
             time_max_age: env_duration("OPENEIDAS_TIME_MAX_AGE", Duration::from_secs(3600))?,
             time_poll: env_duration("OPENEIDAS_TIME_POLL", Duration::from_secs(300))?,
             time_timeout: env_duration("OPENEIDAS_TIME_TIMEOUT", Duration::from_secs(5))?,
+            time_max_rtt: env_duration("OPENEIDAS_TIME_MAX_RTT", Duration::from_secs(1))?,
 
             enroll_endpoint: env_str("OPENEIDAS_ENROLL_ENDPOINT", ""),
             enroll_ca_file: env_str("OPENEIDAS_ENROLL_CA_FILE", ""),

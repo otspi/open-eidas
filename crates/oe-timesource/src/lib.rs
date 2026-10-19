@@ -147,6 +147,9 @@ pub struct Options {
     pub min_sources: usize,
     pub poll_interval: StdDuration,
     pub timeout: StdDuration,
+    /// Aller-retour maximal d'une mesure (constat T-2) : au-delà, l'écart
+    /// mesuré est trop incertain pour compter.
+    pub max_rtt: Duration,
     pub recorder: Option<Arc<dyn Recorder>>,
 }
 
@@ -160,6 +163,7 @@ impl Default for Options {
             min_sources: 1,
             poll_interval: StdDuration::from_secs(5 * 60),
             timeout: StdDuration::from_secs(5),
+            max_rtt: Duration::SECOND,
             recorder: None,
         }
     }
@@ -254,7 +258,7 @@ impl Monitor {
             .opts
             .servers
             .iter()
-            .map(|server| query_one(server, self.opts.timeout))
+            .map(|server| query_one(server, self.opts.timeout, self.opts.max_rtt))
             .collect();
         let mut status = evaluate(&samples, &self.opts, OffsetDateTime::now_utc());
         self.record(&mut status);
@@ -328,13 +332,14 @@ impl Monitor {
     }
 }
 
-fn query_one(server: &str, timeout: StdDuration) -> Sample {
+fn query_one(server: &str, timeout: StdDuration, max_rtt: Duration) -> Sample {
     let at = OffsetDateTime::now_utc();
-    match ntp::query(server, timeout) {
+    match ntp::query(server, timeout, max_rtt) {
         Ok(NtpSample {
             offset,
             rtt,
             stratum,
+            leap: _,
         }) => Sample {
             server: server.to_string(),
             offset,

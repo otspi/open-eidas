@@ -201,6 +201,7 @@ async fn run_serve() {
         min_sources: cfg.time_min_sources.max(1) as usize,
         poll_interval: cfg.time_poll,
         timeout: cfg.time_timeout,
+        max_rtt: to_time_duration(cfg.time_max_rtt, time::Duration::SECOND),
         recorder: Some(ts_recorder),
     })
     .unwrap_or_else(|e| die("surveillance de l'heure", e));
@@ -471,6 +472,7 @@ mod tests {
             min_sources: 1,
             poll_interval: std::time::Duration::from_secs(60),
             timeout: std::time::Duration::from_secs(1),
+            max_rtt: time::Duration::SECOND,
             recorder: None,
         })
         .unwrap();
