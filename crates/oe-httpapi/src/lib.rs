@@ -327,6 +327,9 @@ fn time_source_json(monitor: &oe_timesource::Monitor) -> serde_json::Value {
         "policy": status.policy.to_string(),
         "traceable": status.traceable,
         "reason": status.reason,
+        // Constat T-4 : 0 = aucune, 1 = insertion, 2 = suppression en fin
+        // de jour UTC, telle qu'annoncée par les sources.
+        "leap_second": status.leap,
     })
 }
 

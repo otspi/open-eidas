@@ -147,6 +147,38 @@ impl Fixture {
     }
 }
 
+/// Un serveur SNTP local (RFC 5905, mode serveur, strate 1) qui répond à
+/// chaque requête avec l'heure du système et l'indicateur de saut donné :
+/// rend son adresse. Il reprend l'*originate* comme l'exige le client durci
+/// (constat T-2).
+fn fake_ntp_server(leap: u8) -> String {
+    let socket = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+    let addr = socket.local_addr().unwrap().to_string();
+    std::thread::spawn(move || {
+        let mut buf = [0u8; 48];
+        while let Ok((n, peer)) = socket.recv_from(&mut buf) {
+            if n < 48 {
+                continue;
+            }
+            let mut reply = [0u8; 48];
+            reply[0] = (leap << 6) | 0b00_100_100; // LI, VN=4, mode 4
+            reply[1] = 1;
+            reply[24..32].copy_from_slice(&buf[40..48]);
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap();
+            let seconds = (now.as_secs() + 2_208_988_800) as u32;
+            let frac = ((now.subsec_nanos() as u64) << 32) / 1_000_000_000;
+            for slot in [32usize, 40] {
+                reply[slot..slot + 4].copy_from_slice(&seconds.to_be_bytes());
+                reply[slot + 4..slot + 8].copy_from_slice(&(frac as u32).to_be_bytes());
+            }
+            let _ = socket.send_to(&reply, peer);
+        }
+    });
+    addr
+}
+
 #[tokio::test]
 async fn the_binary_applies_what_the_matrix_declares() {
     if !have_tools() {
@@ -342,6 +374,57 @@ async fn the_binary_applies_what_the_matrix_declares() {
         let text = fx.timestamp(&base, "-sha256", "enforce").await;
         assert!(text.contains("Status: Rejected"), "{text}");
         assert!(text.contains("time source is not available"), "{text}");
+    }
+
+    // EN 319 421 TIS-7.7.2-07 à -09 (constat T-4) : une source qui annonce
+    // une seconde intercalaire est entendue — /healthz le dit, le journal
+    // la consigne — et, hors de la minute de l'ajustement, l'heure reste
+    // traçable (politique enforce, source locale de strate 1).
+    {
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let child = fx
+            .command("tsu.pem", "enforce", port, "audit-leap.log")
+            .env("OPENEIDAS_TIME_SOURCES", fake_ntp_server(1))
+            .env("OPENEIDAS_TIME_MIN_SOURCES", "1")
+            .spawn()
+            .unwrap();
+        let _server = Server(child);
+        let base = format!("http://127.0.0.1:{port}");
+        let mut health = serde_json::Value::Null;
+        for _ in 0..100 {
+            if let Ok(resp) = reqwest::get(format!("{base}/healthz")).await {
+                health = resp.json().await.unwrap_or_default();
+                if health["time_source"]["leap_second"] == 1 {
+                    break;
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        assert_eq!(health["time_source"]["leap_second"], 1, "{health}");
+        assert_eq!(health["time_source"]["traceable"], true, "{health}");
+        let leaps: Vec<_> = oe_audit::read(fx.dir.join("audit-leap.log"))
+            .unwrap()
+            .into_iter()
+            .filter(|r| r.event == "time.leap_second")
+            .collect();
+        assert_eq!(leaps.len(), 1, "{leaps:?}");
+        let data = leaps[0].data.as_ref().unwrap();
+        assert_eq!(data["phase"], "annoncee");
+        assert_eq!(data["leap"], "insertion");
+        // La dernière minute du jour UTC est la seule où l'émission est
+        // suspendue : en dehors, le jeton sort.
+        let last_minute =
+            time::OffsetDateTime::now_utc().time() >= time::Time::from_hms(23, 59, 0).unwrap();
+        let text = fx.timestamp(&base, "-sha256", "leap").await;
+        if last_minute {
+            assert!(text.contains("Status: Rejected"), "{text}");
+        } else {
+            assert!(text.contains("Status: Granted"), "{text}");
+        }
     }
 
     // Politique monitor : le jeton est émis, et openssl le vérifie (EN 319 422

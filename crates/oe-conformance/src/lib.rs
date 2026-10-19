@@ -956,11 +956,11 @@ pub fn system_matrix() -> Matrix {
         },
         Entry {
             requirement: Requirement { standard: "ETSI EN 319 421", version: "V1.3.1 (2025-07)", clause: "§7.7.2", ids: &["TIS-7.7.2-07", "TIS-7.7.2-08", "TIS-7.7.2-09"], title: "Secondes intercalaires" },
-            status: Status::Gap,
-            mechanism: "Aucune : la seconde intercalaire n'est ni détectée ni consignée.",
-            test: "",
-            in_service: "",
-            target: "Constat T-4 : détecter l'annonce (LI), consigner l'instant du changement au journal.",
+            status: Status::Covered,
+            mechanism: "L'indicateur de saut des réponses NTP est lu (oe_timesource::Sample::leap) : une source jointe qui l'annonce suffit (Status::leap, rendu par /healthz time_source.leap_second). L'annonce, puis l'application (indicateur retombé, écart mesuré juste après) sont consignées au journal (time.leap_second, phases annoncee/appliquee). En politique enforce, l'émission est suspendue (timeNotAvailable) pendant la dernière minute du jour UTC annoncé et jusqu'à une mesure postérieure au changement de jour, que le sondeur déclenche sans attendre l'intervalle (constat T-4, levé). Limite : la politique de l'horloge système (saut, jamais de lissage) est une exigence d'exploitation, décrite dans la CPS, que le code ne vérifie pas.",
+            test: "crates/oe-timesource/src/lib.rs (evaluate_retains_a_leap_second_announced_by_any_reachable_source, a_leap_second_blocks_the_last_minute_and_until_a_measurement_after_the_day_change, now_refuses_during_an_announced_leap_second_window, leap_second_announcement_and_application_are_journaled_once_each)",
+            in_service: "bin/tsa-server/tests/serve.rs (the_binary_applies_what_the_matrix_declares)",
+            target: "",
         },
         Entry {
             requirement: Requirement { standard: "ETSI EN 319 421", version: "V1.3.1 (2025-07)", clause: "§7.6.2", ids: &["TIS-7.6.2-03"], title: "Génération de la clé TSU dans le module cryptographique" },

@@ -77,6 +77,12 @@ pub trait Recorder: Send + Sync {
 }
 
 pub const EVENT_TIME_MEASUREMENT: &str = "time.measurement";
+/// Une seconde intercalaire annoncée par les sources, puis appliquée
+/// (constat T-4 de l'audit du 2026-09-25 ; EN 319 421 `TIS-7.7.2-07` à
+/// `-09`) : `phase` vaut `annoncee` (une source lève l'indicateur de saut)
+/// ou `appliquee` (l'indicateur est retombé : l'ajustement a eu lieu en fin
+/// de jour UTC, et l'écart mesuré juste après est consigné).
+pub const EVENT_TIME_LEAP_SECOND: &str = "time.leap_second";
 
 /// Signale que l'heure locale n'est plus rattachable à UTC dans les limites
 /// annoncées.
@@ -91,6 +97,9 @@ pub struct Sample {
     pub offset: Duration,
     pub rtt: Duration,
     pub stratum: u8,
+    /// Indicateur de saut de la source (RFC 5905 §7.3) : 1 = une seconde
+    /// sera insérée en fin de jour UTC, 2 = retirée, 0 sinon.
+    pub leap: u8,
     pub at: OffsetDateTime,
     pub err: Option<String>,
 }
@@ -106,6 +115,7 @@ impl Sample {
             "offset": format_duration(self.offset),
             "rtt": format_duration(self.rtt),
             "stratum": self.stratum,
+            "leap": self.leap,
             "at": self.at.format(&time::format_description::well_known::Rfc3339).unwrap_or_default(),
             "error": self.err,
         })
@@ -122,6 +132,9 @@ pub struct Status {
     pub spread: Duration,
     pub last_sync: Option<OffsetDateTime>,
     pub sources: Vec<Sample>,
+    /// Seconde intercalaire annoncée par au moins une source jointe
+    /// (1 = insertion, 2 = suppression), 0 sinon.
+    pub leap: u8,
 }
 
 impl Default for Status {
@@ -134,6 +147,17 @@ impl Default for Status {
             spread: Duration::ZERO,
             last_sync: None,
             sources: Vec::new(),
+            leap: 0,
+        }
+    }
+}
+
+impl Status {
+    fn leap_name(leap: u8) -> &'static str {
+        match leap {
+            1 => "insertion",
+            2 => "suppression",
+            _ => "aucune",
         }
     }
 }
@@ -237,7 +261,30 @@ impl Monitor {
         if !status.traceable && self.opts.policy == Policy::Enforce {
             return Err(TimeNotTraceable(status.reason));
         }
-        Ok(OffsetDateTime::now_utc())
+        let now = OffsetDateTime::now_utc();
+        // Constat T-4 (EN 319 421 TIS-7.7.2-08) : l'ajustement a lieu dans la
+        // dernière minute du jour UTC annoncé ; tant qu'une mesure prise
+        // après ne l'a pas confirmé, l'heure locale n'est pas garantie.
+        if self.opts.policy == Policy::Enforce
+            && leap_second_blocks(status.leap, status.last_sync, now)
+        {
+            return Err(TimeNotTraceable(format!(
+                "seconde intercalaire annoncée ({}) : émission suspendue de la dernière minute du jour UTC jusqu'à une mesure postérieure à l'ajustement",
+                Status::leap_name(status.leap)
+            )));
+        }
+        Ok(now)
+    }
+
+    /// Une seconde intercalaire est annoncée et la journée de la dernière
+    /// mesure est passée : l'ajustement a dû avoir lieu, il faut remesurer
+    /// sans attendre l'intervalle de sondage.
+    fn leap_poll_due(&self) -> bool {
+        let status = self.status();
+        status.leap != 0
+            && status
+                .last_sync
+                .is_some_and(|t| t.date() < OffsetDateTime::now_utc().date())
     }
 
     pub fn status(&self) -> Status {
@@ -261,8 +308,41 @@ impl Monitor {
             .map(|server| query_one(server, self.opts.timeout, self.opts.max_rtt))
             .collect();
         let mut status = evaluate(&samples, &self.opts, OffsetDateTime::now_utc());
+        let previous_leap = self.status().leap;
         self.record(&mut status);
+        self.record_leap(previous_leap, &mut status);
         *self.status.write().expect("verrou de statut empoisonné") = status;
+    }
+
+    /// Consigne l'annonce d'une seconde intercalaire, puis son application
+    /// (constat T-4, `TIS-7.7.2-09` : l'instant de l'ajustement et l'écart
+    /// mesuré juste après). Même règle qu'une mesure : si le journal ne peut
+    /// pas l'écrire, cette mesure n'est pas traçable.
+    fn record_leap(&self, previous_leap: u8, status: &mut Status) {
+        let Some(recorder) = &self.opts.recorder else {
+            return;
+        };
+        if previous_leap == status.leap {
+            return;
+        }
+        let (phase, leap) = if status.leap != 0 {
+            ("annoncee", status.leap)
+        } else {
+            ("appliquee", previous_leap)
+        };
+        let payload = serde_json::json!({
+            "phase": phase,
+            "leap": Status::leap_name(leap),
+            "at": status.last_sync.and_then(|t| t.format(&time::format_description::well_known::Rfc3339).ok()),
+            "offset": format_duration(status.offset),
+            "traceable": status.traceable,
+            "sources": status.sources.iter().filter(|s| s.ok()).map(|s| (s.server.clone(), s.leap)).collect::<HashMap<_, _>>(),
+        });
+        if let Err(e) = recorder.append(EVENT_TIME_LEAP_SECOND, payload) {
+            status.traceable = false;
+            status.reason =
+                format!("journal indisponible, seconde intercalaire non consignée : {e}");
+        }
     }
 
     /// Journalise la mesure — bloquant, comme `oe_ca_core::Recorder`/
@@ -322,7 +402,7 @@ impl Monitor {
                 if stop_flag.load(Ordering::Relaxed) {
                     break;
                 }
-                if last_poll.elapsed() >= interval {
+                if last_poll.elapsed() >= interval || monitor.leap_poll_due() {
                     monitor.poll_once();
                     last_poll = std::time::Instant::now();
                 }
@@ -339,12 +419,13 @@ fn query_one(server: &str, timeout: StdDuration, max_rtt: Duration) -> Sample {
             offset,
             rtt,
             stratum,
-            leap: _,
+            leap,
         }) => Sample {
             server: server.to_string(),
             offset,
             rtt,
             stratum,
+            leap,
             at,
             err: None,
         },
@@ -353,6 +434,7 @@ fn query_one(server: &str, timeout: StdDuration, max_rtt: Duration) -> Sample {
             offset: Duration::ZERO,
             rtt: Duration::ZERO,
             stratum: 0,
+            leap: 0,
             at,
             err: Some(e.to_string()),
         },
@@ -381,6 +463,15 @@ pub fn evaluate(samples: &[Sample], opts: &Options, now: OffsetDateTime) -> Stat
         status.offset = max_abs(&offsets);
         status.spread = spread(&offsets);
     }
+    // Constat T-4 : une seule source qui annonce une seconde intercalaire
+    // suffit à la retenir — l'annonce est rare, la manquer coûte plus que
+    // d'y prêter foi à tort.
+    status.leap = samples
+        .iter()
+        .filter(|s| s.ok() && (s.leap == 1 || s.leap == 2))
+        .map(|s| s.leap)
+        .max()
+        .unwrap_or(0);
 
     status.reason = if offsets.len() < opts.min_sources {
         format!(
@@ -417,6 +508,24 @@ pub fn evaluate(samples: &[Sample], opts: &Options, now: OffsetDateTime) -> Stat
     };
 
     status
+}
+
+/// Constat T-4 (EN 319 421 `TIS-7.7.2-08`) : avec une seconde intercalaire
+/// annoncée, l'heure n'est pas garantie pendant la dernière minute du jour
+/// UTC (l'ajustement s'y produit), ni ensuite tant que la dernière mesure
+/// date d'avant le changement de jour — elle ne dit rien de l'horloge
+/// locale après le saut.
+pub fn leap_second_blocks(
+    leap: u8,
+    last_sync: Option<OffsetDateTime>,
+    now: OffsetDateTime,
+) -> bool {
+    if leap != 1 && leap != 2 {
+        return false;
+    }
+    let last_minute = now.time() >= time::Time::from_hms(23, 59, 0).expect("heure constante");
+    let measured_before_the_day_change = last_sync.is_none_or(|t| t.date() < now.date());
+    last_minute || measured_before_the_day_change
 }
 
 fn max_abs(durations: &[Duration]) -> Duration {
@@ -476,6 +585,7 @@ mod tests {
             offset: Duration::milliseconds(offset_ms),
             rtt: Duration::ZERO,
             stratum: 1,
+            leap: 0,
             at,
             err: None,
         }
@@ -487,9 +597,139 @@ mod tests {
             offset: Duration::ZERO,
             rtt: Duration::ZERO,
             stratum: 0,
+            leap: 0,
             at,
             err: Some(err.to_string()),
         }
+    }
+
+    /// Constat T-4 : une source qui lève l'indicateur de saut suffit à ce que
+    /// l'état l'annonce ; une source en échec ne compte pas.
+    #[test]
+    fn evaluate_retains_a_leap_second_announced_by_any_reachable_source() {
+        let now = time::macros::datetime!(2026-12-31 12:00:00 UTC);
+        let fresh = now - Duration::MINUTE;
+        let mut announcing = sample("a", 1, fresh);
+        announcing.leap = 1;
+        let status = evaluate(
+            &[announcing.clone(), sample("b", 2, fresh)],
+            &test_options(),
+            now,
+        );
+        assert!(status.traceable);
+        assert_eq!(status.leap, 1);
+
+        let mut failed = failed_sample("a", fresh, "timeout");
+        failed.leap = 1;
+        let status = evaluate(
+            &[failed, sample("b", 2, fresh), sample("c", 3, fresh)],
+            &test_options(),
+            now,
+        );
+        assert_eq!(status.leap, 0);
+    }
+
+    /// Constat T-4 (TIS-7.7.2-08) : l'émission est suspendue dans la dernière
+    /// minute du jour UTC annoncé, et jusqu'à une mesure postérieure au
+    /// changement de jour ; sans annonce, jamais.
+    #[test]
+    fn a_leap_second_blocks_the_last_minute_and_until_a_measurement_after_the_day_change() {
+        let noon = time::macros::datetime!(2026-12-31 12:00:00 UTC);
+        let late = time::macros::datetime!(2026-12-31 23:59:30 UTC);
+        let after = time::macros::datetime!(2027-01-01 00:00:10 UTC);
+        let measured_after = time::macros::datetime!(2027-01-01 00:00:05 UTC);
+        assert!(!leap_second_blocks(0, Some(noon), late));
+        assert!(!leap_second_blocks(1, Some(noon), noon));
+        assert!(leap_second_blocks(1, Some(noon), late));
+        assert!(leap_second_blocks(2, Some(late), after));
+        assert!(!leap_second_blocks(1, Some(measured_after), after));
+        assert!(leap_second_blocks(1, None, noon));
+    }
+
+    #[test]
+    fn now_refuses_during_an_announced_leap_second_window() {
+        let m = Monitor::new(Options {
+            servers: vec!["a".into()],
+            policy: Policy::Enforce,
+            min_sources: 1,
+            ..Options::default()
+        })
+        .unwrap();
+        // Traçable, seconde intercalaire annoncée, mesurée hier : l'ajustement
+        // a dû avoir lieu, rien ne le confirme encore.
+        *m.status.write().unwrap() = Status {
+            policy: Policy::Enforce,
+            traceable: true,
+            last_sync: Some(OffsetDateTime::now_utc() - Duration::days(1)),
+            leap: 1,
+            ..Status::default()
+        };
+        let err = m.now().unwrap_err();
+        assert!(err.to_string().contains("seconde intercalaire"), "{err}");
+        assert!(m.leap_poll_due());
+
+        // Même état, mesure fraîche : rien ne bloque hors de la dernière minute.
+        *m.status.write().unwrap() = Status {
+            policy: Policy::Enforce,
+            traceable: true,
+            last_sync: Some(OffsetDateTime::now_utc()),
+            leap: 1,
+            ..Status::default()
+        };
+        let in_last_minute =
+            OffsetDateTime::now_utc().time() >= time::Time::from_hms(23, 59, 0).unwrap();
+        assert_eq!(m.now().is_err(), in_last_minute);
+        assert!(!m.leap_poll_due());
+    }
+
+    /// Constat T-4 (TIS-7.7.2-09) : l'annonce, puis l'application, sont
+    /// consignées une fois chacune, avec l'écart mesuré juste après.
+    #[test]
+    fn leap_second_announcement_and_application_are_journaled_once_each() {
+        struct Capture(std::sync::Mutex<Vec<(String, serde_json::Value)>>);
+        impl Recorder for Capture {
+            fn append(&self, event: &str, data: serde_json::Value) -> Result<(), String> {
+                self.0.lock().unwrap().push((event.to_string(), data));
+                Ok(())
+            }
+        }
+        let capture = Arc::new(Capture(std::sync::Mutex::new(Vec::new())));
+        let m = Monitor::new(Options {
+            servers: vec!["a".into()],
+            min_sources: 1,
+            recorder: Some(capture.clone()),
+            ..test_options()
+        })
+        .unwrap();
+        let now = time::macros::datetime!(2026-12-31 12:00:00 UTC);
+        let mut announced = Status {
+            leap: 1,
+            last_sync: Some(now),
+            traceable: true,
+            ..Status::default()
+        };
+        m.record_leap(0, &mut announced);
+        m.record_leap(1, &mut announced.clone()); // inchangé : rien
+        let mut applied = Status {
+            leap: 0,
+            last_sync: Some(now + Duration::hours(12) + Duration::seconds(30)),
+            offset: Duration::milliseconds(-3),
+            traceable: true,
+            ..Status::default()
+        };
+        m.record_leap(1, &mut applied);
+        let events = capture.0.lock().unwrap();
+        assert_eq!(events.len(), 2, "{events:?}");
+        assert_eq!(events[0].0, EVENT_TIME_LEAP_SECOND);
+        assert_eq!(events[0].1["phase"], "annoncee");
+        assert_eq!(events[0].1["leap"], "insertion");
+        assert_eq!(events[1].1["phase"], "appliquee");
+        assert_eq!(events[1].1["leap"], "insertion");
+        assert_eq!(events[1].1["offset"], "-3.000ms");
+        assert!(events[1].1["at"]
+            .as_str()
+            .unwrap()
+            .starts_with("2027-01-01T00:00:30"));
     }
 
     #[test]

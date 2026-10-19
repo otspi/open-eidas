@@ -287,6 +287,7 @@ couvertes par une CP/CPS générique de CA.
 | Quorum minimal | 2 sources concordantes |
 | Seuil de dérive tolérée | 500 ms |
 | Comportement en cas de perte de traçabilité | Refus de signer (`failureInfo: timeNotAvailable`), politique `enforce` |
+| Secondes intercalaires (`TIS-7.7.2-07` à `-09`) | L'annonce des sources (indicateur de saut NTP) est consignée au journal (`time.leap_second`, phase `annoncee`), puis l'application avec l'écart mesuré juste après (phase `appliquee`). Émission suspendue pendant la dernière minute du jour UTC annoncé et jusqu'à une mesure postérieure à l'ajustement. **Exigence d'exploitation** : l'horloge système de l'hôte applique la seconde intercalaire par un saut, jamais par lissage (*smearing*) — `[À COMPLÉTER — configuration de chrony/ntpd imposée par l'hébergeur, ex. `leapsecmode system`, et procédure de vérification]` |
 | Cible de qualification | `[À COMPLÉTER — réception de temps redondante et indépendante du réseau (ex. réception GNSS avec source de secours), calibration documentée par un laboratoire accrédité]` |
 
 ### B.3 Journal d'audit et conservation

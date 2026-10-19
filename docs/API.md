@@ -130,6 +130,7 @@ perdue sous politique `enforce`.
   "time_source": {
     "policy": "enforce",
     "traceable": true,
+    "leap_second": 0,
     "offset": "7.633304ms",
     "spread": "8.3047ms",
     "last_sync": "2026-09-06T13:30:20Z",
