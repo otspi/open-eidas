@@ -202,9 +202,9 @@ pub fn key_exchange(
             }
             REC_WARNING => {}
             REC_NEXT_PROTOCOL => {
-                next_protocol_ok = body
-                    .chunks_exact(2)
-                    .any(|c| u16::from_be_bytes([c[0], c[1]]) == NEXT_PROTOCOL_NTPV4);
+                next_protocol_ok = (0..body.len() / 2).any(|i| {
+                    u16::from_be_bytes([body[2 * i], body[2 * i + 1]]) == NEXT_PROTOCOL_NTPV4
+                });
             }
             REC_AEAD_ALGORITHM => {
                 aead_ok = body.len() == 2
