@@ -304,8 +304,8 @@ fn basic_response(resp_der: &[u8]) -> oe_ocsp_core::asn1::BasicOcspResponse {
 }
 
 /// Une vraie requête OCSP produite par `openssl ocsp` pour les numéros
-/// donnés, avec ou sans nonce.
-fn openssl_request(serials: &[&str], nonce: bool) -> (Vec<u8>, std::path::PathBuf) {
+/// donnés ; `flag` vaut `-nonce` ou `-no_nonce`.
+fn openssl_request(serials: &[&str], flag: &str) -> (Vec<u8>, std::path::PathBuf) {
     let dir = fixtures_dir();
     let path = std::env::temp_dir().join(format!("oe-ocsp-req-{}.der", uuid_like()));
     let mut cmd = Command::new("openssl");
@@ -317,7 +317,7 @@ fn openssl_request(serials: &[&str], nonce: bool) -> (Vec<u8>, std::path::PathBu
     for serial in serials {
         cmd.args(["-serial", serial]);
     }
-    cmd.arg(if nonce { "-nonce" } else { "-no_nonce" });
+    cmd.arg(flag);
     cmd.args(["-reqout", path.to_str().unwrap()]);
     let out = cmd.output().unwrap();
     assert!(
@@ -397,7 +397,7 @@ async fn a_replayed_older_crl_is_refused_and_the_current_snapshot_kept() {
 #[tokio::test]
 async fn the_request_nonce_is_echoed_in_the_response() {
     let responder = build_responder().await;
-    let (req_der, req_path) = openssl_request(&["0x1001"], true);
+    let (req_der, req_path) = openssl_request(&["0x1001"], "-nonce");
     let resp_der = responder.handle(&req_der).await;
 
     let basic = basic_response(&resp_der);
@@ -446,7 +446,7 @@ async fn the_request_nonce_is_echoed_in_the_response() {
     );
 
     // Sans nonce dans la requête, aucune extension n'est inventée.
-    let (plain, plain_path) = openssl_request(&["0x1001"], false);
+    let (plain, plain_path) = openssl_request(&["0x1001"], "-no_nonce");
     let _ = std::fs::remove_file(&plain_path);
     let basic = basic_response(&responder.handle(&plain).await);
     assert!(basic.tbs_response_data.response_extensions.is_none());
@@ -457,7 +457,7 @@ async fn the_request_nonce_is_echoed_in_the_response() {
 async fn an_oversized_nonce_is_a_malformed_request() {
     use der::Encode;
     let responder = build_responder().await;
-    let (req_der, req_path) = openssl_request(&["0x1001"], true);
+    let (req_der, req_path) = openssl_request(&["0x1001"], "-nonce");
     let _ = std::fs::remove_file(&req_path);
     let mut req = oe_ocsp_core::asn1::OcspRequest::from_der(&req_der).unwrap();
     let nonce_oid = der::asn1::ObjectIdentifier::new(oe_ocsp_core::OID_PKIX_OCSP_NONCE).unwrap();
@@ -483,7 +483,7 @@ async fn an_oversized_nonce_is_a_malformed_request() {
 #[tokio::test]
 async fn every_request_of_the_list_gets_its_own_single_response() {
     let responder = build_responder().await;
-    let (req_der, req_path) = openssl_request(&["0x1000", "0x1001"], false);
+    let (req_der, req_path) = openssl_request(&["0x1000", "0x1001"], "-no_nonce");
     let _ = std::fs::remove_file(&req_path);
     let resp_der = responder.handle(&req_der).await;
 
@@ -502,7 +502,7 @@ async fn an_oversized_request_list_is_a_malformed_request() {
         .map(|i| format!("0x{:x}", 0x2000 + i))
         .collect();
     let refs: Vec<&str> = serials.iter().map(String::as_str).collect();
-    let (req_der, req_path) = openssl_request(&refs, false);
+    let (req_der, req_path) = openssl_request(&refs, "-no_nonce");
     let _ = std::fs::remove_file(&req_path);
     let resp_der = responder.handle(&req_der).await;
     assert_eq!(
