@@ -553,44 +553,6 @@ fn der_integer_magnitude(raw: &[u8]) -> Option<Vec<u8>> {
     Some(content[first..].to_vec())
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn reads_the_magnitude_of_canonical_and_padded_der_integers() {
-        assert_eq!(der_integer_magnitude(&[0x02, 0x01, 0x02]), Some(vec![0x02]));
-        assert_eq!(
-            der_integer_magnitude(&[0x02, 0x08, 0, 0, 0, 0, 0, 0, 0x10, 0x00]),
-            Some(vec![0x10, 0x00])
-        );
-        assert_eq!(
-            der_integer_magnitude(&[0x02, 0x02, 0x00, 0xFF]),
-            Some(vec![0xFF])
-        );
-        assert_eq!(der_integer_magnitude(&[0x02, 0x01, 0x00]), Some(vec![]));
-        // Négatif, mauvais tag, longueur incohérente : refusés.
-        assert_eq!(der_integer_magnitude(&[0x02, 0x01, 0x80]), None);
-        assert_eq!(der_integer_magnitude(&[0x04, 0x01, 0x02]), None);
-        assert_eq!(der_integer_magnitude(&[0x02, 0x03, 0x02]), None);
-        assert_eq!(der_integer_magnitude(&[0x02, 0x01, 0x02, 0x00]), None);
-    }
-
-    #[test]
-    fn compares_magnitudes_without_leading_zeros() {
-        use std::cmp::Ordering;
-        assert_eq!(uint_cmp(&[0x0F, 0xFF], &[0x10, 0x00]), Ordering::Less);
-        assert_eq!(
-            uint_cmp(&[0x00, 0x10, 0x00], &[0x10, 0x00]),
-            Ordering::Equal
-        );
-        assert_eq!(
-            uint_cmp(&[0x01, 0x00, 0x00], &[0xFF, 0xFF]),
-            Ordering::Greater
-        );
-    }
-}
-
 /// Compare deux entiers non signés en octets de poids fort en tête.
 fn uint_cmp(a: &[u8], b: &[u8]) -> std::cmp::Ordering {
     let strip = |x: &[u8]| {
@@ -679,4 +641,42 @@ fn sha1_of(data: &[u8]) -> Vec<u8> {
 
 fn sha256_of(data: &[u8]) -> Vec<u8> {
     Sha256::digest(data).to_vec()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reads_the_magnitude_of_canonical_and_padded_der_integers() {
+        assert_eq!(der_integer_magnitude(&[0x02, 0x01, 0x02]), Some(vec![0x02]));
+        assert_eq!(
+            der_integer_magnitude(&[0x02, 0x08, 0, 0, 0, 0, 0, 0, 0x10, 0x00]),
+            Some(vec![0x10, 0x00])
+        );
+        assert_eq!(
+            der_integer_magnitude(&[0x02, 0x02, 0x00, 0xFF]),
+            Some(vec![0xFF])
+        );
+        assert_eq!(der_integer_magnitude(&[0x02, 0x01, 0x00]), Some(vec![]));
+        // Négatif, mauvais tag, longueur incohérente : refusés.
+        assert_eq!(der_integer_magnitude(&[0x02, 0x01, 0x80]), None);
+        assert_eq!(der_integer_magnitude(&[0x04, 0x01, 0x02]), None);
+        assert_eq!(der_integer_magnitude(&[0x02, 0x03, 0x02]), None);
+        assert_eq!(der_integer_magnitude(&[0x02, 0x01, 0x02, 0x00]), None);
+    }
+
+    #[test]
+    fn compares_magnitudes_without_leading_zeros() {
+        use std::cmp::Ordering;
+        assert_eq!(uint_cmp(&[0x0F, 0xFF], &[0x10, 0x00]), Ordering::Less);
+        assert_eq!(
+            uint_cmp(&[0x00, 0x10, 0x00], &[0x10, 0x00]),
+            Ordering::Equal
+        );
+        assert_eq!(
+            uint_cmp(&[0x01, 0x00, 0x00], &[0xFF, 0xFF]),
+            Ordering::Greater
+        );
+    }
 }
