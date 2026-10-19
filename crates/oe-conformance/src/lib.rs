@@ -887,6 +887,14 @@ pub fn system_matrix() -> Matrix {
             target: "",
         },
         Entry {
+            requirement: Requirement { standard: "ETSI EN 319 411-1", version: "V1.5.1 (2025-04)", clause: "§6.3.10, §6.6.3", ids: &["CSS-6.3.10-03", "OVR-6.6.3-01"], title: "Fraîcheur et authenticité de l'information de révocation servie par OCSP" },
+            status: Status::Covered,
+            mechanism: "Le répondeur ne sert qu'une CRL dont la signature est vérifiée avec la clé de la CA émettrice et dont le cRLNumber n'est pas inférieur au dernier accepté (une CRL plus ancienne rejouée est refusée, l'instantané courant conservé) ; passé le nextUpdate de la CRL en cache, il répond tryLater plutôt que de signer un statut échu. Réponses RFC 6960 : nonce RFC 8954 repris tel quel (1 à 32 octets, sinon malformedRequest), une SingleResponse par requête de la liste (au plus oe_ocsp_core::MAX_REQUESTS) — constat O-2, levé.",
+            test: "crates/oe-ocsp-core/tests/against_real_crl.rs (a_crl_past_its_next_update_yields_try_later, a_replayed_older_crl_is_refused_and_the_current_snapshot_kept, the_request_nonce_is_echoed_in_the_response, an_oversized_nonce_is_a_malformed_request, every_request_of_the_list_gets_its_own_single_response, an_oversized_request_list_is_a_malformed_request)",
+            in_service: ".github/workflows/ci.yml (Interroge le répondeur OCSP pour le certificat TSU)",
+            target: "",
+        },
+        Entry {
             requirement: Requirement { standard: "ETSI EN 319 411-1", version: "V1.5.1 (2025-04)", clause: "§6.5.1", ids: &["GEN-6.5.1-04", "GEN-6.5.1-11", "GEN-6.5.1-13"], title: "Cérémonie de génération des clés d'autorité" },
             status: Status::Gap,
             mechanism: "Cérémonie scriptée et idempotente (`ca-server ceremony`), produisant un procès-verbal consigné au journal d'audit (empreintes de clés, opérateur, date) : oe_ca_core::ceremony.",

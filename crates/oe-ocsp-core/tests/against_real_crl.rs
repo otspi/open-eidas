@@ -98,6 +98,7 @@ async fn build_responder() -> oe_ocsp_core::Responder {
         crl_refresh: Duration::from_secs(300),
         max_request_bytes: 16 * 1024,
         http_client: None,
+        clock: None,
     })
     .expect("construction du répondeur");
     responder
@@ -195,6 +196,7 @@ async fn on_demand_refresh_is_rate_limited() {
         crl_refresh: Duration::from_secs(300),
         max_request_bytes: 16 * 1024,
         http_client: None,
+        clock: None,
     })
     .expect("construction du répondeur");
     responder.refresh().await.expect("chargement initial");
@@ -238,6 +240,7 @@ async fn an_unknown_status_triggers_an_on_demand_refresh_that_finds_a_freshly_is
         crl_refresh: Duration::from_secs(300),
         max_request_bytes: 16 * 1024,
         http_client: None,
+        clock: None,
     })
     .expect("construction du répondeur");
     // Chargement initial : la CRL périmée, sans 0x1001.
@@ -249,4 +252,261 @@ async fn an_unknown_status_triggers_an_on_demand_refresh_that_finds_a_freshly_is
     let req_der = std::fs::read(dir.join("request-good.der")).unwrap();
     let resp_der = responder.handle(&req_der).await;
     verify_with_openssl(&resp_der, "good");
+}
+
+/// Construit un répondeur sur une CRL interchangeable, avec une horloge
+/// réglable (constat O-2).
+async fn build_responder_on(
+    initial: Vec<u8>,
+    clock: Option<std::sync::Arc<dyn Fn() -> time::OffsetDateTime + Send + Sync>>,
+) -> (
+    oe_ocsp_core::Responder,
+    std::sync::Arc<std::sync::Mutex<Vec<u8>>>,
+) {
+    let dir = fixtures_dir();
+    let (crl_url, served) = start_swappable_crl_server(initial).await;
+    let issuer = load_cert(&dir.join("issuer-cert.pem"));
+    let certificate = load_cert(&dir.join("responder-cert.pem"));
+    let key_pem = std::fs::read_to_string(dir.join("responder-key.pem")).unwrap();
+    let signer = SoftwareToken::from_pkcs8_pem(&key_pem).unwrap();
+    let responder = oe_ocsp_core::Responder::new(oe_ocsp_core::Options {
+        signer: Arc::new(signer),
+        certificate,
+        issuer,
+        crl_url,
+        crl_refresh: Duration::from_secs(300),
+        max_request_bytes: 16 * 1024,
+        http_client: None,
+        clock,
+    })
+    .expect("construction du répondeur");
+    (responder, served)
+}
+
+/// Le statut protocolaire d'une réponse (RFC 6960 §4.2.1), sans la vérifier.
+fn response_status(resp_der: &[u8]) -> oe_ocsp_core::asn1::OcspResponseStatus {
+    oe_ocsp_core::asn1::OcspResponse::from_der(resp_der)
+        .unwrap()
+        .response_status
+}
+
+/// La `BasicOCSPResponse` d'une réponse réussie.
+fn basic_response(resp_der: &[u8]) -> oe_ocsp_core::asn1::BasicOcspResponse {
+    let resp = oe_ocsp_core::asn1::OcspResponse::from_der(resp_der).unwrap();
+    assert_eq!(
+        resp.response_status,
+        oe_ocsp_core::asn1::OcspResponseStatus::Successful
+    );
+    oe_ocsp_core::asn1::BasicOcspResponse::from_der(
+        resp.response_bytes.unwrap().response.as_bytes(),
+    )
+    .unwrap()
+}
+
+/// Une vraie requête OCSP produite par `openssl ocsp` pour les numéros
+/// donnés, avec ou sans nonce.
+fn openssl_request(serials: &[&str], nonce: bool) -> (Vec<u8>, std::path::PathBuf) {
+    let dir = fixtures_dir();
+    let path = std::env::temp_dir().join(format!("oe-ocsp-req-{}.der", uuid_like()));
+    let mut cmd = Command::new("openssl");
+    cmd.args([
+        "ocsp",
+        "-issuer",
+        dir.join("issuer-cert.pem").to_str().unwrap(),
+    ]);
+    for serial in serials {
+        cmd.args(["-serial", serial]);
+    }
+    cmd.arg(if nonce { "-nonce" } else { "-no_nonce" });
+    cmd.args(["-reqout", path.to_str().unwrap()]);
+    let out = cmd.output().unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    (std::fs::read(&path).unwrap(), path)
+}
+
+/// Constat O-2 : la péremption se juge sur le `nextUpdate` de la CRL, pas
+/// sur l'heure de son téléchargement. Une CRL que la CA n'a pas republiée se
+/// retélécharge très bien : passé son `nextUpdate`, le répondeur répond
+/// `tryLater` plutôt que de signer un statut dont la validité est échue.
+#[tokio::test]
+async fn a_crl_past_its_next_update_yields_try_later() {
+    let dir = fixtures_dir();
+    let crl = std::fs::read(dir.join("issuer.crl.der")).unwrap();
+    // La fixture expire en 2036 : une horloge en 2037 la voit périmée.
+    let later = time::OffsetDateTime::from_unix_timestamp(2_114_380_800).unwrap(); // 2037-01-01
+    let (responder, _) = build_responder_on(crl, Some(Arc::new(move || later))).await;
+    responder
+        .refresh()
+        .await
+        .expect("une CRL périmée se charge, elle n'est juste pas servie");
+
+    let req_der = std::fs::read(dir.join("request-good.der")).unwrap();
+    let resp_der = responder.handle(&req_der).await;
+    assert_eq!(
+        response_status(&resp_der),
+        oe_ocsp_core::asn1::OcspResponseStatus::TryLater
+    );
+}
+
+/// Constat O-2 : une CRL plus ancienne que celle en cache, même valablement
+/// signée, est un rejeu qui ferait disparaître une révocation récente. Elle
+/// est refusée et l'instantané courant conservé.
+#[tokio::test]
+async fn a_replayed_older_crl_is_refused_and_the_current_snapshot_kept() {
+    let dir = fixtures_dir();
+    let fresh = std::fs::read(dir.join("issuer.crl.der")).unwrap(); // cRLNumber 4096
+    let stale = std::fs::read(dir.join("issuer.crl.stale.der")).unwrap(); // cRLNumber 4095
+    let (responder, served) = build_responder_on(fresh.clone(), None).await;
+    responder.refresh().await.expect("chargement initial");
+    // La même CRL, resservie : ni rejeu ni erreur.
+    responder
+        .refresh()
+        .await
+        .expect("une CRL de même numéro n'est pas un rejeu");
+
+    *served.lock().unwrap() = stale;
+    let err = responder
+        .refresh()
+        .await
+        .expect_err("une CRL plus ancienne doit être refusée");
+    assert!(
+        matches!(err, oe_ocsp_core::OcspError::CrlReplayed { .. }),
+        "{err}"
+    );
+    assert!(
+        err.to_string().contains("0FFF") && err.to_string().contains("1000"),
+        "{err}"
+    );
+
+    // L'instantané courant (4096, où 0x1001 est émis) reste servi.
+    let req_der = std::fs::read(dir.join("request-good.der")).unwrap();
+    let resp_der = responder.handle(&req_der).await;
+    verify_with_openssl(&resp_der, "good");
+
+    // Et la CRL plus récente est de nouveau acceptée.
+    *served.lock().unwrap() = fresh;
+    responder.refresh().await.expect("la CRL courante repasse");
+}
+
+/// Constat O-2 : le nonce de la requête (RFC 8954) est repris tel quel dans
+/// la réponse — openssl, qui l'exige quand il l'a envoyé, en témoigne.
+#[tokio::test]
+async fn the_request_nonce_is_echoed_in_the_response() {
+    let responder = build_responder().await;
+    let (req_der, req_path) = openssl_request(&["0x1001"], true);
+    let resp_der = responder.handle(&req_der).await;
+
+    let basic = basic_response(&resp_der);
+    let nonce_oid = der::asn1::ObjectIdentifier::new(oe_ocsp_core::OID_PKIX_OCSP_NONCE).unwrap();
+    let req = oe_ocsp_core::asn1::OcspRequest::from_der(&req_der).unwrap();
+    let sent = req
+        .tbs_request
+        .request_extensions
+        .unwrap()
+        .into_iter()
+        .find(|e| e.extn_id == nonce_oid)
+        .expect("openssl a envoyé un nonce");
+    let echoed = basic
+        .tbs_response_data
+        .response_extensions
+        .expect("la réponse porte des extensions")
+        .into_iter()
+        .find(|e| e.extn_id == nonce_oid)
+        .expect("la réponse porte le nonce");
+    assert_eq!(echoed.extn_value, sent.extn_value);
+
+    let dir = fixtures_dir();
+    let resp_path = std::env::temp_dir().join(format!("oe-ocsp-resp-{}.der", uuid_like()));
+    std::fs::write(&resp_path, &resp_der).unwrap();
+    let out = Command::new("openssl")
+        .args([
+            "ocsp",
+            "-reqin",
+            req_path.to_str().unwrap(),
+            "-respin",
+            resp_path.to_str().unwrap(),
+            "-CAfile",
+            dir.join("issuer-cert.pem").to_str().unwrap(),
+            "-verify_other",
+            dir.join("responder-cert.pem").to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    let _ = std::fs::remove_file(&req_path);
+    let _ = std::fs::remove_file(&resp_path);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("Response verify OK"), "{stderr}");
+    assert!(
+        !stderr.to_lowercase().contains("nonce"),
+        "openssl se plaint du nonce : {stderr}"
+    );
+
+    // Sans nonce dans la requête, aucune extension n'est inventée.
+    let (plain, plain_path) = openssl_request(&["0x1001"], false);
+    let _ = std::fs::remove_file(&plain_path);
+    let basic = basic_response(&responder.handle(&plain).await);
+    assert!(basic.tbs_response_data.response_extensions.is_none());
+}
+
+/// RFC 8954 §2.1 : un nonce de plus de 32 octets est une requête malformée.
+#[tokio::test]
+async fn an_oversized_nonce_is_a_malformed_request() {
+    use der::Encode;
+    let responder = build_responder().await;
+    let (req_der, req_path) = openssl_request(&["0x1001"], true);
+    let _ = std::fs::remove_file(&req_path);
+    let mut req = oe_ocsp_core::asn1::OcspRequest::from_der(&req_der).unwrap();
+    let nonce_oid = der::asn1::ObjectIdentifier::new(oe_ocsp_core::OID_PKIX_OCSP_NONCE).unwrap();
+    let oversized = der::asn1::OctetString::new(vec![0x42; oe_ocsp_core::MAX_NONCE_BYTES + 1])
+        .unwrap()
+        .to_der()
+        .unwrap();
+    for ext in req.tbs_request.request_extensions.as_mut().unwrap() {
+        if ext.extn_id == nonce_oid {
+            ext.extn_value = der::asn1::OctetString::new(oversized.clone()).unwrap();
+        }
+    }
+    let resp_der = responder.handle(&req.to_der().unwrap()).await;
+    assert_eq!(
+        response_status(&resp_der),
+        oe_ocsp_core::asn1::OcspResponseStatus::MalformedRequest
+    );
+}
+
+/// Constat O-2 : chaque requête de la liste reçoit sa réponse — ici une
+/// série révoquée et une série saine dans la même requête, que openssl
+/// vérifie et dont il lit les deux statuts.
+#[tokio::test]
+async fn every_request_of_the_list_gets_its_own_single_response() {
+    let responder = build_responder().await;
+    let (req_der, req_path) = openssl_request(&["0x1000", "0x1001"], false);
+    let _ = std::fs::remove_file(&req_path);
+    let resp_der = responder.handle(&req_der).await;
+
+    let basic = basic_response(&resp_der);
+    assert_eq!(basic.tbs_response_data.responses.len(), 2);
+    verify_with_openssl(&resp_der, "Cert Status: revoked");
+    verify_with_openssl(&resp_der, "Cert Status: good");
+}
+
+/// Au-delà de [`oe_ocsp_core::MAX_REQUESTS`] requêtes, la liste est refusée
+/// plutôt que de faire signer une réponse arbitrairement grande.
+#[tokio::test]
+async fn an_oversized_request_list_is_a_malformed_request() {
+    let responder = build_responder().await;
+    let serials: Vec<String> = (0..=oe_ocsp_core::MAX_REQUESTS)
+        .map(|i| format!("0x{:x}", 0x2000 + i))
+        .collect();
+    let refs: Vec<&str> = serials.iter().map(String::as_str).collect();
+    let (req_der, req_path) = openssl_request(&refs, false);
+    let _ = std::fs::remove_file(&req_path);
+    let resp_der = responder.handle(&req_der).await;
+    assert_eq!(
+        response_status(&resp_der),
+        oe_ocsp_core::asn1::OcspResponseStatus::MalformedRequest
+    );
 }

@@ -49,8 +49,13 @@ Quatre services, tous écrits et compris par l'équipe :
 API (`POST /api/v1/enroll`, authentifiée par un secret HMAC partagé), en
 demandant chacun son profil. Le répondeur OCSP consulte ensuite la CRL publiée
 par la CA (`/download`), rafraîchie périodiquement — plutôt qu'un accès direct
-au registre : il ne voit ainsi que ce qu'un tiers pourrait voir lui-même. Voir
-`crates/oe-ocsp-core` et [CA.md](CA.md).
+au registre : il ne voit ainsi que ce qu'un tiers pourrait voir lui-même. Il ne
+sert qu'une CRL signée par la CA émettrice et dont le `cRLNumber` n'est pas
+inférieur au dernier accepté (une CRL plus ancienne rejouée est refusée) ; passé
+le `nextUpdate` de la CRL en cache, il répond `tryLater` plutôt que de signer un
+statut échu. Ses réponses reprennent le nonce du client (RFC 8954) et couvrent
+chaque requête de la liste (constat O-2). Voir `crates/oe-ocsp-core` et
+[CA.md](CA.md).
 
 ## 3. Choix techniques et justification
 
