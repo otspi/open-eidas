@@ -626,7 +626,10 @@ jobs:
               -url http://localhost:8319/ocsp -resp_text 2>&1 | tee ocsp-response.txt
           grep -q "tsu.pem: good" ocsp-response.txt
           grep -q "Response verify OK" ocsp-response.txt
-          ! grep -qi "nonce" ocsp-response.txt || { echo "openssl se plaint du nonce" >&2; exit 1; }
+          if grep -qiE "no nonce in response|nonce verify error" ocsp-response.txt; then
+            echo "openssl se plaint du nonce" >&2
+            exit 1
+          fi
 
       # Constat O-1 (EN 319 411-1 OVR-6.6.3-02) : un numéro de série que cette
       # CA n'a jamais émis reçoit `unknown`, jamais `good` par défaut.

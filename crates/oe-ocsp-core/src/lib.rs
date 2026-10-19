@@ -503,7 +503,11 @@ fn request_nonce(req: &OcspRequest) -> Result<Option<x509_cert::ext::Extension>,
     Ok(Some(ext.clone()))
 }
 
-/// Le `cRLNumber` d'une CRL, en octets de poids fort en tête.
+/// Le `cRLNumber` d'une CRL, en octets de poids fort en tête, sans zéro de
+/// tête. L'INTEGER est lu tel quel plutôt que par `der`, qui refuse un
+/// encodage non canonique (zéros de tête superflus) : des CRL en circulation
+/// en portent — dont celles émises par `ca-server` avant le 2026-10-19 — et
+/// seule la grandeur compte ici.
 fn crl_number(crl: &x509_cert::crl::CertificateList) -> Result<Vec<u8>, OcspError> {
     let ext = crl
         .tbs_cert_list
@@ -514,8 +518,77 @@ fn crl_number(crl: &x509_cert::crl::CertificateList) -> Result<Vec<u8>, OcspErro
                 .find(|e| e.extn_id == x509_cert::ext::pkix::CrlNumber::OID)
         })
         .ok_or(OcspError::CrlWithoutNumber)?;
-    let number = x509_cert::ext::pkix::CrlNumber::from_der(ext.extn_value.as_bytes())?;
-    Ok(number.0.as_bytes().to_vec())
+    der_integer_magnitude(ext.extn_value.as_bytes()).ok_or(OcspError::CrlWithoutNumber)
+}
+
+/// La grandeur d'un INTEGER DER positif (tag, longueur courte ou longue sur
+/// deux octets au plus, contenu), zéros de tête retirés ; `None` si ce
+/// n'est pas un INTEGER positif bien formé.
+fn der_integer_magnitude(raw: &[u8]) -> Option<Vec<u8>> {
+    if raw.first() != Some(&0x02) {
+        return None;
+    }
+    let (len, start) = match *raw.get(1)? {
+        short @ 0..=0x7f => (short as usize, 2),
+        long => {
+            let n = (long & 0x7f) as usize;
+            if n == 0 || n > 2 {
+                return None;
+            }
+            let mut len = 0usize;
+            for i in 0..n {
+                len = (len << 8) | *raw.get(2 + i)? as usize;
+            }
+            (len, 2 + n)
+        }
+    };
+    let content = raw.get(start..start + len)?;
+    if content.is_empty() || content[0] & 0x80 != 0 || raw.len() != start + len {
+        return None;
+    }
+    let first = content
+        .iter()
+        .position(|&b| b != 0)
+        .unwrap_or(content.len());
+    Some(content[first..].to_vec())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reads_the_magnitude_of_canonical_and_padded_der_integers() {
+        assert_eq!(der_integer_magnitude(&[0x02, 0x01, 0x02]), Some(vec![0x02]));
+        assert_eq!(
+            der_integer_magnitude(&[0x02, 0x08, 0, 0, 0, 0, 0, 0, 0x10, 0x00]),
+            Some(vec![0x10, 0x00])
+        );
+        assert_eq!(
+            der_integer_magnitude(&[0x02, 0x02, 0x00, 0xFF]),
+            Some(vec![0xFF])
+        );
+        assert_eq!(der_integer_magnitude(&[0x02, 0x01, 0x00]), Some(vec![]));
+        // Négatif, mauvais tag, longueur incohérente : refusés.
+        assert_eq!(der_integer_magnitude(&[0x02, 0x01, 0x80]), None);
+        assert_eq!(der_integer_magnitude(&[0x04, 0x01, 0x02]), None);
+        assert_eq!(der_integer_magnitude(&[0x02, 0x03, 0x02]), None);
+        assert_eq!(der_integer_magnitude(&[0x02, 0x01, 0x02, 0x00]), None);
+    }
+
+    #[test]
+    fn compares_magnitudes_without_leading_zeros() {
+        use std::cmp::Ordering;
+        assert_eq!(uint_cmp(&[0x0F, 0xFF], &[0x10, 0x00]), Ordering::Less);
+        assert_eq!(
+            uint_cmp(&[0x00, 0x10, 0x00], &[0x10, 0x00]),
+            Ordering::Equal
+        );
+        assert_eq!(
+            uint_cmp(&[0x01, 0x00, 0x00], &[0xFF, 0xFF]),
+            Ordering::Greater
+        );
+    }
 }
 
 /// Compare deux entiers non signés en octets de poids fort en tête.
