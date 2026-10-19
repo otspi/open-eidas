@@ -55,7 +55,6 @@ async fn build_server_with(
             public_url: "https://ca.example.test".to_string(),
             ocsp_url: None,
             crl_validity,
-            crl_grace: time::Duration::hours(1),
             recorder: None,
         })
         .unwrap(),

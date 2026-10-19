@@ -36,6 +36,10 @@ pub const OID_OCSP_NO_CHECK: &str = "1.3.6.1.5.5.7.48.1.5";
 const OID_AD_CA_ISSUERS: &str = "1.3.6.1.5.5.7.48.2";
 const OID_AD_OCSP: &str = "1.3.6.1.5.5.7.48.1";
 const OID_CRL_NUMBER: &str = "2.5.29.20";
+/// `expiredCertsOnCRL` (X.509 §8.5.2.x, EN 319 411-2 `CSS-6.3.10-05`) :
+/// déclare que la CRL conserve les certificats révoqués expirés depuis la
+/// date donnée.
+pub const OID_EXPIRED_CERTS_ON_CRL: &str = "2.5.29.60";
 const OID_CERTIFICATE_POLICIES: &str = "2.5.29.32";
 const OID_SUBJECT_ALT_NAME: &str = "2.5.29.17";
 
@@ -79,6 +83,13 @@ pub(crate) fn crl_number(number: i64) -> Result<Extension, CaError> {
 /// recopierait par erreur depuis le certificat d'autorité s'il en possède
 /// une (constaté par vérification croisée `openssl verify -crl_check`, qui
 /// échoue avec « unable to get certificate CRL » sur cet AKI erroné).
+/// `ExpiredCertsOnCRL ::= GeneralizedTime` : les certificats révoqués expirés
+/// après cette date figurent dans la CRL (constat C-4). Non critique.
+pub(crate) fn expired_certs_on_crl(since: &x509_cert::time::Time) -> Result<Extension, CaError> {
+    let value = der::asn1::GeneralizedTime::from_date_time(since.to_date_time());
+    build(OID_EXPIRED_CERTS_ON_CRL, false, &value)
+}
+
 pub(crate) fn authority_key_identifier(parent_ski: &[u8]) -> Result<Extension, CaError> {
     build(
         OID_AUTHORITY_KEY_ID,

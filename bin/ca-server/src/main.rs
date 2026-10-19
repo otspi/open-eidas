@@ -577,7 +577,6 @@ async fn build_issuer(
         public_url: cfg.public_url.clone(),
         ocsp_url: (!cfg.ocsp_url.is_empty()).then(|| cfg.ocsp_url.clone()),
         crl_validity: cfg.crl_validity,
-        crl_grace: cfg.crl_grace,
         recorder: Some(recorder),
     })
     .unwrap_or_else(|e| die("construction de l'autorité émettrice", e))

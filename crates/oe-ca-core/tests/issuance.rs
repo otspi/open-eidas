@@ -276,7 +276,6 @@ async fn issuer_from_ceremony(store: Arc<Memory>) -> (Issuer, Arc<SoftwareToken>
         public_url: "https://ca.example.test".to_string(),
         ocsp_url: Some("https://ocsp.example.test".to_string()),
         crl_validity: time::Duration::hours(24),
-        crl_grace: time::Duration::hours(1),
         recorder: None,
     })
     .expect("l'émetteur doit accepter une autorité dont la clé correspond au signataire");
@@ -478,7 +477,6 @@ async fn openssl_accepts_the_chain_and_honors_revocation() {
         public_url: "https://ca.example.test".to_string(),
         ocsp_url: None,
         crl_validity: time::Duration::hours(24),
-        crl_grace: time::Duration::hours(1),
         recorder: None,
     })
     .unwrap();
@@ -676,7 +674,6 @@ async fn every_authority_decision_is_recorded() {
         public_url: "https://ca.example.test".to_string(),
         ocsp_url: None,
         crl_validity: time::Duration::hours(24),
-        crl_grace: time::Duration::hours(1),
         recorder: Some(Arc::new(log.clone())),
     })
     .unwrap();
@@ -884,7 +881,6 @@ async fn a_journal_failure_blocks_issuance_before_any_certificate_is_saved() {
         public_url: "https://ca.example.test".to_string(),
         ocsp_url: None,
         crl_validity: time::Duration::hours(24),
-        crl_grace: time::Duration::hours(1),
         recorder: Some(Arc::new(FailingRecorder)),
     })
     .unwrap();
@@ -911,7 +907,6 @@ async fn a_journal_failure_blocks_issuance_before_any_certificate_is_saved() {
         public_url: "https://ca.example.test".to_string(),
         ocsp_url: None,
         crl_validity: time::Duration::hours(24),
-        crl_grace: time::Duration::hours(1),
         recorder: None,
     })
     .unwrap();
@@ -941,7 +936,6 @@ async fn a_journal_failure_blocks_revocation_before_the_store_is_touched() {
         public_url: "https://ca.example.test".to_string(),
         ocsp_url: None,
         crl_validity: time::Duration::hours(24),
-        crl_grace: time::Duration::hours(1),
         recorder: None,
     })
     .unwrap();
@@ -965,7 +959,6 @@ async fn a_journal_failure_blocks_revocation_before_the_store_is_touched() {
         public_url: "https://ca.example.test".to_string(),
         ocsp_url: None,
         crl_validity: time::Duration::hours(24),
-        crl_grace: time::Duration::hours(1),
         recorder: Some(Arc::new(FailingRecorder)),
     })
     .unwrap();
@@ -996,7 +989,6 @@ async fn a_journal_failure_blocks_crl_publication_before_the_store_is_touched() 
         public_url: "https://ca.example.test".to_string(),
         ocsp_url: None,
         crl_validity: time::Duration::hours(24),
-        crl_grace: time::Duration::hours(1),
         recorder: Some(Arc::new(FailingRecorder)),
     })
     .unwrap();
@@ -1028,7 +1020,6 @@ async fn issuer_and_root_from_ceremony(
         public_url: "https://ca.example.test".to_string(),
         ocsp_url: None,
         crl_validity: time::Duration::hours(24),
-        crl_grace: time::Duration::hours(1),
         recorder: None,
     })
     .unwrap();
@@ -1245,4 +1236,103 @@ async fn the_crl_number_is_a_canonical_der_integer() {
         let expected = x509_cert::ext::pkix::CrlNumber::try_from(crl.number as u64).unwrap();
         assert_eq!(number, expected);
     }
+}
+
+/// Constat C-4 de l'audit du 2026-09-25 (EN 319 411-1 `CSS-6.3.10-04`,
+/// EN 319 411-2 `CSS-6.3.10-02`, `-03`, `-05`) : un certificat révoqué reste
+/// dans la CRL même expiré, et la CRL le déclare par `ExpiredCertsOnCRL`
+/// datée de la naissance de la CA émettrice. Le certificat expiré est posé
+/// tel quel dans le registre (émis il y a deux ans, pour un an) : le code
+/// d'émission n'en fabrique pas.
+#[tokio::test]
+async fn an_expired_revoked_certificate_stays_on_the_crl_which_declares_it() {
+    let store = store();
+    let (issuer, _issuing_signer) = issuer_from_ceremony(store.clone()).await;
+
+    let end_entity = SoftwareToken::generate(2048);
+    let public_key_der = end_entity.public_key_der().unwrap();
+    let cert = issuer
+        .issue(
+            &public_key_der,
+            "ocsp.example.test",
+            &profile::ocsp_responder(),
+            "txn-old",
+        )
+        .await
+        .unwrap();
+    let serial = oe_ca_core::canonical_serial(cert.tbs_certificate().serial_number());
+    let now = time::OffsetDateTime::now_utc();
+
+    // Le même certificat, mais émis il y a deux ans pour un an : expiré.
+    let expired_serial: Vec<u8> = serial.iter().rev().cloned().collect();
+    store
+        .reserve_serial(&expired_serial, "ocsp_responder")
+        .await
+        .unwrap();
+    store
+        .save_certificate(oe_castore::Certificate {
+            serial: expired_serial.clone(),
+            profile: "ocsp_responder".to_string(),
+            subject_dn: "CN=expired.example.test".to_string(),
+            issuer_dn: cert.tbs_certificate().issuer().to_string(),
+            not_before: now - time::Duration::days(730),
+            not_after: now - time::Duration::days(365),
+            der: cert.to_der().unwrap(),
+            status: oe_castore::CertificateStatus::Issued,
+            revoked_at: None,
+            revocation_reason: 0,
+            request_transaction_id: "txn-expired".to_string(),
+        })
+        .await
+        .unwrap();
+    issuer
+        .revoke(&expired_serial, 1, "test-operator", "", &Via::WebAuthn)
+        .await
+        .expect("un certificat expiré se révoque encore");
+
+    let crl = issuer.publish_crl().await.unwrap();
+    let parsed = x509_cert::crl::CertificateList::from_der(&crl.der).unwrap();
+    let listed: Vec<Vec<u8>> = parsed
+        .tbs_cert_list
+        .revoked_certificates
+        .expect("la CRL doit lister le révoqué expiré")
+        .iter()
+        .map(|e| oe_ca_core::canonical_serial(&e.serial_number))
+        .collect();
+    assert_eq!(
+        listed,
+        vec![expired_serial.clone()],
+        "le révoqué expiré doit rester listé"
+    );
+
+    let oid = der::asn1::ObjectIdentifier::new("2.5.29.60").unwrap();
+    let ext = parsed
+        .tbs_cert_list
+        .crl_extensions
+        .as_ref()
+        .and_then(|exts| exts.iter().find(|e| e.extn_id == oid))
+        .expect("la CRL doit porter ExpiredCertsOnCRL");
+    assert!(!ext.critical);
+    let since = der::asn1::GeneralizedTime::from_der(ext.extn_value.as_bytes()).unwrap();
+    assert_eq!(
+        since.to_date_time(),
+        issuer
+            .certificate()
+            .tbs_certificate()
+            .validity()
+            .not_before
+            .to_date_time(),
+        "ExpiredCertsOnCRL est datée de la naissance de l'émettrice : rien n'a jamais été purgé"
+    );
+    // openssl lit la CRL et affiche l'extension par son OID.
+    let path = std::env::temp_dir().join(format!("oe-crl-c4-{}.der", std::process::id()));
+    std::fs::write(&path, &crl.der).unwrap();
+    let out = std::process::Command::new("openssl")
+        .args(["crl", "-inform", "DER", "-noout", "-text", "-in"])
+        .arg(&path)
+        .output()
+        .unwrap();
+    let _ = std::fs::remove_file(&path);
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains("2.5.29.60"), "{text}");
 }

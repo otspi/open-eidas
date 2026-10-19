@@ -131,9 +131,20 @@ impl RootAuthority {
             .subject_public_key_info()
             .to_der()?;
         let ski = signing::subject_key_id(&issuer_spki_der)?;
+        // Les autorités révoquées restent dans l'ARL pour l'histoire
+        // (`revoked_authorities`) : l'ARL le déclare comme la CRL
+        // (constat C-4, `ExpiredCertsOnCRL` depuis la naissance de la racine).
         let arl_extensions: x509_cert::ext::Extensions = vec![
             extensions::crl_number(number)?,
             extensions::authority_key_identifier(&ski)?,
+            extensions::expired_certs_on_crl(
+                &self
+                    .opts
+                    .certificate
+                    .tbs_certificate()
+                    .validity()
+                    .not_before,
+            )?,
         ];
 
         let tbs = x509_cert::crl::TbsCertList {

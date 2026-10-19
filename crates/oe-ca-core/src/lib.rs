@@ -168,7 +168,6 @@ pub struct Options {
     pub public_url: String,
     pub ocsp_url: Option<String>,
     pub crl_validity: time::Duration,
-    pub crl_grace: time::Duration,
     pub recorder: Option<Arc<dyn Recorder>>,
 }
 
@@ -457,7 +456,11 @@ impl Issuer {
     /// 319 411-1 §6.3.10).
     pub async fn publish_crl(&self) -> Result<oe_castore::Crl, CaError> {
         let now = time::OffsetDateTime::now_utc();
-        let revoked = self.opts.store.revoked(now, self.opts.crl_grace).await?;
+        // Constat C-4 : tous les révoqués, expirés compris, restent dans la
+        // CRL (EN 319 411-2 `CSS-6.3.10-03`) ; l'extension
+        // `ExpiredCertsOnCRL` (`CSS-6.3.10-05`) le déclare aux vérificateurs,
+        // depuis la naissance de l'émettrice : rien n'a jamais été purgé.
+        let revoked = self.opts.store.revoked().await?;
 
         let number = self.opts.store.next_crl_number().await?;
         let this_update = to_x509_time(now - time::Duration::minutes(1))?;
@@ -504,6 +507,14 @@ impl Issuer {
             extensions::crl_number(number)?,
             extensions::authority_key_identifier(&ski)?,
             extensions::crl_issued_serials(&issued)?,
+            extensions::expired_certs_on_crl(
+                &self
+                    .opts
+                    .certificate
+                    .tbs_certificate()
+                    .validity()
+                    .not_before,
+            )?,
         ];
 
         let tbs = x509_cert::crl::TbsCertList {

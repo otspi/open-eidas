@@ -186,6 +186,7 @@ d'expiration]`.
 | Motifs admis | Codes RFC 5280 §5.3.1 (voir [CA.md](CA.md) §5) ; `[À COMPLÉTER — le code entier n'est pas validé à la révocation, un motif hors nomenclature est normalisé en `unspecified` sur la CRL plutôt que rejeté]` |
 | Délai de publication après révocation | Immédiat pour `ca-server revoke` (republie la CRL dans le même appel) ; pour la révocation automatique déclenchée par un renouvellement (`oe_raflow`), la CRL n'est republiée qu'au cycle périodique suivant, pas dans le même appel |
 | Fréquence de publication de la CRL | Toutes les heures, fenêtre de validité 24 h (`OPENEIDAS_CRL_REFRESH`, `OPENEIDAS_CRL_VALIDITY`) |
+| Disponibilité de l'information de révocation après expiration | **Sans limite de durée** : un certificat révoqué reste dans la CRL même expiré (extension `ExpiredCertsOnCRL`, datée de la naissance de la CA émettrice), et le répondeur OCSP continue d'en rendre le statut `revoked` ; l'ARL de la racine fait de même (constat C-4 de l'audit du 2026-09-25, EN 319 411-2 `CSS-6.3.10-02`, `-03`, `-05`) |
 | Suspension | `certificateHold` (code RFC 5280 6) est accepté et encodé sur la CRL comme n'importe quel motif, mais aucun mécanisme de levée de suspension n'existe : une fois révoqué, un certificat ne redevient jamais actif |
 | Vérification du statut en ligne | OCSP (RFC 6960), `oe_ocsp_core::Responder`, refuse de répondre plutôt que de garantir un statut obsolète |
 
@@ -241,7 +242,8 @@ Renvoi direct au code, qui en est la source unique :
   `check_ocsp_responder_certificate` ;
 - profil de CRL : `oe_ca_core::Issuer::publish_crl`, republiée
   périodiquement et sa fraîcheur contrôlée par `/healthz`
-  (`bin/ca-server`) ;
+  (`bin/ca-server`) ; révoqués conservés sans limite de durée, extension
+  `ExpiredCertsOnCRL` ;
 - profil de réponse OCSP : `oe_ocsp_core::Responder`.
 
 ### A.8 Audit de conformité et autres évaluations

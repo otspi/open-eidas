@@ -610,6 +610,9 @@ jobs:
             | grep -A 2 "X509v3 CRL Distribution" | sed -n 's/.*URI://p' | tr -d ' ')"
           curl -sf "http://localhost:8320/${CRL_URL#*://*/}" -o issuing.crl
           openssl crl -inform DER -in issuing.crl -CAfile ca.pem -noout
+          # Constat C-4 : la CRL déclare conserver les révoqués expirés
+          # (ExpiredCertsOnCRL, 2.5.29.60, que openssl affiche par son OID).
+          openssl crl -inform DER -in issuing.crl -noout -text | grep -q "2.5.29.60"
 
       - name: Rapport de conformité de l'instance déployée
         run: |

@@ -46,7 +46,6 @@ pub struct Config {
 
     pub crl_validity: time::Duration,
     pub crl_refresh: Duration,
-    pub crl_grace: time::Duration,
     /// Validité de l'ARL de la racine (constat C-1). Publiée hors ligne, avec
     /// la clé de la racine : au plus un an, ETSI EN 319 411-1 `CSS-6.3.9-12`
     /// exigeant une republication au moins annuelle.
@@ -261,10 +260,6 @@ impl Config {
         // n'obtiendrait qu'une CRL périmée refuse de répondre plutôt que de
         // garantir un statut obsolète.
         let crl_refresh = env_duration("OPENEIDAS_CRL_REFRESH", Duration::from_secs(3600))?;
-        let crl_grace = to_time_duration(
-            env_duration("OPENEIDAS_CRL_GRACE", Duration::from_secs(30 * 24 * 3600))?,
-            time::Duration::days(30),
-        );
         let arl_validity = to_time_duration(
             env_duration(
                 "OPENEIDAS_ARL_VALIDITY",
@@ -316,7 +311,6 @@ impl Config {
             enroll_hmac_key: std::env::var("OPENEIDAS_ENROLL_HMAC_KEY").unwrap_or_default(),
             crl_validity,
             crl_refresh,
-            crl_grace,
             arl_validity,
             audit_file: env_str(
                 "OPENEIDAS_AUDIT_FILE",

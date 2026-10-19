@@ -174,7 +174,6 @@ async fn main() {
             public_url: "https://ca.example.test".into(),
             ocsp_url: None,
             crl_validity: time::Duration::hours(24),
-            crl_grace: time::Duration::hours(1),
             recorder: None,
         })
         .unwrap(),
