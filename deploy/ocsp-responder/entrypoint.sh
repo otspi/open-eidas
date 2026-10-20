@@ -5,6 +5,15 @@ set -eu
 
 : "${OPENEIDAS_TOKEN_LABEL:=open-eidas-ocsp}"
 : "${OPENEIDAS_PIN:?OPENEIDAS_PIN est obligatoire}"
+# Constat C-2 : en production, le PIN SO est explicite et distinct du PIN
+# utilisateur du token ; hors production, il le reprend (démonstration, CI).
+if [ "${OPENEIDAS_PRODUCTION:-false}" = "true" ]; then
+    : "${OPENEIDAS_SO_PIN:?OPENEIDAS_SO_PIN est obligatoire en production}"
+    if [ "${OPENEIDAS_SO_PIN}" = "${OPENEIDAS_PIN}" ]; then
+        echo "en production, OPENEIDAS_SO_PIN doit différer d'OPENEIDAS_PIN" >&2
+        exit 1
+    fi
+fi
 : "${OPENEIDAS_SO_PIN:=${OPENEIDAS_PIN}}"
 
 # SoftHSM refuse silencieusement un PIN hors de cette plage et se rabat sur

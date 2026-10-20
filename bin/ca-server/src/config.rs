@@ -249,8 +249,18 @@ impl Config {
         }
         let root_pin = std::env::var("OPENEIDAS_ROOT_PIN").unwrap_or_default();
         // La racine et l'émettrice peuvent partager un PIN en démonstration ;
-        // en production, ce sont deux tokens distincts sous deux contrôles
-        // distincts — voir docs/CA.md.
+        // en production (OPENEIDAS_PRODUCTION), ce sont deux tokens distincts
+        // sous deux contrôles distincts (constat C-2, EN 319 411-1
+        // `OVR-6.5.7-05`, `GEN-6.5.1-04`) : le repli silencieux est refusé.
+        let production = env_bool("OPENEIDAS_PRODUCTION")?;
+        if production && needs_hsm {
+            if root_pin.is_empty() {
+                return Err("OPENEIDAS_ROOT_PIN est obligatoire quand OPENEIDAS_PRODUCTION est activé (le PIN de la racine ne reprend jamais celui de l'émettrice)".to_string());
+            }
+            if root_pin == issuing_pin {
+                return Err("OPENEIDAS_ROOT_PIN doit différer d'OPENEIDAS_ISSUING_PIN quand OPENEIDAS_PRODUCTION est activé (deux tokens, deux contrôles distincts)".to_string());
+            }
+        }
         let root_pin = if root_pin.is_empty() {
             issuing_pin.clone()
         } else {

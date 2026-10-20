@@ -11,11 +11,32 @@ set -eu
 : "${OPENEIDAS_ROOT_TOKEN_LABEL:=open-eidas-root}"
 : "${OPENEIDAS_ISSUING_TOKEN_LABEL:=open-eidas-issuing}"
 : "${OPENEIDAS_ISSUING_PIN:?OPENEIDAS_ISSUING_PIN est obligatoire}"
+
+# Constat C-2 (EN 319 411-1 OVR-6.5.7-05, GEN-6.5.1-04) : en production, aucun
+# repli silencieux. Chaque token a son PIN et son PIN SO, tous explicites ; ni
+# le PIN de la racine ni un PIN SO ne reprennent un autre PIN. Hors production
+# (démonstration, CI), les replis restent admis.
+if [ "${OPENEIDAS_PRODUCTION:-false}" = "true" ]; then
+    : "${OPENEIDAS_ROOT_PIN:?OPENEIDAS_ROOT_PIN est obligatoire en production (jamais celui de l'émettrice)}"
+    : "${OPENEIDAS_ROOT_SO_PIN:?OPENEIDAS_ROOT_SO_PIN est obligatoire en production}"
+    : "${OPENEIDAS_ISSUING_SO_PIN:?OPENEIDAS_ISSUING_SO_PIN est obligatoire en production}"
+    if [ "${OPENEIDAS_ROOT_PIN}" = "${OPENEIDAS_ISSUING_PIN}" ]; then
+        echo "en production, OPENEIDAS_ROOT_PIN doit différer d'OPENEIDAS_ISSUING_PIN (deux tokens, deux contrôles)" >&2
+        exit 1
+    fi
+    if [ "${OPENEIDAS_ROOT_SO_PIN}" = "${OPENEIDAS_ROOT_PIN}" ] || [ "${OPENEIDAS_ISSUING_SO_PIN}" = "${OPENEIDAS_ISSUING_PIN}" ]; then
+        echo "en production, un PIN SO doit différer du PIN utilisateur de son token" >&2
+        exit 1
+    fi
+fi
 : "${OPENEIDAS_ROOT_PIN:=${OPENEIDAS_ISSUING_PIN}}"
+: "${OPENEIDAS_ROOT_SO_PIN:=${OPENEIDAS_ROOT_PIN}}"
+: "${OPENEIDAS_ISSUING_SO_PIN:=${OPENEIDAS_ISSUING_PIN}}"
 
 init_token() {
     label="$1"
     pin="$2"
+    so_pin="$3"
     # SoftHSM refuse silencieusement un PIN hors de cette plage et se rabat sur
     # une invite interactive, ce qui bloquerait le conteneur sans message clair.
     len=${#pin}
@@ -26,12 +47,12 @@ init_token() {
     if ! softhsm2-util --show-slots | grep -q "Label: *${label}"; then
         echo "initialisation du token SoftHSM ${label}"
         softhsm2-util --init-token --free --label "${label}" \
-            --pin "${pin}" --so-pin "${pin}"
+            --pin "${pin}" --so-pin "${so_pin}"
     fi
 }
 
-init_token "${OPENEIDAS_ROOT_TOKEN_LABEL}" "${OPENEIDAS_ROOT_PIN}"
-init_token "${OPENEIDAS_ISSUING_TOKEN_LABEL}" "${OPENEIDAS_ISSUING_PIN}"
+init_token "${OPENEIDAS_ROOT_TOKEN_LABEL}" "${OPENEIDAS_ROOT_PIN}" "${OPENEIDAS_ROOT_SO_PIN}"
+init_token "${OPENEIDAS_ISSUING_TOKEN_LABEL}" "${OPENEIDAS_ISSUING_PIN}" "${OPENEIDAS_ISSUING_SO_PIN}"
 
 if [ "${1:-serve}" = "serve" ]; then
     # PostgreSQL peut mettre un moment à accepter des connexions au premier
