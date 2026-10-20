@@ -130,6 +130,14 @@ fn oe_config_duration(s: &str) -> Option<Duration> {
 
 impl Config {
     fn load() -> Result<Config, String> {
+        // Constat S-2 : en production, ni TLS non vérifié vers la CA (enrôlement)
+        // ni vers la PKI (CRL).
+        if env_bool("OPENEIDAS_PRODUCTION", false)
+            && (env_bool("OPENEIDAS_ENROLL_INSECURE", false)
+                || env_bool("OPENEIDAS_PKI_INSECURE", false))
+        {
+            return Err("OPENEIDAS_ENROLL_INSECURE et OPENEIDAS_PKI_INSECURE (TLS non vérifié) sont refusés quand OPENEIDAS_PRODUCTION est activé".to_string());
+        }
         let key_bits = env_u64("OPENEIDAS_KEY_BITS", 3072);
         if key_bits < 3072 {
             return Err(format!(
