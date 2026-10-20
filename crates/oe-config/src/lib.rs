@@ -181,6 +181,24 @@ pub struct Config {
 }
 
 impl Config {
+    /// Les modes dégradés avec lesquels ce service démarre (constat S-2) :
+    /// admis hors production, jamais en production (`load` les y refuse). Le
+    /// service les consigne au journal à chaque démarrage.
+    pub fn degraded_modes(&self) -> Vec<String> {
+        let mut modes = Vec::new();
+        if self.time_policy != Policy::Enforce {
+            modes.push(format!(
+                "OPENEIDAS_TIME_POLICY={} : l'heure n'est pas garantie traçable",
+                self.time_policy
+            ));
+        }
+        if self.enroll_insecure {
+            modes.push(
+                "OPENEIDAS_ENROLL_INSECURE : TLS non vérifié vers la CA d'enrôlement".to_string(),
+            );
+        }
+        modes
+    }
     pub fn load() -> Result<Config, ConfigError> {
         let pin = env::var("OPENEIDAS_PIN").unwrap_or_default();
         if pin.is_empty() {
@@ -604,6 +622,21 @@ mod tests {
             env::remove_var("OPENEIDAS_PRODUCTION");
             assert!(Config::load().is_ok(), "{var}={value} hors production");
         }
+        clear_env();
+    }
+
+    /// Constat S-2 : les modes dégradés sont énumérés pour le journal.
+    #[test]
+    #[serial]
+    fn degraded_modes_are_listed_outside_production() {
+        clear_env();
+        env::set_var("OPENEIDAS_PIN", "1234");
+        assert!(Config::load().unwrap().degraded_modes().is_empty());
+        env::set_var("OPENEIDAS_TIME_POLICY", "monitor");
+        env::set_var("OPENEIDAS_ENROLL_INSECURE", "true");
+        let modes = Config::load().unwrap().degraded_modes();
+        assert_eq!(modes.len(), 2, "{modes:?}");
+        assert!(modes[0].contains("monitor") && modes[1].contains("ENROLL_INSECURE"));
         clear_env();
     }
 

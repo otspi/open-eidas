@@ -204,6 +204,14 @@ async fn run_serve() {
         oe_audit::Log::open(&cfg.audit_file).unwrap_or_else(|e| die("journal d'audit", e)),
     );
     let _ = log.append(oe_audit::EVENT_OPENED, None);
+    // Constat S-2 : tout démarrage en mode dégradé est consigné, et dit.
+    let degraded = cfg.degraded_modes();
+    if !degraded.is_empty() {
+        tracing::warn!(modes = ?degraded, "démarrage en mode dégradé (jamais admis en production)");
+        let mut data = oe_audit::Data::new();
+        data.insert("modes".into(), serde_json::json!(degraded));
+        let _ = log.append(oe_audit::EVENT_DEGRADED_START, Some(data));
+    }
 
     let policy_arcs: Vec<u32> = cfg.policy_oid.iter().map(|&n| n as u32).collect();
     let policy = der::asn1::ObjectIdentifier::from_arcs(policy_arcs)
