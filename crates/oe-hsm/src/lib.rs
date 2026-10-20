@@ -229,7 +229,9 @@ pub struct Pkcs11Token {
     session: std::sync::Mutex<Session>,
     pkcs11: Pkcs11,
     token_label: String,
-    pin: String,
+    /// Gardé pour rouvrir la session ; effacé de la mémoire à l'abandon du
+    /// token (constat H-3 : le PIN n'était pas zéroïsé).
+    pin: zeroize::Zeroizing<String>,
     key_id: Vec<u8>,
     key_label: String,
     /// Constat H-1 : la provenance de la clé n'est contrôlée qu'une fois par
@@ -301,7 +303,7 @@ impl Pkcs11Token {
             session: std::sync::Mutex::new(session),
             pkcs11,
             token_label: o.token_label.clone(),
-            pin: o.pin.clone(),
+            pin: zeroize::Zeroizing::new(o.pin.clone()),
             key_id: key_id(&o.key_label),
             key_label: o.key_label.clone(),
             provenance_verified: std::sync::atomic::AtomicBool::new(false),
@@ -343,7 +345,7 @@ impl Pkcs11Token {
     /// session PKCS#11 perdue met le service en panne jusqu'au redémarrage
     /// du processus).
     fn reconnect(&self) -> Result<(), HsmError> {
-        let fresh = Self::connect(&self.pkcs11, &self.token_label, &self.pin)?;
+        let fresh = Self::connect(&self.pkcs11, &self.token_label, self.pin.as_str())?;
         *self.session.lock().unwrap_or_else(|e| e.into_inner()) = fresh;
         // La clé est cherchée de nouveau : ses attributs aussi sont revérifiés.
         self.provenance_verified
@@ -712,6 +714,15 @@ mod tests {
         assert!(
             verify_signature(&other.public_key(), DigestAlg::Sha256, &digest, &signature).is_err()
         );
+    }
+
+    /// Constat H-3 : le PIN que le token garde pour rouvrir sa session est
+    /// effacé de la mémoire à son abandon. Garde de type : si le champ cessait
+    /// d'être `Zeroizing`, ceci ne compilerait plus.
+    #[cfg(feature = "pkcs11")]
+    #[allow(dead_code)]
+    fn the_stored_pin_is_zeroizing(t: &Pkcs11Token) -> &zeroize::Zeroizing<String> {
+        &t.pin
     }
 
     #[test]
