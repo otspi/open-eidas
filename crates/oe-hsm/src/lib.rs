@@ -485,6 +485,7 @@ impl<T: SigningToken> SigningToken for SyncToken<T> {
 /// `oe-hsm` et des crates qui en dépendent (`oe-tsa-core`, notamment) pour
 /// vérifier la logique métier sans matériel PKCS#11 réel. Ne doit jamais être
 /// utilisée en production : la clé privée vit en mémoire du processus.
+#[cfg(any(test, feature = "testing"))]
 pub mod testing {
     use super::{DigestAlg, HsmError, SigningToken};
     use rsa::pkcs1v15::Pkcs1v15Sign;

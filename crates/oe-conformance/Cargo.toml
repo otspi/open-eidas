@@ -18,5 +18,5 @@ x509-cert = "0.3"
 [dev-dependencies]
 oe-ca-core = { path = "../oe-ca-core" }
 oe-castore = { path = "../oe-castore" }
-oe-hsm = { path = "../oe-hsm" }
+oe-hsm = { path = "../oe-hsm", features = ["testing"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }

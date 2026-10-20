@@ -97,6 +97,17 @@ jobs:
       - name: cargo audit
         run: cargo audit --ignore RUSTSEC-2023-0071
 
+      # Constat H-2 : SoftwareToken garde la clé privée en mémoire du processus.
+      # Aucun binaire de production ne doit la compiler (feature `testing`
+      # d'oe-hsm, réservée aux [dev-dependencies]).
+      - name: SoftwareToken absent des binaires de production
+        run: |
+          if cargo tree --workspace -e normal,build -i oe-hsm -f '{p} [{f}]' | grep -q 'testing'; then
+            cargo tree --workspace -e normal,build -i oe-hsm -f '{p} [{f}]'
+            echo "la feature testing d'oe-hsm est active dans le graphe de production" >&2
+            exit 1
+          fi
+
   licenses:
     name: Licences des dépendances (EUPL-1.2 / AGPL-3.0)
     runs-on: ubuntu-latest

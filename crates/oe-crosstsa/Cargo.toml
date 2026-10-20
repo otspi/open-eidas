@@ -25,7 +25,7 @@ tracing = "0.1"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net"] }
-oe-hsm = { path = "../oe-hsm" }
+oe-hsm = { path = "../oe-hsm", features = ["testing"] }
 oe-tsa-core = { path = "../oe-tsa-core" }
 oe-httpapi = { path = "../oe-httpapi" }
 oe-timesource = { path = "../oe-timesource" }
