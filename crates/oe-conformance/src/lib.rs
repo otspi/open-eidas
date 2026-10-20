@@ -929,10 +929,10 @@ pub fn system_matrix() -> Matrix {
         Entry {
             requirement: Requirement { standard: "ETSI EN 319 421", version: "V1.3.1 (2025-07)", clause: "§7.7.2", ids: &["TIS-7.7.2-04", "TIS-7.7.2-05"], title: "Protection de l'horloge contre un changement non détecté" },
             status: Status::Gap,
-            mechanism: "Plusieurs sources UTC(k) avec quorum et seuil de dérive (oe_timesource::Monitor), mais client NTP sans contrôle d'origine, de l'indicateur de seconde intercalaire ni NTS.",
-            test: "",
+            mechanism: "Plusieurs sources UTC(k) avec quorum et seuil de dérive (oe_timesource::Monitor). Client SNTP durci (constat T-2) : transmit aléatoire dont l'originate de la réponse doit être la copie exacte (réponse non sollicitée refusée), version 3 ou 4, mode serveur, LI ≠ 3, strate 1 à 15, horodatages non nuls, aller-retour borné (OPENEIDAS_TIME_MAX_RTT) ; port source éphémère. Sans authentification des sources : un attaquant en chemin reste possible.",
+            test: "crates/oe-timesource/src/ntp.rs (a_reply_to_another_request_is_refused, an_unsynchronized_source_is_refused, a_malformed_reply_is_refused, a_slow_round_trip_is_refused, queries_a_local_server_and_rejects_a_spoofing_one)",
             in_service: "",
-            target: "Constat T-2 : contrôler l'origine et le LI des réponses NTP, envisager NTS (RFC 8915).",
+            target: "Constat T-2 : NTS (RFC 8915) avec les laboratoires qui le proposent (tranche T-c).",
         },
         Entry {
             requirement: Requirement { standard: "ETSI EN 319 421", version: "V1.3.1 (2025-07)", clause: "§7.7.2", ids: &["TIS-7.7.2-07", "TIS-7.7.2-08", "TIS-7.7.2-09"], title: "Secondes intercalaires" },

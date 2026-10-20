@@ -181,6 +181,18 @@ L'état complet des mesures (écart par source, dispersion, strate, temps
 d'aller-retour, horodatage de la dernière synchronisation) est publié sur
 `/healthz` et `/api/v1/policy`, et journalisé à chaque cycle.
 
+Chaque mesure est un échange SNTP (RFC 5905) dont le client, écrit dans le
+dépôt (`crates/oe-timesource/src/ntp.rs`), ne retient une réponse que si elle
+répond bien à sa requête (constat T-2 de l'audit du 2026-09-25) : le
+*transmit* de la requête porte des bits aléatoires que l'*originate* de la
+réponse doit reprendre à l'identique, depuis un port source éphémère — une
+réponse forgée hors chemin est écartée. Sont refusées aussi une réponse d'une
+source non synchronisée (indicateur de saut 3, strate 0 ou ≥ 16), d'un autre
+mode ou d'une autre version que serveur 3/4, sans horodatages, ou dont
+l'aller-retour dépasse `OPENEIDAS_TIME_MAX_RTT` (1 s) — l'écart mesuré serait
+trop incertain. Le protocole n'est pas authentifié : contre un attaquant en
+chemin, seul NTS (RFC 8915) protège, ce qui reste à faire.
+
 Deux politiques dégradées existent pour le développement : `monitor`
 journalise l'écart sans bloquer l'émission, `disabled` désactive la
 surveillance. Aucune des deux n'est admissible en production.

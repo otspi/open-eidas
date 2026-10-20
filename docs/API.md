@@ -213,6 +213,7 @@ Toutes les options sont pilotées par variables d'environnement.
 | `OPENEIDAS_TIME_MAX_AGE` | `1h` | Ancienneté maximale de la dernière mesure |
 | `OPENEIDAS_TIME_POLL` | `5m` | Période d'interrogation des sources |
 | `OPENEIDAS_TIME_TIMEOUT` | `5s` | Délai d'attente par source |
+| `OPENEIDAS_TIME_MAX_RTT` | `1s` | Aller-retour maximal d'une mesure : au-delà, elle est écartée (son écart est trop incertain). Chaque réponse doit en outre reprendre le *transmit* aléatoire de la requête, venir d'un serveur (mode 4, version 3 ou 4) synchronisé (LI ≠ 3, strate 1 à 15) et porter des horodatages non nuls |
 | `OPENEIDAS_ENROLL_ENDPOINT` | — | URL de l'API d'enrôlement de la CA (`/api/v1/enroll`) |
 | `OPENEIDAS_ENROLL_PROFILE` | `tsa_signer` | Profil de certificat demandé |
 | `OPENEIDAS_ENROLL_HMAC_KEY` | — | Secret partagé authentifiant la demande de certificat (HMAC-SHA256 sur la CSR) |
