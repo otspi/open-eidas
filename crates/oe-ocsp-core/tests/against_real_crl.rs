@@ -510,3 +510,18 @@ async fn an_oversized_request_list_is_a_malformed_request() {
         oe_ocsp_core::asn1::OcspResponseStatus::MalformedRequest
     );
 }
+
+/// Constat C-5 (RFC 4055 §5) : l'algorithme de signature de la réponse porte
+/// des paramètres NULL ; openssl la vérifie toujours.
+#[tokio::test]
+async fn the_response_signature_algorithm_carries_null_parameters() {
+    let responder = build_responder().await;
+    let req_der = std::fs::read(fixtures_dir().join("request-good.der")).unwrap();
+    let resp_der = responder.handle(&req_der).await;
+    let basic = basic_response(&resp_der);
+    assert_eq!(
+        basic.signature_algorithm.parameters.as_ref(),
+        Some(&der::Any::from(der::asn1::Null))
+    );
+    verify_with_openssl(&resp_der, "good");
+}
