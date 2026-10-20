@@ -8,8 +8,14 @@
 //! 1. fait horodater la tête de chaîne par la TSU elle-même (`log.sealed`,
 //!    avec le jeton RFC 3161) : toute réécriture antérieure devrait reforger un
 //!    jeton signé par la clé du module cryptographique ;
-//! 2. dépose une copie du journal entier, sceau compris, sur un stockage objet
-//!    compatible S3 (`log.replicated`), si `OPENEIDAS_S3_ENDPOINT` est défini.
+//! 2. fait horodater la même tête par les TSA tierces de
+//!    `OPENEIDAS_CROSS_TSA_URLS` (`log.cross_sealed`, un enregistrement par
+//!    autorité qui a répondu) : le sceau de la TSU est auto-référentiel, il ne
+//!    prouve rien à qui ne lui fait pas déjà confiance ; un jeton d'une
+//!    autorité indépendante, vérifiable avec des outils standards, si ;
+//! 3. dépose une copie du journal entier, sceaux compris, sur un stockage
+//!    objet compatible S3 (`log.replicated`), si `OPENEIDAS_S3_ENDPOINT` est
+//!    défini.
 //!
 //! La copie est périodique, pas faite à chaque jeton : le journal reçoit une
 //! entrée par horodatage, et l'émission ne doit pas dépendre du stockage
@@ -17,8 +23,10 @@
 //! [`MAX_FAILURES`] passes en échec, `/healthz` se déclare dégradé. Un
 //! scellement en échec est retenté après [`SEAL_RETRY`] au plus.
 //!
-//! Le contreseing par une TSA tierce (`log.cross_sealed`) n'est pas encore
-//! branché : le sceau reste auto-référentiel tant qu'il ne l'est pas.
+//! Le jeton d'une TSA tierce est conservé tel quel, après contrôle qu'il
+//! porte bien l'empreinte soumise. Sa signature n'est pas vérifiée ici, faute
+//! d'ancres de confiance pour ces autorités : elle se vérifie après coup, par
+//! `openssl ts -verify` et leur certificat.
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -47,12 +55,19 @@ struct State {
     seal_failures: u32,
     last_copy: Option<OffsetDateTime>,
     copy_failures: u32,
+    last_cross_seal: Option<OffsetDateTime>,
+    /// Combien d'autorités tierces ont contresigné à la dernière passe.
+    last_cross_seal_count: usize,
+    cross_seal_failures: u32,
 }
 
-/// L'état du scellement et de la copie, partagé avec `/healthz`.
+/// L'état du scellement, du contreseing et de la copie, partagé avec
+/// `/healthz`.
 pub struct Health {
     state: Mutex<State>,
     copy_configured: bool,
+    /// Nombre de TSA tierces configurées ; zéro = contreseing désactivé.
+    cross_tsas: usize,
 }
 
 fn rfc3339(t: Option<OffsetDateTime>) -> Option<String> {
@@ -78,6 +93,12 @@ impl JournalHealth for Health {
                 state.copy_failures
             ));
         }
+        if state.cross_seal_failures >= MAX_FAILURES {
+            reasons.push(format!(
+                "aucun contreseing tiers depuis {} passes",
+                state.cross_seal_failures
+            ));
+        }
         JournalReport {
             degraded: (!reasons.is_empty()).then(|| reasons.join(" ; ")),
             detail: serde_json::json!({
@@ -87,15 +108,22 @@ impl JournalHealth for Health {
                 "offsite_copy": if self.copy_configured { "s3" } else { "non configurée" },
                 "last_copy": rfc3339(state.last_copy),
                 "copy_failures": state.copy_failures,
+                "cross_tsas": self.cross_tsas,
+                "last_cross_seal": rfc3339(state.last_cross_seal),
+                "last_cross_seal_count": state.last_cross_seal_count,
+                "cross_seal_failures": state.cross_seal_failures,
             }),
         }
     }
 }
 
-/// Ce qu'une passe a fait. `copied` vaut `None` sans stockage configuré.
+/// Ce qu'une passe a fait. `cross_sealed` (le nombre d'autorités tierces qui
+/// ont contresigné) vaut `None` sans TSA tierce configurée ; `copied`, sans
+/// stockage configuré.
 #[derive(Debug, PartialEq, Eq)]
 pub struct Outcome {
     pub sealed: bool,
+    pub cross_sealed: Option<usize>,
     pub copied: Option<bool>,
 }
 
@@ -103,8 +131,25 @@ pub struct Sealer {
     log: Arc<oe_audit::Log>,
     path: String,
     authority: Arc<Authority>,
+    cross: Option<oe_crosstsa::Client>,
     s3: Option<(oe_s3::Client, String)>,
     health: Arc<Health>,
+}
+
+/// La tête de chaîne qu'une passe scelle : la même pour la TSU et pour les
+/// autorités tierces.
+#[derive(Clone)]
+struct Head {
+    seq: u64,
+    hash: String,
+    digest: Vec<u8>,
+}
+
+fn sha256() -> Result<spki::AlgorithmIdentifierOwned, String> {
+    Ok(spki::AlgorithmIdentifierOwned {
+        oid: der::asn1::ObjectIdentifier::new(SHA256_OID).map_err(|e| e.to_string())?,
+        parameters: None,
+    })
 }
 
 impl Sealer {
@@ -112,19 +157,42 @@ impl Sealer {
         log: Arc<oe_audit::Log>,
         path: String,
         authority: Arc<Authority>,
+        cross_tsas: Vec<String>,
+        cross_timeout: Duration,
         s3: Option<(oe_s3::Client, String)>,
     ) -> Sealer {
         let health = Arc::new(Health {
             state: Mutex::new(State::default()),
             copy_configured: s3.is_some(),
+            cross_tsas: cross_tsas.len(),
+        });
+        let cross = (!cross_tsas.is_empty()).then(|| {
+            oe_crosstsa::Client::new(oe_crosstsa::Options {
+                urls: cross_tsas,
+                timeout: cross_timeout,
+            })
         });
         Sealer {
             log,
             path,
             authority,
+            cross,
             s3,
             health,
         }
+    }
+
+    fn head(&self) -> Result<Head, String> {
+        let (seq, hash) = self.log.head().map_err(|e| e.to_string())?;
+        let digest = decode_head(&hash)?;
+        Ok(Head { seq, hash, digest })
+    }
+
+    fn state(&self) -> std::sync::MutexGuard<'_, State> {
+        self.health
+            .state
+            .lock()
+            .expect("verrou de l'état du journal")
     }
 
     pub fn health(&self) -> Arc<Health> {
@@ -134,17 +202,13 @@ impl Sealer {
     /// Fait horodater la tête de chaîne par la TSU et consigne le jeton. La
     /// tête scellée est celle d'avant l'horodatage : le jeton lui-même, puis
     /// le sceau, s'ajoutent derrière et seront couverts par le sceau suivant.
-    fn seal(&self) -> Result<(), String> {
-        let (seq, head) = self.log.head().map_err(|e| e.to_string())?;
-        let digest = decode_head(&head)?;
+    fn seal(&self, head: &Head) -> Result<(), String> {
         let request = oe_rfc3161_asn1::TimeStampReq {
             version: 1,
             message_imprint: oe_rfc3161_asn1::MessageImprint {
-                hash_algorithm: spki::AlgorithmIdentifierOwned {
-                    oid: der::asn1::ObjectIdentifier::new(SHA256_OID).map_err(|e| e.to_string())?,
-                    parameters: None,
-                },
-                hashed_message: der::asn1::OctetString::new(digest).map_err(|e| e.to_string())?,
+                hash_algorithm: sha256()?,
+                hashed_message: der::asn1::OctetString::new(head.digest.clone())
+                    .map_err(|e| e.to_string())?,
             },
             req_policy: None,
             nonce: None,
@@ -161,8 +225,8 @@ impl Sealer {
             .map_err(|e| e.to_string())?;
 
         let mut data = oe_audit::Data::new();
-        data.insert("sealed_seq".into(), serde_json::json!(seq));
-        data.insert("sealed_head".into(), serde_json::json!(head));
+        data.insert("sealed_seq".into(), serde_json::json!(head.seq));
+        data.insert("sealed_head".into(), serde_json::json!(head.hash));
         data.insert(
             "token".into(),
             serde_json::json!(base64::engine::general_purpose::STANDARD.encode(token)),
@@ -170,6 +234,28 @@ impl Sealer {
         self.log
             .append(oe_audit::EVENT_SEALED, Some(data))
             .map_err(|e| e.to_string())
+    }
+
+    /// Fait horodater la même tête par chaque TSA tierce et consigne un
+    /// enregistrement par autorité qui a répondu. Rend leur nombre : une
+    /// autorité injoignable n'empêche pas les autres de compter.
+    async fn cross_seal(&self, client: &oe_crosstsa::Client, head: &Head) -> Result<usize, String> {
+        let attestations = client.seal(&head.digest, sha256()?).await;
+        let mut recorded = 0;
+        for a in attestations {
+            let mut data = oe_audit::Data::new();
+            data.insert("sealed_seq".into(), serde_json::json!(head.seq));
+            data.insert("sealed_head".into(), serde_json::json!(head.hash));
+            data.insert("tsa".into(), serde_json::json!(a.tsa));
+            data.insert("gen_time".into(), serde_json::json!(a.gen_time));
+            data.insert("serial".into(), serde_json::json!(a.serial));
+            data.insert("token".into(), serde_json::json!(a.token));
+            self.log
+                .append(oe_audit::EVENT_CROSS_SEALED, Some(data))
+                .map_err(|e| e.to_string())?;
+            recorded += 1;
+        }
+        Ok(recorded)
     }
 
     /// Dépose le journal entier sur le stockage distant, puis le consigne.
@@ -185,20 +271,66 @@ impl Sealer {
             .map_err(|e| e.to_string())
     }
 
-    /// Une passe : sceller, puis copier. La copie est tentée même si le
-    /// scellement a échoué — une copie sans sceau frais vaut mieux que pas de
-    /// copie.
+    /// Une passe : sceller, faire contresigner, puis copier. Chaque étape est
+    /// tentée quoi qu'il soit arrivé aux précédentes — un contreseing ou une
+    /// copie sans sceau frais valent mieux que rien — et l'état rendu par
+    /// `/healthz` est mis à jour au fil de l'eau, sans attendre les tiers.
     pub async fn once(self: &Arc<Self>) -> Outcome {
-        let this = self.clone();
-        // L'horodatage est une signature HSM, bloquante.
-        let sealed = match tokio::task::spawn_blocking(move || this.seal()).await {
-            Ok(result) => result,
-            Err(e) => Err(e.to_string()),
-        };
-        let now = OffsetDateTime::now_utc();
-        if let Err(e) = &sealed {
-            tracing::error!(erreur = %e, "journal d'audit : scellement en échec");
+        let head = self.head();
+        if let Err(e) = &head {
+            tracing::error!(erreur = %e, "journal d'audit : tête de chaîne illisible");
         }
+
+        // L'horodatage est une signature HSM, bloquante.
+        let sealed = match head.clone() {
+            Ok(head) => {
+                let this = self.clone();
+                match tokio::task::spawn_blocking(move || this.seal(&head)).await {
+                    Ok(result) => result,
+                    Err(e) => Err(e.to_string()),
+                }
+            }
+            Err(e) => Err(e),
+        };
+        match &sealed {
+            Ok(()) => {
+                let mut state = self.state();
+                state.last_seal = Some(OffsetDateTime::now_utc());
+                state.seal_failures = 0;
+            }
+            Err(e) => {
+                tracing::error!(erreur = %e, "journal d'audit : scellement en échec");
+                let mut state = self.state();
+                state.seal_failures = state.seal_failures.saturating_add(1);
+            }
+        }
+
+        let cross_sealed = match (&self.cross, &head) {
+            (Some(client), Ok(head)) => {
+                let count = match self.cross_seal(client, head).await {
+                    Ok(count) => count,
+                    Err(e) => {
+                        tracing::error!(erreur = %e, "journal d'audit : contreseing non consigné");
+                        0
+                    }
+                };
+                Some(count)
+            }
+            (Some(_), Err(_)) => Some(0),
+            (None, _) => None,
+        };
+        if let Some(count) = cross_sealed {
+            let mut state = self.state();
+            state.last_cross_seal_count = count;
+            if count > 0 {
+                state.last_cross_seal = Some(OffsetDateTime::now_utc());
+                state.cross_seal_failures = 0;
+            } else {
+                tracing::error!("journal d'audit : aucune TSA tierce n'a contresigné");
+                state.cross_seal_failures = state.cross_seal_failures.saturating_add(1);
+            }
+        }
+
         let copied = match &self.s3 {
             Some((client, key)) => {
                 let result = self.copy(client, key).await;
@@ -209,28 +341,21 @@ impl Sealer {
             }
             None => None,
         };
-
-        let mut state = self
-            .health
-            .state
-            .lock()
-            .expect("verrou de l'état du journal");
-        if sealed.is_ok() {
-            state.last_seal = Some(now);
-            state.seal_failures = 0;
-        } else {
-            state.seal_failures = state.seal_failures.saturating_add(1);
-        }
         match copied {
             Some(true) => {
+                let mut state = self.state();
                 state.last_copy = Some(OffsetDateTime::now_utc());
                 state.copy_failures = 0;
             }
-            Some(false) => state.copy_failures = state.copy_failures.saturating_add(1),
+            Some(false) => {
+                let mut state = self.state();
+                state.copy_failures = state.copy_failures.saturating_add(1);
+            }
             None => {}
         }
         Outcome {
             sealed: sealed.is_ok(),
+            cross_sealed,
             copied,
         }
     }
@@ -251,8 +376,9 @@ impl Sealer {
 }
 
 /// Quand repasser : à l'intervalle prévu, ou plus tôt si le scellement a
-/// échoué. Une copie en échec, elle, attend l'intervalle : la retenter sans
-/// délai ajouterait un sceau et un jeton au journal à chaque essai.
+/// échoué. Une copie ou un contreseing en échec, eux, attendent l'intervalle :
+/// les retenter sans délai ajouterait un sceau et un jeton au journal à chaque
+/// essai, et solliciterait des autorités tierces plus que de raison.
 fn next_delay(outcome: &Outcome, every: Duration) -> Duration {
     if outcome.sealed {
         every
@@ -387,6 +513,34 @@ mod tests {
     }
 
     fn env(name: &str, s3: Option<(oe_s3::Client, String)>) -> Env {
+        env_with(name, Vec::new(), s3)
+    }
+
+    /// Une TSA tierce réelle (RFC 3161 sur HTTP), indépendante du service
+    /// sous test : rend son URL.
+    async fn third_party_tsa() -> String {
+        let app = oe_httpapi::router(oe_httpapi::Options {
+            authority: authority(Arc::new(AtomicBool::new(false))),
+            time_source: oe_timesource::Monitor::new(oe_timesource::Options {
+                policy: oe_timesource::Policy::Disabled,
+                ..Default::default()
+            })
+            .unwrap(),
+            max_request_bytes: 64 * 1024,
+            version: "tierce".to_string(),
+            cors_allowed_origin: None,
+            journal: None,
+        });
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/tsa", listener.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        url
+    }
+
+    /// Une adresse où rien n'écoute.
+    const UNREACHABLE: &str = "http://127.0.0.1:9/tsa";
+
+    fn env_with(name: &str, cross: Vec<String>, s3: Option<(oe_s3::Client, String)>) -> Env {
         let dir = Dir::new(name);
         let path = dir.0.join("audit.log");
         let log = Arc::new(oe_audit::Log::open(&path).unwrap());
@@ -396,6 +550,8 @@ mod tests {
             log.clone(),
             path.to_string_lossy().into_owned(),
             authority(clock_down.clone()),
+            cross,
+            Duration::from_secs(2),
             s3,
         ));
         Env {
@@ -427,6 +583,7 @@ mod tests {
             outcome,
             Outcome {
                 sealed: true,
+                cross_sealed: None,
                 copied: None
             }
         );
@@ -477,6 +634,7 @@ mod tests {
             outcome,
             Outcome {
                 sealed: true,
+                cross_sealed: None,
                 copied: Some(true)
             }
         );
@@ -495,6 +653,124 @@ mod tests {
         assert_eq!(data["key"], "tsa-server/audit.log");
         assert_eq!(data["bytes"], copy.len());
         assert_eq!(oe_audit::verify(&env.path).unwrap().seals, 1);
+    }
+
+    /// La tête que la TSU scelle est aussi horodatée par chaque autorité
+    /// tierce joignable ; son jeton, conservé, se vérifie avec openssl. Une
+    /// autorité injoignable n'empêche pas l'autre de compter.
+    #[tokio::test]
+    async fn the_sealed_head_is_countersigned_by_each_reachable_third_party() {
+        let tsa = third_party_tsa().await;
+        let env = env_with("cross", vec![UNREACHABLE.to_string(), tsa], None);
+        let (seq, head) = env.log.head().unwrap();
+
+        let outcome = env.sealer.once().await;
+        assert_eq!(
+            outcome,
+            Outcome {
+                sealed: true,
+                cross_sealed: Some(1),
+                copied: None
+            }
+        );
+
+        let seal = &events(&env.path, oe_audit::EVENT_SEALED)[0];
+        let cross = events(&env.path, oe_audit::EVENT_CROSS_SEALED);
+        assert_eq!(cross.len(), 1, "{cross:?}");
+        let data = cross[0].data.as_ref().unwrap();
+        // La même tête que celle du sceau de la TSU.
+        assert_eq!(data["sealed_seq"], seq);
+        assert_eq!(data["sealed_head"], head.as_str());
+        assert_eq!(
+            data["sealed_head"],
+            seal.data.as_ref().unwrap()["sealed_head"]
+        );
+        assert!(
+            data["tsa"].as_str().is_some_and(|t| !t.is_empty()),
+            "{data:?}"
+        );
+        assert!(
+            data["serial"].as_str().is_some_and(|t| !t.is_empty()),
+            "{data:?}"
+        );
+
+        let token_path = env.path.with_file_name("cross.tsr");
+        std::fs::write(
+            &token_path,
+            base64::engine::general_purpose::STANDARD
+                .decode(data["token"].as_str().unwrap())
+                .unwrap(),
+        )
+        .unwrap();
+        let verify = |digest: &str| {
+            std::process::Command::new("openssl")
+                .args(["ts", "-verify", "-digest", digest, "-in"])
+                .arg(&token_path)
+                .arg("-CAfile")
+                .arg(fixtures().join("tsu-cert.pem"))
+                .output()
+                .unwrap()
+        };
+        let ok = verify(&head);
+        assert!(
+            ok.status.success(),
+            "{}",
+            String::from_utf8_lossy(&ok.stderr)
+        );
+        let (_, later) = env.log.head().unwrap();
+        assert!(!verify(&later).status.success());
+
+        let report = env.sealer.health().report();
+        assert!(report.degraded.is_none(), "{:?}", report.degraded);
+        assert_eq!(report.detail["cross_tsas"], 2);
+        assert_eq!(report.detail["last_cross_seal_count"], 1);
+        assert!(report.detail["last_cross_seal"].is_string());
+        assert_eq!(oe_audit::verify(&env.path).unwrap().seals, 1);
+    }
+
+    /// Sans aucun contreseing pendant trois passes, le sceau n'est plus
+    /// qu'auto-référentiel : `/healthz` le dit. La TSU, elle, scelle toujours.
+    #[tokio::test]
+    async fn three_passes_without_any_countersignature_degrade_health() {
+        let env = env_with("cross-down", vec![UNREACHABLE.to_string()], None);
+        let health = env.sealer.health();
+        for pass in 1..=MAX_FAILURES {
+            let outcome = env.sealer.once().await;
+            assert_eq!(
+                outcome,
+                Outcome {
+                    sealed: true,
+                    cross_sealed: Some(0),
+                    copied: None
+                }
+            );
+            let report = health.report();
+            assert_eq!(report.detail["cross_seal_failures"], pass);
+            assert_eq!(
+                report.degraded.is_some(),
+                pass >= MAX_FAILURES,
+                "passe {pass}"
+            );
+        }
+        assert!(health.report().degraded.unwrap().contains("contreseing"));
+        assert!(events(&env.path, oe_audit::EVENT_CROSS_SEALED).is_empty());
+        assert_eq!(
+            events(&env.path, oe_audit::EVENT_SEALED).len() as u32,
+            MAX_FAILURES
+        );
+    }
+
+    /// Sans TSA tierce configurée, le contreseing n'est ni tenté ni compté.
+    #[tokio::test]
+    async fn without_third_parties_no_countersignature_is_attempted() {
+        let env = env("cross-off", None);
+        for _ in 0..=MAX_FAILURES {
+            assert_eq!(env.sealer.once().await.cross_sealed, None);
+        }
+        let report = env.sealer.health().report();
+        assert!(report.degraded.is_none());
+        assert_eq!(report.detail["cross_tsas"], 0);
+        assert!(report.detail["last_cross_seal"].is_null());
     }
 
     /// Un échec ne bloque rien, mais il se compte : au-delà de trois passes,
@@ -520,6 +796,7 @@ mod tests {
                 outcome,
                 Outcome {
                     sealed: true,
+                    cross_sealed: None,
                     copied: Some(false)
                 }
             );
@@ -555,6 +832,7 @@ mod tests {
                 outcome,
                 Outcome {
                     sealed: false,
+                    cross_sealed: None,
                     copied: Some(true)
                 }
             );
@@ -580,7 +858,11 @@ mod tests {
     #[test]
     fn a_failed_seal_is_retried_sooner_a_failed_copy_is_not() {
         let hour = Duration::from_secs(3600);
-        let outcome = |sealed, copied| Outcome { sealed, copied };
+        let outcome = |sealed, copied| Outcome {
+            sealed,
+            cross_sealed: None,
+            copied,
+        };
         assert_eq!(next_delay(&outcome(true, Some(true)), hour), hour);
         assert_eq!(next_delay(&outcome(true, Some(false)), hour), hour);
         assert_eq!(next_delay(&outcome(true, None), hour), hour);
