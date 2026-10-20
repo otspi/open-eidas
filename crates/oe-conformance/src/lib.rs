@@ -964,11 +964,11 @@ pub fn system_matrix() -> Matrix {
         },
         Entry {
             requirement: Requirement { standard: "ETSI EN 319 421", version: "V1.3.1 (2025-07)", clause: "§7.6.2", ids: &["TIS-7.6.2-03"], title: "Génération de la clé TSU dans le module cryptographique" },
-            status: Status::Gap,
-            mechanism: "La bi-clé est générée dans le token PKCS#11 (oe_hsm::Pkcs11Token::generate_rsa_key) et ne manipule qu'un SigningToken ; la clé privée n'est jamais extraite.",
-            test: "bin/tsa-server/tests/serve.rs (the_binary_applies_what_the_matrix_declares)",
-            in_service: "",
-            target: "Constat H-1 : vérifier au chargement que la clé a été générée dans le module (CKA_LOCAL, CKA_NEVER_EXTRACTABLE).",
+            status: Status::Covered,
+            mechanism: "La bi-clé est générée dans le token PKCS#11 (oe_hsm::Pkcs11Token::generate_rsa_key, gabarit privé non extractable, sensible, réservé à la signature : CKA_DECRYPT, CKA_UNWRAP, CKA_DERIVE et CKA_MODIFIABLE à faux) et ne manipule qu'un SigningToken. Avant toute signature, une fois par ouverture, le token exige sur la clé privée CKA_LOCAL, CKA_NEVER_EXTRACTABLE, CKA_ALWAYS_SENSITIVE et CKA_SIGN vrais et un seul objet pour le label et le CKA_ID : une clé importée, ou une clé générée puis doublée par un import, est refusée (constat H-1, levé). Limite : les clés générées avant le gabarit restreint (H-3) portent CKA_DECRYPT/UNWRAP/DERIVE à vrai jusqu'à leur renouvellement ; le module de test est SoftHSM2, pas un HSM certifié (ligne dédiée).",
+            test: "crates/oe-hsm/tests/key_provenance.rs (only_a_key_born_in_the_module_is_used), bin/tsa-server/tests/serve.rs (the_binary_applies_what_the_matrix_declares)",
+            in_service: "bin/tsa-server/tests/serve.rs (the_binary_applies_what_the_matrix_declares)",
+            target: "",
         },
         Entry {
             requirement: Requirement { standard: "ETSI EN 319 421", version: "V1.3.1 (2025-07)", clause: "§7.6.5", ids: &["TIS-7.6.5-01"], title: "Durée de vie du certificat de l'unité d'horodatage plafonnée" },
