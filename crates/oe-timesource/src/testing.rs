@@ -205,7 +205,7 @@ pub fn local_nts_server(tamper: Tamper) -> LocalNtsServer {
                 ]
                 .concat();
                 let s2c = if tamper == Tamper::Authenticator {
-                    [0xEE; KEY_LEN]
+                    rand::random::<[u8; KEY_LEN]>()
                 } else {
                     session.1
                 };
@@ -225,13 +225,33 @@ pub fn local_nts_server(tamper: Tamper) -> LocalNtsServer {
             let mut tls = rustls::Stream::new(&mut conn, &mut tcp);
             let mut buf = Vec::new();
             let mut chunk = [0u8; 1024];
+            // Un client qui refuse le certificat (test) fait échouer la lecture :
+            // on passe au suivant plutôt que de paniquer.
+            let mut failed = false;
             loop {
-                let n = tls.read(&mut chunk).unwrap();
+                let Ok(n) = tls.read(&mut chunk) else {
+                    failed = true;
+                    break;
+                };
                 buf.extend_from_slice(&chunk[..n]);
-                if complete_records(&buf).unwrap().is_some() || n == 0 {
+                if complete_records(&buf).ok().flatten().is_some() || n == 0 {
                     break;
                 }
             }
+            if failed {
+                continue;
+            }
+            // Les clés de la session sont publiées au serveur NTP *avant* de
+            // répondre au client : sinon sa première requête UDP peut arriver
+            // avant elles et rester sans réponse.
+            let export = |conn: &rustls::ServerConnection, direction: u8| {
+                let context = [0, 0, 0, AEAD_AES_SIV_CMAC_256 as u8, direction];
+                conn.export_keying_material([0u8; KEY_LEN], EXPORTER_LABEL, Some(&context))
+                    .unwrap()
+            };
+            keys.lock()
+                .unwrap()
+                .push((export(tls.conn, 0), export(tls.conn, 1)));
             let mut response = vec![
                 record(
                     REC_NEXT_PROTOCOL | CRITICAL,
@@ -244,15 +264,8 @@ pub fn local_nts_server(tamper: Tamper) -> LocalNtsServer {
                 response.push(record(REC_NEW_COOKIE, &rand::random::<[u8; 32]>()));
             }
             response.push(record(REC_END_OF_MESSAGE | CRITICAL, &[]));
-            tls.write_all(&response.concat()).unwrap();
-            tls.flush().unwrap();
-            let export = |direction: u8| {
-                let context = [0, 0, 0, AEAD_AES_SIV_CMAC_256 as u8, direction];
-                tls.conn
-                    .export_keying_material([0u8; KEY_LEN], EXPORTER_LABEL, Some(&context))
-                    .unwrap()
-            };
-            keys.lock().unwrap().push((export(0), export(1)));
+            let _ = tls.write_all(&response.concat());
+            let _ = tls.flush();
             tls.conn.send_close_notify();
             let _ = tls.flush();
         }

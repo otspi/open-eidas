@@ -497,9 +497,9 @@ mod tests {
     /// modifié sont refusés.
     #[test]
     fn the_authenticator_binds_key_packet_and_nonce() {
-        let key = [7u8; KEY_LEN];
-        let nonce = [3u8; NONCE_LEN];
-        let packet = extension_field(EF_UNIQUE_IDENTIFIER, &[1u8; 32]);
+        let key: [u8; KEY_LEN] = rand::random();
+        let nonce: [u8; NONCE_LEN] = rand::random();
+        let packet = extension_field(EF_UNIQUE_IDENTIFIER, &rand::random::<[u8; 32]>());
         let ef = authenticator(
             &key,
             &nonce,
@@ -511,7 +511,9 @@ mod tests {
         let plaintext = open_authenticator(&key, &packet, body).unwrap();
         assert_eq!(inner_cookies(&plaintext).unwrap(), vec![vec![5u8; 8]]);
 
-        assert!(open_authenticator(&[8u8; KEY_LEN], &packet, body).is_err());
+        let mut other_key = key;
+        other_key[0] ^= 1;
+        assert!(open_authenticator(&other_key, &packet, body).is_err());
         let mut tampered = packet.clone();
         tampered[10] ^= 1;
         assert!(open_authenticator(&key, &tampered, body).is_err());
