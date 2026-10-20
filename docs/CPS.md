@@ -53,7 +53,7 @@ reprendre).
 | | |
 |---|---|
 | Nom du document | `[À COMPLÉTER]` |
-| OID de politique de certification | `[À COMPLÉTER — un OID par type de certificat émis (TSU, répondeur OCSP), sous l'arc PEN de l'association]` |
+| OID de politique de certification | Certificat TSU : NCP+ `0.4.0.2042.1.2` (décision du 2026-10-20, constat C-6). `[À COMPLÉTER — OID propre sous l'arc PEN de l'association si le CPC en décide, et OID du répondeur OCSP]` |
 | Version | 0.1 (brouillon) |
 
 #### A.1.3 Acteurs de la PKI

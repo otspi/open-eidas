@@ -220,3 +220,19 @@ fn the_tsa_and_ocsp_entrypoints_refuse_a_so_pin_that_falls_back_in_production() 
         assert!(log.contains("--so-pin user-1234"), "{log}");
     }
 }
+
+/// Constat C-6 : en production, l'`organizationIdentifier` du certificat TSU
+/// est obligatoire (EN 319 412-3 `LEG-4.2.1-2`).
+#[test]
+fn production_requires_the_organization_identifier() {
+    let out = ca_config(&[
+        ("OPENEIDAS_PRODUCTION", "true"),
+        ("OPENEIDAS_ROOT_PIN", "2222-root"),
+    ]);
+    assert!(!out.status.success());
+    assert!(
+        text(&out).contains("OPENEIDAS_ORG_IDENTIFIER est obligatoire"),
+        "{}",
+        text(&out)
+    );
+}

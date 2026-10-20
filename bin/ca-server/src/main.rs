@@ -569,7 +569,7 @@ async fn build_issuer(
     let signer: Arc<dyn SigningToken + Send + Sync> =
         Arc::new(oe_hsm::SyncToken::new(issuing_token));
 
-    oe_ca_core::Issuer::new(oe_ca_core::Options {
+    let issuer = oe_ca_core::Issuer::new(oe_ca_core::Options {
         signer,
         certificate: hierarchy.issuing,
         chain: vec![hierarchy.root],
@@ -579,7 +579,14 @@ async fn build_issuer(
         crl_validity: cfg.crl_validity,
         recorder: Some(recorder),
     })
-    .unwrap_or_else(|e| die("construction de l'autorité émettrice", e))
+    .unwrap_or_else(|e| die("construction de l'autorité émettrice", e));
+    if cfg.organization_identifier.is_empty() {
+        issuer
+    } else {
+        issuer
+            .with_organization_identifier(&cfg.organization_identifier)
+            .unwrap_or_else(|e| die("OPENEIDAS_ORG_IDENTIFIER", e))
+    }
 }
 
 /// Le service d'actions d'opérateur, derrière le lien interne. Toute lacune de
