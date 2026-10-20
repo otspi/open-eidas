@@ -58,7 +58,9 @@ impl spki::DynSignatureAlgorithmIdentifier for HsmKeypair {
         Ok(AlgorithmIdentifierOwned {
             oid: der::asn1::ObjectIdentifier::new(OID_SHA256_WITH_RSA)
                 .expect("OID constant invalide"),
-            parameters: None,
+            // RFC 4055 §5 : sha256WithRSAEncryption porte des paramètres NULL à
+            // l\'émission (constat C-5) ; l\'absence reste tolérée à la lecture.
+            parameters: Some(der::asn1::Null.into()),
         })
     }
 }

@@ -1377,3 +1377,41 @@ async fn an_expired_revoked_certificate_stays_on_the_crl_which_declares_it() {
     let text = String::from_utf8_lossy(&out.stdout);
     assert!(text.contains("2.5.29.60"), "{text}");
 }
+
+/// Constat C-5 (RFC 4055 §5) : `sha256WithRSAEncryption` porte des paramètres
+/// NULL, dans le certificat (champ `signature` du TBS comme algorithme
+/// extérieur, qui doivent concorder) et dans la CRL.
+#[tokio::test]
+async fn signature_algorithms_carry_explicit_null_parameters() {
+    let store = store();
+    let (issuer, _issuing_signer) = issuer_from_ceremony(store.clone()).await;
+    let end_entity = SoftwareToken::generate(2048);
+    let cert = issuer
+        .issue(
+            &end_entity.public_key_der().unwrap(),
+            "ocsp.example.test",
+            &profile::ocsp_responder(),
+            "txn-c5",
+        )
+        .await
+        .unwrap();
+    let null = der::Any::from(der::asn1::Null);
+    for (name, algorithm) in [
+        ("signature du TBS", cert.tbs_certificate().signature()),
+        ("algorithme du certificat", cert.signature_algorithm()),
+        (
+            "algorithme de la hiérarchie",
+            issuer.certificate().signature_algorithm(),
+        ),
+    ] {
+        assert_eq!(algorithm.parameters.as_ref(), Some(&null), "{name}");
+    }
+    let crl = issuer.publish_crl().await.unwrap();
+    let parsed: x509_cert::crl::CertificateList =
+        x509_cert::crl::CertificateList::from_der(&crl.der).unwrap();
+    assert_eq!(
+        parsed.tbs_cert_list.signature.parameters.as_ref(),
+        Some(&null)
+    );
+    assert_eq!(parsed.signature_algorithm.parameters.as_ref(), Some(&null));
+}
