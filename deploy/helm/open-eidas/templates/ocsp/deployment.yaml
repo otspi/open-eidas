@@ -40,6 +40,16 @@ spec:
                 secretKeyRef:
                   name: {{ $secretName }}
                   key: ocsp-pin
+            - name: OPENEIDAS_SO_PIN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secretName }}
+                  key: ocsp-so-pin
+                  optional: true
+            {{- if .Values.production }}
+            - name: OPENEIDAS_PRODUCTION
+              value: "true"
+            {{- end }}
             - name: OPENEIDAS_TOKEN_LABEL
               value: open-eidas-ocsp
             - name: OPENEIDAS_KEY_LABEL

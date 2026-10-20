@@ -132,6 +132,24 @@ une fois pour que les deux ne puissent pas diverger sur le DSN ou les secrets.
     secretKeyRef:
       name: {{ .secret }}
       key: ca-root-pin
+# PIN SO des deux tokens (constat C-2) : `optional` pour un Secret externe qui
+# ne les porte pas ; en production, le conteneur refuse alors de démarrer.
+- name: OPENEIDAS_ROOT_SO_PIN
+  valueFrom:
+    secretKeyRef:
+      name: {{ .secret }}
+      key: ca-root-so-pin
+      optional: true
+- name: OPENEIDAS_ISSUING_SO_PIN
+  valueFrom:
+    secretKeyRef:
+      name: {{ .secret }}
+      key: ca-issuing-so-pin
+      optional: true
+{{- if $ctx.Values.production }}
+- name: OPENEIDAS_PRODUCTION
+  value: "true"
+{{- end }}
 - name: OPENEIDAS_CA_KEY_BITS
   value: {{ $ctx.Values.ca.keyBits | quote }}
 - name: OPENEIDAS_ROOT_CN

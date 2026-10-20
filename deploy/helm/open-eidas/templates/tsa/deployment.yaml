@@ -40,6 +40,19 @@ spec:
                 secretKeyRef:
                   name: {{ $secretName }}
                   key: tsa-pin
+            # PIN SO du token (constat C-2) : `optional` pour un Secret externe
+            # qui ne le porte pas ; en production, le conteneur refuse alors de
+            # démarrer (deploy/tsa/entrypoint.sh).
+            - name: OPENEIDAS_SO_PIN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secretName }}
+                  key: tsa-so-pin
+                  optional: true
+            {{- if .Values.production }}
+            - name: OPENEIDAS_PRODUCTION
+              value: "true"
+            {{- end }}
             - name: OPENEIDAS_TOKEN_LABEL
               value: open-eidas-tsa
             - name: OPENEIDAS_KEY_LABEL
