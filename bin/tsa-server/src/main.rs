@@ -101,11 +101,13 @@ fn describe_clock_status(status: &oe_timesource::Status) -> serde_json::Value {
         "ecart_secondes": status.offset.as_seconds_f64(),
         "etendue_secondes": status.spread.as_seconds_f64(),
         "derniere_synchro": status.last_sync.map(format_time),
+        "seconde_intercalaire": status.leap,
         "sources": status.sources.iter().map(|s| serde_json::json!({
             "serveur": s.server,
             "ecart_secondes": s.offset.as_seconds_f64(),
             "aller_retour_secondes": s.rtt.as_seconds_f64(),
             "stratum": s.stratum,
+            "saut": s.leap,
             "a": format_time(s.at),
             "erreur": s.err,
         })).collect::<Vec<_>>(),
@@ -438,6 +440,7 @@ mod tests {
             spread: time::Duration::milliseconds(5),
             last_sync: None,
             sources: Vec::new(),
+            leap: 0,
         };
         let json = describe_clock_status(&status);
         assert_eq!(json["politique"], "enforce");

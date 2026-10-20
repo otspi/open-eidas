@@ -193,6 +193,18 @@ l'aller-retour dépasse `OPENEIDAS_TIME_MAX_RTT` (1 s) — l'écart mesuré sera
 trop incertain. Le protocole n'est pas authentifié : contre un attaquant en
 chemin, seul NTS (RFC 8915) protège, ce qui reste à faire.
 
+L'indicateur de saut des réponses est lu (constat T-4) : dès qu'une source
+annonce une seconde intercalaire, `/healthz` le montre
+(`time_source.leap_second`, 1 insertion ou 2 suppression), le journal la
+consigne (`time.leap_second`, phase `annoncee`), et, en politique `enforce`,
+le service suspend l'émission (`timeNotAvailable`) pendant la dernière minute
+du jour UTC annoncé — c'est là que l'ajustement a lieu — jusqu'à ce qu'une
+mesure prise après le changement de jour, déclenchée sans attendre
+l'intervalle, confirme l'écart de l'horloge locale ; cette mesure est
+consignée (phase `appliquee`, écart mesuré). L'horloge système doit appliquer
+la seconde par un saut, jamais par lissage : c'est une exigence d'exploitation
+(voir la CPS), que le code ne peut pas vérifier.
+
 Deux politiques dégradées existent pour le développement : `monitor`
 journalise l'écart sans bloquer l'émission, `disabled` désactive la
 surveillance. Aucune des deux n'est admissible en production.
