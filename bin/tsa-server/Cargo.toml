@@ -41,6 +41,7 @@ pem = "3"
 rustls-pki-types = "1"
 
 [dev-dependencies]
+oe-hsm = { path = "../../crates/oe-hsm", features = ["testing"] }
 base64 = "0.22"
 oe-ca-core = { path = "../../crates/oe-ca-core" }
 oe-castore = { path = "../../crates/oe-castore" }

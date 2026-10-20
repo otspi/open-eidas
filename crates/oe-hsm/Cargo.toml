@@ -16,6 +16,11 @@ default = ["pkcs11"]
 # Le token PKCS#11 et `cryptoki`. Un service qui n'ouvre jamais de session PKCS#11
 # (ra-console, docs/WEBUI.md §16) la désactive et ne compile pas `cryptoki`.
 pkcs11 = ["dep:cryptoki"]
+# `oe_hsm::testing::SoftwareToken` : la clé privée vit en mémoire du processus.
+# Réservée aux tests (constat H-2 de l'audit du 2026-09-25) : les crates qui en
+# ont besoin l'activent dans leurs `[dev-dependencies]`, jamais en dépendance
+# normale — un binaire de production ne la contient pas.
+testing = []
 
 [dependencies]
 cryptoki = { version = "0.12", optional = true }

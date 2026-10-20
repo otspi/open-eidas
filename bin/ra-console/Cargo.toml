@@ -69,7 +69,7 @@ webauthn-authenticator-rs = { version = "0.5", features = ["softtoken"] }
 ca-server = { path = "../ca-server" }
 oe-ca-core = { path = "../../crates/oe-ca-core" }
 oe-castore = { path = "../../crates/oe-castore", features = ["postgres"] }
-oe-hsm = { path = "../../crates/oe-hsm" }
+oe-hsm = { path = "../../crates/oe-hsm", features = ["testing"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 rsa = "0.9"
 tower = { version = "0.5", features = ["util"] }

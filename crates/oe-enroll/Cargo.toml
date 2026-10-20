@@ -32,5 +32,6 @@ rsa = "0.9"
 rand = "0.8"
 
 [dev-dependencies]
+oe-hsm = { path = "../oe-hsm", default-features = false, features = ["testing"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net"] }
 axum = "0.8"
