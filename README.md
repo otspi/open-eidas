@@ -72,11 +72,10 @@ Ce dépôt héberge le prototype **fonctionnel et vérifiable** du premier servi
   laboratoires de métrologie (Observatoire de Paris, PTB) et **cesse d'émettre**
   dès que la dérive dépasse le seuil annoncé, comme l'exige ETSI EN 319 421 ;
 - un **journal d'audit chaîné par hachage**, écrit *avant* chaque signature :
-  si le journal ne peut pas être écrit, aucun jeton ne sort. Le scellement de
-  la tête de chaîne par des TSA tierces publiques et la réplication hors site
-  existent en bibliothèques (`oe-crosstsa`, `oe-replicate`) mais **ne sont pas
-  encore câblés dans les services** — écart déclaré dans
-  [docs/CONFORMITE-ETSI.md](docs/CONFORMITE-ETSI.md) ;
+  si le journal ne peut pas être écrit, aucun jeton ne sort. Sa tête de chaîne
+  est **scellée périodiquement** par la TSA (jeton RFC 3161 conservé),
+  **contresignée par des TSA tierces publiques** et copiée hors site sur un
+  stockage S3 auto-hébergé, dans chacun des services ;
 - le tout orchestré en `docker compose`, démarrable en une commande.
 
 Ce n'est pas encore une TSA qualifiée : les écarts avec le référentiel eIDAS

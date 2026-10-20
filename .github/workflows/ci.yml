@@ -650,6 +650,22 @@ jobs:
           kubectl -n open-eidas exec deploy/open-eidas-tsa -- tsa-server verify-audit
           kubectl -n open-eidas exec deploy/open-eidas-ca -c ca -- ca-server verify-audit
 
+      # Le journal de la CA est scellé par la TSA de la release, en HTTP
+      # (constat J-1) : la TSA démarre après la CA, la première passe échoue
+      # et est reprise au bout d'une minute. On attend ce premier sceau.
+      - name: Vérifie que la CA a fait sceller son journal par la TSA
+        run: |
+          for i in $(seq 1 30); do
+            if kubectl -n open-eidas exec deploy/open-eidas-ca -c ca -- ca-server verify-audit \
+                | grep -Eq 'scellements +: [1-9]'; then
+              exit 0
+            fi
+            sleep 5
+          done
+          kubectl -n open-eidas exec deploy/open-eidas-ca -c ca -- ca-server verify-audit
+          echo "aucun sceau de la TSA dans le journal de la CA" >&2
+          exit 1
+
       # L'approbation est ce qu'un auditeur vient vérifier : elle doit être
       # nominative et tracée, y compris lorsque l'opérateur est technique.
       - name: Vérifie que chaque émission a été approuvée par un opérateur nommé
@@ -701,6 +717,23 @@ jobs:
         run: |
           docker compose exec -T tsa tsa-server verify-audit
           docker compose exec -T ca ca-server verify-audit
+
+      # Le journal de la CA est scellé par la TSA, en HTTP (constat J-1) : la
+      # TSA démarre après la CA, la première passe échoue et est reprise au
+      # bout d'une minute. On attend ce premier sceau, visible dans /healthz
+      # (journal.last_seal) et compté par verify-audit.
+      - name: Vérifie que la CA a fait sceller son journal par la TSA
+        run: |
+          for i in $(seq 1 30); do
+            if curl -fsS http://localhost:8320/healthz | grep -q '"last_seal":"20'; then
+              break
+            fi
+            sleep 5
+          done
+          curl -fsS http://localhost:8320/healthz | tee healthz-ca.json
+          grep -q '"last_seal":"20' healthz-ca.json
+          docker compose exec -T ca ca-server verify-audit | tee verify-ca.txt
+          grep -Eq 'scellements +: [1-9]' verify-ca.txt
 
       - name: Journaux (utile en cas d'échec)
         if: always()
