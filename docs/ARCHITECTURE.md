@@ -190,8 +190,19 @@ réponse forgée hors chemin est écartée. Sont refusées aussi une réponse d'
 source non synchronisée (indicateur de saut 3, strate 0 ou ≥ 16), d'un autre
 mode ou d'une autre version que serveur 3/4, sans horodatages, ou dont
 l'aller-retour dépasse `OPENEIDAS_TIME_MAX_RTT` (1 s) — l'écart mesuré serait
-trop incertain. Le protocole n'est pas authentifié : contre un attaquant en
-chemin, seul NTS (RFC 8915) protège, ce qui reste à faire.
+trop incertain. Le protocole NTP seul n'est pas authentifié : contre un
+attaquant en chemin, seul **NTS** (RFC 8915) protège. Une source déclarée
+`nts://hôte` est mesurée par NTS (`crates/oe-timesource/src/nts.rs`) : une
+session TLS 1.3 avec le laboratoire (NTS-KE, ALPN `ntske/1`, port 4460,
+certificat vérifié contre les racines publiques embarquées ou
+`OPENEIDAS_TIME_NTS_CA_FILE`) négocie NTPv4 et `AES-SIV-CMAC-256`, remet des
+cookies et dérive les clés par l'exportateur TLS ; chaque requête NTP porte
+ensuite un identifiant unique, un cookie et un authentificateur qui couvre le
+paquet, et la réponse n'est retenue que si elle reprend l'identifiant et
+vérifie sous la clé du serveur. La mesure est marquée `authenticated` dans le
+journal et `/healthz`. La PTB propose NTS (`nts://ptbtime1.ptb.de`),
+l'Observatoire de Paris non : le choix des sources est une décision de
+déploiement.
 
 L'indicateur de saut des réponses est lu (constat T-4) : dès qu'une source
 annonce une seconde intercalaire, `/healthz` le montre

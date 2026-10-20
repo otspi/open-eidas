@@ -427,6 +427,57 @@ async fn the_binary_applies_what_the_matrix_declares() {
         }
     }
 
+    // EN 319 421 TIS-7.7.2-04/-05 (constat T-2, tranche T-c) : une source
+    // `nts://` est mesurée par NTS (RFC 8915) — NTS-KE en TLS puis réponses
+    // authentifiées — et /healthz marque la mesure authentifiée ; en
+    // politique enforce, l'heure est traçable sur cette seule source.
+    {
+        let nts = oe_timesource::testing::local_nts_server(oe_timesource::testing::Tamper::None);
+        std::fs::write(fx.dir.join("nts-ca.pem"), &nts.ca_pem).unwrap();
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let child = fx
+            .command("tsu.pem", "enforce", port, "audit-nts.log")
+            .env("OPENEIDAS_TIME_SOURCES", format!("nts://{}", nts.ke_addr))
+            .env("OPENEIDAS_TIME_MIN_SOURCES", "1")
+            .env("OPENEIDAS_TIME_TIMEOUT", "3s")
+            .env("OPENEIDAS_TIME_NTS_CA_FILE", fx.dir.join("nts-ca.pem"))
+            .spawn()
+            .unwrap();
+        let _server = Server(child);
+        let base = format!("http://127.0.0.1:{port}");
+        let mut health = serde_json::Value::Null;
+        for _ in 0..100 {
+            if let Ok(resp) = reqwest::get(format!("{base}/healthz")).await {
+                health = resp.json().await.unwrap_or_default();
+                if health["time_source"]["traceable"] == true {
+                    break;
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        assert_eq!(health["time_source"]["traceable"], true, "{health}");
+        assert!(
+            nts.requests.load(std::sync::atomic::Ordering::SeqCst) >= 1,
+            "le service n'a pas interrogé la source NTS"
+        );
+        let measurements: Vec<_> = oe_audit::read(fx.dir.join("audit-nts.log"))
+            .unwrap()
+            .into_iter()
+            .filter(|r| r.event == "time.measurement")
+            .collect();
+        let data = measurements
+            .last()
+            .and_then(|r| r.data.clone())
+            .expect("mesure");
+        let source = &data["sources"][format!("nts://{}", nts.ke_addr)];
+        assert_eq!(source["authenticated"], true, "{data:?}");
+        assert!(source["error"].is_null(), "{data:?}");
+    }
+
     // Politique monitor : le jeton est émis, et openssl le vérifie (EN 319 422
     // §7, clé dans le token : EN 319 401 REQ-7.5-01). TS 119 312 §5.1 : une
     // empreinte SHA-1 est refusée (badAlg).

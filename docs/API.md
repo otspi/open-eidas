@@ -135,8 +135,8 @@ perdue sous politique `enforce`.
     "spread": "8.3047ms",
     "last_sync": "2026-09-06T13:30:20Z",
     "sources": [
-      {"server": "ntp.obspm.fr", "offset": "671.396µs", "rtt": "15.649242ms", "stratum": 2, "at": "..."},
-      {"server": "ptbtime1.ptb.de", "offset": "-7.633304ms", "rtt": "29.35773ms", "stratum": 1, "at": "..."}
+      {"server": "ntp.obspm.fr", "offset": "671.396µs", "rtt": "15.649242ms", "stratum": 2, "authenticated": false, "leap": 0, "at": "..."},
+      {"server": "nts://ptbtime1.ptb.de", "offset": "-7.633304ms", "rtt": "29.35773ms", "stratum": 1, "authenticated": true, "leap": 0, "at": "..."}
     ]
   },
   "version": "dev"
@@ -208,12 +208,13 @@ Toutes les options sont pilotées par variables d'environnement.
 | `OPENEIDAS_S3_KEY` | `tsa-server/audit.log` | Clé de l'objet qui reçoit le journal |
 | `OPENEIDAS_S3_TIMEOUT` | `30s` | Délai d'attente d'un dépôt |
 | `OPENEIDAS_TIME_POLICY` | `enforce` | `enforce` (refus de signer si l'heure n'est pas traçable), `monitor` ou `disabled` |
-| `OPENEIDAS_TIME_SOURCES` | `ntp.obspm.fr,ptbtime1.ptb.de` | Serveurs de temps de référence, séparés par des virgules |
+| `OPENEIDAS_TIME_SOURCES` | `ntp.obspm.fr,ptbtime1.ptb.de` | Serveurs de temps de référence, séparés par des virgules. `hôte[:port]` pour NTP simple ; **`nts://hôte[:port]`** pour une source authentifiée par NTS (RFC 8915 : NTS-KE en TLS 1.3 sur le port 4460, puis NTP authentifié). La PTB le propose (`nts://ptbtime1.ptb.de`), pas l'Observatoire de Paris |
 | `OPENEIDAS_TIME_MIN_SOURCES` | `2` | Nombre de sources devant répondre pour établir la traçabilité |
 | `OPENEIDAS_TIME_MAX_OFFSET` | `500ms` | Dérive et désaccord maximaux tolérés |
 | `OPENEIDAS_TIME_MAX_AGE` | `1h` | Ancienneté maximale de la dernière mesure |
 | `OPENEIDAS_TIME_POLL` | `5m` | Période d'interrogation des sources |
 | `OPENEIDAS_TIME_TIMEOUT` | `5s` | Délai d'attente par source |
+| `OPENEIDAS_TIME_NTS_CA_FILE` | — | Fichier PEM d'ancres de confiance supplémentaires pour les certificats des serveurs NTS-KE, en plus des racines publiques embarquées (serveur NTS privé, test) |
 | `OPENEIDAS_TIME_MAX_RTT` | `1s` | Aller-retour maximal d'une mesure : au-delà, elle est écartée (son écart est trop incertain). Chaque réponse doit en outre reprendre le *transmit* aléatoire de la requête, venir d'un serveur (mode 4, version 3 ou 4) synchronisé (LI ≠ 3, strate 1 à 15) et porter des horodatages non nuls |
 | `OPENEIDAS_ENROLL_ENDPOINT` | — | URL de l'API d'enrôlement de la CA (`/api/v1/enroll`) |
 | `OPENEIDAS_ENROLL_PROFILE` | `tsa_signer` | Profil de certificat demandé |

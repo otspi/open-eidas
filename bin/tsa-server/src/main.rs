@@ -53,6 +53,21 @@ fn die(context: &str, err: impl std::fmt::Display) -> ! {
 /// contrairement à Go, un hôte vide avant les deux-points échoue la
 /// résolution DNS au lieu d'être compris comme un joker. Reproduit ici la
 /// même convention en préfixant `0.0.0.0`.
+/// Les certificats d'un fichier PEM, ancres de confiance supplémentaires
+/// pour NTS-KE (`OPENEIDAS_TIME_NTS_CA_FILE`) ; aucun si le chemin est vide.
+fn nts_extra_roots(path: &str) -> Vec<rustls_pki_types::CertificateDer<'static>> {
+    if path.is_empty() {
+        return Vec::new();
+    }
+    let text = std::fs::read(path).unwrap_or_else(|e| die("OPENEIDAS_TIME_NTS_CA_FILE", e));
+    pem::parse_many(&text)
+        .unwrap_or_else(|e| die("OPENEIDAS_TIME_NTS_CA_FILE", e))
+        .into_iter()
+        .filter(|p| p.tag() == "CERTIFICATE")
+        .map(|p| rustls_pki_types::CertificateDer::from(p.into_contents()))
+        .collect()
+}
+
 fn bind_addr(listen: &str) -> String {
     match listen.strip_prefix(':') {
         Some(port) => format!("0.0.0.0:{port}"),
@@ -204,6 +219,7 @@ async fn run_serve() {
         poll_interval: cfg.time_poll,
         timeout: cfg.time_timeout,
         max_rtt: to_time_duration(cfg.time_max_rtt, time::Duration::SECOND),
+        nts_extra_roots: nts_extra_roots(&cfg.time_nts_ca_file),
         recorder: Some(ts_recorder),
     })
     .unwrap_or_else(|e| die("surveillance de l'heure", e));
@@ -478,6 +494,7 @@ mod tests {
             poll_interval: std::time::Duration::from_secs(60),
             timeout: std::time::Duration::from_secs(1),
             max_rtt: time::Duration::SECOND,
+            nts_extra_roots: Vec::new(),
             recorder: None,
         })
         .unwrap();

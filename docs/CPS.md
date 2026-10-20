@@ -283,7 +283,7 @@ couvertes par une CP/CPS générique de CA.
 
 | | |
 |---|---|
-| Sources actuelles | NTP, deux laboratoires de métrologie (UTC(OP), UTC(PTB)) |
+| Sources actuelles | NTP, deux laboratoires de métrologie (UTC(OP), UTC(PTB)) ; la source PTB peut être authentifiée par NTS (RFC 8915, `nts://ptbtime1.ptb.de`), l'Observatoire de Paris ne le propose pas — `[À COMPLÉTER — sources retenues en production et mode d'authentification de chacune]` |
 | Quorum minimal | 2 sources concordantes |
 | Seuil de dérive tolérée | 500 ms |
 | Comportement en cas de perte de traçabilité | Refus de signer (`failureInfo: timeNotAvailable`), politique `enforce` |
