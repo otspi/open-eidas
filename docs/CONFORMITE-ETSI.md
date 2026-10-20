@@ -5,7 +5,7 @@
      correction se fait dans le code, pour que la matrice publiée reste
      celle que le système applique réellement. -->
 
-**39 exigences** — 28 couvertes, 1 implémentée(s) sans être en service, 8 écarts documentés, 2 hors périmètre logiciel.
+**39 exigences** — 29 couvertes, 1 implémentée(s) sans être en service, 7 écarts documentés, 2 hors périmètre logiciel.
 
 Quatre statuts seulement, pour qu'aucune zone grise ne puisse s'y loger :
 
