@@ -346,9 +346,13 @@ Les codes sont ceux de RFC 5280 §5.3.1 — les plus utilisés ici :
 | 4 | `superseded` | remplacé par un renouvellement (appliqué automatiquement) |
 | 5 | `cessationOfOperation` | service arrêté définitivement |
 
-Un motif est **obligatoire** : `unspecified` (0) est accepté par RFC 5280 mais
-signalé comme insuffisant par les règles de conformité — il ne justifie rien
-devant un auditeur.
+Un motif de la liste blanche est **obligatoire** : 1 (`keyCompromise`), 3
+(`affiliationChanged`), 4 (`superseded`), 5 (`cessationOfOperation`) ou 9
+(`privilegeWithdrawn`). `unspecified` (0) ne justifie rien devant un auditeur,
+`certificateHold` (6) suppose une levée que ce système ne sait pas faire,
+`removeFromCRL` (8) est réservé aux CRL delta, 2 et 10 aux autorités : tous
+sont refusés, par `Issuer::revoke` lui-même (CLI, action signée et
+renouvellement passent par ce seul contrôle).
 
 Le commentaire est **obligatoire** : `revoke`, comme `ra approve|reject`, est
 la **voie de secours** (docs/WEBUI.md §20), la voie primaire étant l'action

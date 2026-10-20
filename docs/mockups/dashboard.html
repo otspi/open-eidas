@@ -1,0 +1,681 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <title>Open-eIDAS Console - Demandes RA</title>
+  <style>
+    :root {
+      --bg-canvas: #090d16;
+      --bg-surface: #111827;
+      --bg-surface-elevated: #1f2937;
+      --bg-surface-hover: #1a2332;
+      --border-subtle: #374151;
+      --border-strong: #4b5563;
+      --text-main: #f3f4f6;
+      --text-muted: #9ca3af;
+      --text-dim: #6b7280;
+      
+      --prod-banner-bg: #881337;
+      --prod-banner-text: #ffe4e6;
+
+      --valid-bg: #064e3b;
+      --valid-text: #34d399;
+      --valid-border: #059669;
+
+      --pending-bg: #451a03;
+      --pending-text: #fbbf24;
+      --pending-border: #d97706;
+
+      --revoked-bg: #450a0a;
+      --revoked-text: #f87171;
+      --revoked-border: #dc2626;
+
+      --primary-action: #059669;
+      --primary-action-hover: #10b981;
+      --danger-action: #dc2626;
+      --danger-action-hover: #ef4444;
+      
+      --focus-ring: #38bdf8;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: var(--bg-canvas);
+      color: var(--text-main);
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+      overflow: hidden;
+      font-size: 13px;
+    }
+
+    /* BANNIERE SECURITE */
+    .security-bar {
+      background: var(--prod-banner-bg);
+      color: var(--prod-banner-text);
+      padding: 4px 16px;
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      border-bottom: 1px solid rgba(0,0,0,0.4);
+    }
+    .security-bar-right {
+      display: flex;
+      gap: 16px;
+      font-weight: 500;
+    }
+
+    /* HEADER */
+    header {
+      background: var(--bg-surface);
+      border-bottom: 1px solid var(--border-subtle);
+      padding: 10px 20px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+    .brand-logo {
+      width: 24px;
+      height: 24px;
+      background: #3b82f6;
+      border-radius: 4px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: bold;
+      color: white;
+      font-size: 14px;
+    }
+    .brand-title {
+      font-size: 15px;
+      font-weight: 600;
+      color: #fff;
+    }
+    .brand-version {
+      font-size: 11px;
+      color: var(--text-muted);
+      background: #1e293b;
+      padding: 2px 6px;
+      border-radius: 4px;
+    }
+    .system-status {
+      display: flex;
+      align-items: center;
+      gap: 20px;
+    }
+    .status-pill {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      background: #0f172a;
+      border: 1px solid var(--border-subtle);
+      padding: 4px 10px;
+      border-radius: 9999px;
+      font-size: 12px;
+    }
+    .dot-online {
+      width: 8px;
+      height: 8px;
+      background: #10b981;
+      border-radius: 50%;
+      box-shadow: 0 0 6px #10b981;
+    }
+    .crl-countdown {
+      color: #fbbf24;
+      font-family: ui-monospace, monospace;
+      font-weight: 600;
+    }
+    .user-profile {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding-left: 16px;
+      border-left: 1px solid var(--border-subtle);
+    }
+    .role-badge {
+      background: #581c87;
+      color: #e9d5ff;
+      border: 1px solid #7e22ce;
+      padding: 2px 8px;
+      border-radius: 4px;
+      font-size: 11px;
+      font-weight: 600;
+    }
+
+    /* MAIN LAYOUT */
+    .app-body {
+      display: flex;
+      flex: 1;
+      overflow: hidden;
+    }
+
+    /* SIDEBAR */
+    aside {
+      width: 230px;
+      background: var(--bg-surface);
+      border-right: 1px solid var(--border-subtle);
+      display: flex;
+      flex-direction: column;
+      padding: 16px 0;
+    }
+    .nav-group-title {
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--text-dim);
+      padding: 0 16px 8px 16px;
+      font-weight: 700;
+    }
+    .nav-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 8px 16px;
+      color: var(--text-muted);
+      text-decoration: none;
+      font-size: 13px;
+      font-weight: 500;
+      border-left: 3px solid transparent;
+      cursor: pointer;
+    }
+    .nav-item:hover {
+      background: var(--bg-surface-hover);
+      color: var(--text-main);
+    }
+    .nav-item.active {
+      background: #1e293b;
+      color: #fff;
+      border-left-color: #3b82f6;
+      font-weight: 600;
+    }
+    .counter {
+      background: #374151;
+      color: #f3f4f6;
+      padding: 1px 7px;
+      border-radius: 9999px;
+      font-size: 11px;
+      font-weight: 600;
+    }
+    .counter.pending {
+      background: var(--pending-border);
+      color: #fff;
+    }
+    .counter.quorum {
+      background: #7c3aed;
+      color: #fff;
+    }
+
+    /* CONTENT AREA: SPLIT PANE */
+    main {
+      flex: 1;
+      display: flex;
+      overflow: hidden;
+    }
+
+    /* TABLE SECTION (60%) */
+    .table-section {
+      flex: 6;
+      display: flex;
+      flex-direction: column;
+      border-right: 1px solid var(--border-subtle);
+      background: var(--bg-canvas);
+      overflow: hidden;
+    }
+    .section-header {
+      padding: 12px 20px;
+      background: var(--bg-surface);
+      border-bottom: 1px solid var(--border-subtle);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .section-title {
+      font-size: 16px;
+      font-weight: 600;
+      color: #fff;
+    }
+    .filter-bar {
+      display: flex;
+      gap: 10px;
+      align-items: center;
+    }
+    .search-box {
+      background: #090d16;
+      border: 1px solid var(--border-subtle);
+      color: #fff;
+      padding: 6px 12px;
+      border-radius: 6px;
+      font-size: 12px;
+      width: 220px;
+    }
+    .table-container {
+      flex: 1;
+      overflow-y: auto;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      text-align: left;
+    }
+    th {
+      background: #0f172a;
+      color: var(--text-muted);
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      padding: 10px 16px;
+      border-bottom: 1px solid var(--border-subtle);
+      position: sticky;
+      top: 0;
+      z-index: 2;
+    }
+    td {
+      padding: 11px 16px;
+      border-bottom: 1px solid #1f2937;
+      color: var(--text-main);
+      font-size: 13px;
+    }
+    tr.selectable {
+      cursor: pointer;
+      transition: background 0.1s;
+    }
+    tr.selectable:hover {
+      background: var(--bg-surface-hover);
+    }
+    tr.selected {
+      background: #1e293b;
+      position: relative;
+    }
+    tr.selected td:first-child {
+      border-left: 3px solid #38bdf8;
+    }
+
+    /* BADGES */
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 3px 8px;
+      border-radius: 4px;
+      font-size: 11px;
+      font-weight: 600;
+      font-family: ui-monospace, monospace;
+    }
+    .badge-pending {
+      background: var(--pending-bg);
+      color: var(--pending-text);
+      border: 1px dashed var(--pending-border);
+    }
+    .badge-valid {
+      background: var(--valid-bg);
+      color: var(--valid-text);
+      border: 1px solid var(--valid-border);
+    }
+    .badge-revoked {
+      background: var(--revoked-bg);
+      color: var(--revoked-text);
+      border: 1px solid var(--revoked-border);
+    }
+    .mono {
+      font-family: 'JetBrains Mono', ui-monospace, monospace;
+      font-size: 12px;
+      letter-spacing: -0.02em;
+    }
+
+    /* INSPECTOR / DRAWER (40%) */
+    .inspector-section {
+      flex: 4;
+      background: var(--bg-surface);
+      display: flex;
+      flex-direction: column;
+      overflow-y: auto;
+    }
+    .inspector-header {
+      padding: 14px 20px;
+      background: #172033;
+      border-bottom: 1px solid var(--border-subtle);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .inspector-title {
+      font-size: 15px;
+      font-weight: 600;
+      color: #fff;
+    }
+    .inspector-tabs {
+      display: flex;
+      background: #0f172a;
+      border-bottom: 1px solid var(--border-subtle);
+    }
+    .tab {
+      padding: 9px 18px;
+      font-size: 12px;
+      font-weight: 500;
+      color: var(--text-muted);
+      cursor: pointer;
+      border-bottom: 2px solid transparent;
+    }
+    .tab.active {
+      color: #38bdf8;
+      border-bottom-color: #38bdf8;
+      background: var(--bg-surface);
+      font-weight: 600;
+    }
+    .inspector-content {
+      padding: 20px;
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+    .prop-card {
+      background: #0f172a;
+      border: 1px solid var(--border-subtle);
+      border-radius: 6px;
+      padding: 12px;
+    }
+    .prop-label {
+      font-size: 11px;
+      color: var(--text-dim);
+      text-transform: uppercase;
+      font-weight: 700;
+      margin-bottom: 4px;
+    }
+    .prop-val {
+      font-size: 13px;
+      color: #e5e7eb;
+    }
+    .prop-val.code {
+      font-family: 'JetBrains Mono', ui-monospace, monospace;
+      font-size: 12px;
+      background: #090d16;
+      padding: 6px 10px;
+      border-radius: 4px;
+      border: 1px solid #1f2937;
+      word-break: break-all;
+      margin-top: 4px;
+      color: #a5f3fc;
+    }
+    .rules-box {
+      background: #064e3b22;
+      border: 1px solid #05966966;
+      border-radius: 6px;
+      padding: 12px;
+    }
+    .rule-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 12px;
+      color: #34d399;
+      margin-bottom: 4px;
+    }
+    .rule-item:last-child { margin-bottom: 0; }
+
+    /* ACTION BUTTONS */
+    .inspector-actions {
+      padding: 16px 20px;
+      background: #0f172a;
+      border-top: 1px solid var(--border-subtle);
+      display: flex;
+      gap: 12px;
+    }
+    .btn {
+      padding: 9px 16px;
+      border-radius: 6px;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      border: none;
+      transition: background 0.15s;
+    }
+    .btn-approve {
+      background: var(--primary-action);
+      color: #fff;
+      flex: 1;
+      justify-content: center;
+    }
+    .btn-approve:hover {
+      background: var(--primary-action-hover);
+    }
+    .btn-reject {
+      background: transparent;
+      border: 1px solid var(--border-subtle);
+      color: #f87171;
+    }
+    .btn-reject:hover {
+      background: #450a0a;
+      border-color: var(--danger-action);
+    }
+
+    /* FOOTER STATUS */
+    footer {
+      background: #0f172a;
+      border-top: 1px solid var(--border-subtle);
+      padding: 6px 20px;
+      display: flex;
+      justify-content: space-between;
+      font-size: 11px;
+      color: var(--text-dim);
+    }
+    .shortcuts kbd {
+      background: #1f2937;
+      color: #d1d5db;
+      padding: 1px 5px;
+      border-radius: 3px;
+      border: 1px solid #374151;
+      font-family: inherit;
+      font-size: 10px;
+      font-weight: 600;
+    }
+  </style>
+</head>
+<body>
+
+  <!-- GLOBAL SECURITY BAR -->
+  <div class="security-bar">
+    <div>⚠️ ENVIRONNEMENT : PRODUCTION — AUTORITÉ DE CERTIFICATION QUALIFIÉE (eIDAS / ETSI)</div>
+    <div class="security-bar-right">
+      <span>SERVEUR : ca.prod.internal:8443</span>
+      <span>SESSION CHUCK-EXP : 14m</span>
+    </div>
+  </div>
+
+  <!-- HEADER -->
+  <header>
+    <div class="brand">
+      <div class="brand-logo">OE</div>
+      <div class="brand-title">Open-eIDAS Console</div>
+      <div class="brand-version">v1.2.0-rc2</div>
+    </div>
+    <div class="system-status">
+      <div class="status-pill">
+        <div class="dot-online"></div>
+        <span>HSM Thales Luna (PKCS#11) : <strong>CONNECTÉ</strong></span>
+      </div>
+      <div class="status-pill">
+        <span>Prochaine CRL :</span>
+        <span class="crl-countdown">03h 42m 18s</span>
+      </div>
+      <div class="user-profile">
+        <span>Alice Durand</span>
+        <span class="role-badge">ca_operateur</span>
+        <span title="Clé FIDO2 YubiKey 5C active">🔑 FIDO2</span>
+      </div>
+    </div>
+  </header>
+
+  <!-- BODY -->
+  <div class="app-body">
+    <!-- SIDEBAR -->
+    <aside>
+      <div class="nav-group-title">Opérations Trust Service</div>
+      <div class="nav-item active">
+        <span>📥 Demandes d'enrôlement</span>
+        <span class="counter pending">4</span>
+      </div>
+      <div class="nav-item">
+        <span>📜 Certificats émis</span>
+        <span class="counter">1 428</span>
+      </div>
+      <div class="nav-item">
+        <span>⚠️ Salle Quorum (M-sur-N)</span>
+        <span class="counter quorum">1</span>
+      </div>
+      <div class="nav-item">
+        <span>🛡️ Dossiers d'Incident</span>
+        <span class="counter">0</span>
+      </div>
+
+      <div class="nav-group-title" style="margin-top: 20px;">Gouvernance & Audit</div>
+      <div class="nav-item">
+        <span>🔍 Journal d'Audit (Inaltérable)</span>
+      </div>
+      <div class="nav-item">
+        <span>⚖️ Matrice ETSI EN 319 411-1</span>
+      </div>
+      <div class="nav-item">
+        <span>⚙️ Gestion des Opérateurs</span>
+      </div>
+    </aside>
+
+    <!-- MAIN SPLIT PANE -->
+    <main>
+      <!-- TABLE SECTION -->
+      <section class="table-section">
+        <div class="section-header">
+          <div class="section-title">Demandes d'enrôlement RA en attente</div>
+          <div class="filter-bar">
+            <input type="text" class="search-box" placeholder="Filtrer (id, serial, subject)... [/]">
+          </div>
+        </div>
+        <div class="table-container">
+          <table>
+            <thead>
+              <tr>
+                <th>ID Demande</th>
+                <th>Profil</th>
+                <th>Sujet (DN)</th>
+                <th>Algorithme Clé</th>
+                <th>Date Réception</th>
+                <th>Statut</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr class="selectable selected">
+                <td class="mono"><strong>REQ-2026-0842</strong></td>
+                <td><span class="badge" style="background:#1e293b; color:#93c5fd;">TSA_SIGNER</span></td>
+                <td>CN=Open-eIDAS Timestamping Unit 2026-B, O=Open-eIDAS, C=FR</td>
+                <td class="mono">Ed25519 (256b)</td>
+                <td>2026-09-19 13:51 UTC</td>
+                <td><span class="badge badge-pending">⏱ EN ATTENTE</span></td>
+              </tr>
+              <tr class="selectable">
+                <td class="mono"><strong>REQ-2026-0841</strong></td>
+                <td><span class="badge" style="background:#1e293b; color:#c084fc;">OCSP_RESPONDER</span></td>
+                <td>CN=Open-eIDAS OCSP Responder 2026-1, O=Open-eIDAS, C=FR</td>
+                <td class="mono">RSA-PSS (4096b)</td>
+                <td>2026-09-19 12:30 UTC</td>
+                <td><span class="badge badge-pending">⏱ EN ATTENTE</span></td>
+              </tr>
+              <tr class="selectable">
+                <td class="mono"><strong>REQ-2026-0840</strong></td>
+                <td><span class="badge" style="background:#1e293b; color:#93c5fd;">TSA_SIGNER</span></td>
+                <td>CN=Backup TSA Signer Node 02, O=Open-eIDAS, C=FR</td>
+                <td class="mono">Ed25519 (256b)</td>
+                <td>2026-09-19 11:15 UTC</td>
+                <td><span class="badge badge-pending">⏱ EN ATTENTE</span></td>
+              </tr>
+              <tr class="selectable">
+                <td class="mono"><strong>REQ-2026-0839</strong></td>
+                <td><span class="badge" style="background:#1e293b; color:#cbd5e1;">SERVER_AUTH</span></td>
+                <td>CN=internal-gateway.tsa.open-eidas.org, O=Open-eIDAS, C=FR</td>
+                <td class="mono">ECDSA P-384</td>
+                <td>2026-09-19 09:04 UTC</td>
+                <td><span class="badge badge-pending">⏱ EN ATTENTE</span></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- INSPECTOR DRAWER -->
+      <section class="inspector-section">
+        <div class="inspector-header">
+          <div class="inspector-title">Demande #REQ-2026-0842</div>
+          <span class="badge badge-pending">EN ATTENTE RA</span>
+        </div>
+        <div class="inspector-tabs">
+          <div class="tab active">Général & CSR</div>
+          <div class="tab">Politique ETSI</div>
+          <div class="tab">Chaîne d'Audit</div>
+        </div>
+        <div class="inspector-content">
+          <div class="prop-card">
+            <div class="prop-label">Profil Certificat Demandé</div>
+            <div class="prop-val"><strong>TSA_SIGNER</strong> (Conforme ETSI EN 319 421)</div>
+          </div>
+
+          <div class="prop-card">
+            <div class="prop-label">Subject Distinguished Name (DN)</div>
+            <div class="prop-val code">C=FR, O=Open-eIDAS Association, OU=TSA Services, CN=Open-eIDAS Timestamping Unit 2026-B</div>
+          </div>
+
+          <div class="prop-card">
+            <div class="prop-label">Clé Publique & CSR SHA-256</div>
+            <div class="prop-val code">Algorithme: Ed25519 (RFC 8410)<br>CSR SHA-256: 7f89c4a1b023e981d3f66a987621...</div>
+          </div>
+
+          <div class="prop-card">
+            <div class="prop-label">Extensions Déclarées</div>
+            <div class="prop-val">
+              • <strong>Key Usage :</strong> Digital Signature (Critique)<br>
+              • <strong>Ext Key Usage :</strong> Time Stamping (1.3.6.1.5.5.7.3.8)<br>
+              • <strong>SAN :</strong> uri:urn:etsi:tsa:2026:b
+            </div>
+          </div>
+
+          <div class="rules-box">
+            <div class="prop-label" style="color: #34d399; margin-bottom: 6px;">Vérifications de Politique RA Automatisées</div>
+            <div class="rule-item">✓ Clé générée sur module cryptographique conforme</div>
+            <div class="rule-item">✓ Subject DN autorisé pour la partition TSA</div>
+            <div class="rule-item">✓ Validité demandée conforme (365 jours max)</div>
+          </div>
+        </div>
+
+        <div class="inspector-actions">
+          <button class="btn btn-reject">Rejeter...</button>
+          <button class="btn btn-approve">
+            <span>🔑</span>
+            <span>Approuver avec clé FIDO2 [a]</span>
+          </button>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <!-- FOOTER -->
+  <footer>
+    <div>Autorité Émettrice : Open-eIDAS Root CA G1 (Valide jusqu'au 2036-12-31 UTC)</div>
+    <div class="shortcuts">
+      Raccourcis : <kbd>j</kbd>/<kbd>k</kbd> Naviguer &bull; <kbd>a</kbd> Approuver &bull; <kbd>r</kbd> Rejeter &bull; <kbd>/</kbd> Rechercher
+    </div>
+  </footer>
+
+</body>
+</html>
