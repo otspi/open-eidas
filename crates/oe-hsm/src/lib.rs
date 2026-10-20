@@ -19,7 +19,7 @@ use cryptoki::context::{CInitializeArgs, CInitializeFlags, Pkcs11};
 #[cfg(feature = "pkcs11")]
 use cryptoki::mechanism::Mechanism;
 #[cfg(feature = "pkcs11")]
-use cryptoki::object::{Attribute, ObjectClass};
+use cryptoki::object::{Attribute, AttributeType, ObjectClass};
 #[cfg(feature = "pkcs11")]
 use cryptoki::session::{Session, UserType};
 #[cfg(feature = "pkcs11")]
@@ -112,6 +112,15 @@ pub enum HsmError {
     },
     #[error("hsm: bi-clé introuvable sur le token")]
     KeyNotFound,
+    #[error(
+        "hsm: {0} objets répondent au label et au CKA_ID de la clé privée {1:?} (un seul attendu)"
+    )]
+    KeyAmbiguous(usize, String),
+    #[error("hsm: la clé privée {key_label:?} n'a pas l'attribut {attribute} attendu (clé importée ou extractible ?)")]
+    KeyAttribute {
+        key_label: String,
+        attribute: &'static str,
+    },
     #[cfg(feature = "pkcs11")]
     #[error("hsm: génération de la bi-clé RSA-{bits}: {source}")]
     GenerateKey {
@@ -161,6 +170,31 @@ pub struct Pkcs11Token {
     session: Session,
     key_id: Vec<u8>,
     key_label: String,
+    /// Constat H-1 : la provenance de la clé n'est contrôlée qu'une fois par
+    /// ouverture, avant la première utilisation.
+    provenance_verified: std::sync::atomic::AtomicBool,
+}
+
+/// Attributs PKCS#11 de la clé privée qui prouvent qu'elle est née dans le
+/// module et n'en sort pas (constat H-1 de l'audit du 2026-09-25 ;
+/// EN 319 421 `TIS-7.6.2-03`, `TIS-7.6.2-06`, `TIS-7.6.3-02` ; EN 319 401
+/// `REQ-7.5-01`).
+#[cfg(feature = "pkcs11")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct KeyProvenance {
+    /// `CKA_LOCAL` : générée par le module (faux pour une clé importée).
+    pub local: bool,
+    /// `CKA_NEVER_EXTRACTABLE`.
+    pub never_extractable: bool,
+    /// `CKA_ALWAYS_SENSITIVE`.
+    pub always_sensitive: bool,
+    /// `CKA_SIGN`.
+    pub sign: bool,
+    /// `CKA_DECRYPT`, `CKA_UNWRAP`, `CKA_DERIVE` : faux pour une clé générée
+    /// avec le gabarit actuel (constat H-3), à journaliser mais non exigé.
+    pub decrypt: bool,
+    pub unwrap: bool,
+    pub derive: bool,
 }
 
 /// `C_Initialize` est un appel PROCESSUS entier, pas par instance de
@@ -215,10 +249,90 @@ impl Pkcs11Token {
             session,
             key_id: key_id(&o.key_label),
             key_label: o.key_label.clone(),
+            provenance_verified: std::sync::atomic::AtomicBool::new(false),
         })
     }
 
+    /// Lit les attributs de provenance de la clé privée (constat H-1), pour
+    /// les journaliser au démarrage. Ne refuse rien : voir
+    /// [`Pkcs11Token::verify_key_provenance`].
+    pub fn key_provenance(&self) -> Result<KeyProvenance, HsmError> {
+        let handle = self.find_unique_private_key()?;
+        let wanted = [
+            AttributeType::Local,
+            AttributeType::NeverExtractable,
+            AttributeType::AlwaysSensitive,
+            AttributeType::Sign,
+            AttributeType::Decrypt,
+            AttributeType::Unwrap,
+            AttributeType::Derive,
+        ];
+        let mut p = KeyProvenance {
+            local: false,
+            never_extractable: false,
+            always_sensitive: false,
+            sign: false,
+            decrypt: true,
+            unwrap: true,
+            derive: true,
+        };
+        for attribute in self.session.get_attributes(handle, &wanted)? {
+            match attribute {
+                Attribute::Local(v) => p.local = v,
+                Attribute::NeverExtractable(v) => p.never_extractable = v,
+                Attribute::AlwaysSensitive(v) => p.always_sensitive = v,
+                Attribute::Sign(v) => p.sign = v,
+                Attribute::Decrypt(v) => p.decrypt = v,
+                Attribute::Unwrap(v) => p.unwrap = v,
+                Attribute::Derive(v) => p.derive = v,
+                _ => {}
+            }
+        }
+        Ok(p)
+    }
+
+    /// Exige la preuve que la clé privée est née dans le module et n'en sort
+    /// pas (constat H-1) : `CKA_LOCAL`, `CKA_NEVER_EXTRACTABLE`,
+    /// `CKA_ALWAYS_SENSITIVE` et `CKA_SIGN` vrais. Rend ce qu'elle a lu,
+    /// `decrypt`/`unwrap`/`derive` compris (voir [`KeyProvenance`]).
+    pub fn verify_key_provenance(&self) -> Result<KeyProvenance, HsmError> {
+        let p = self.key_provenance()?;
+        let fail = |attribute| HsmError::KeyAttribute {
+            key_label: self.key_label.clone(),
+            attribute,
+        };
+        if !p.local {
+            return Err(fail("CKA_LOCAL"));
+        }
+        if !p.never_extractable {
+            return Err(fail("CKA_NEVER_EXTRACTABLE"));
+        }
+        if !p.always_sensitive {
+            return Err(fail("CKA_ALWAYS_SENSITIVE"));
+        }
+        if !p.sign {
+            return Err(fail("CKA_SIGN"));
+        }
+        // `decrypt`, `unwrap` et `derive` sont rendus mais pas exigés : les clés
+        // générées avant le gabarit restreint du constat H-3 les portent à
+        // vrai (défaut du token) et ne doivent pas devenir inutilisables au
+        // déploiement ; elles le sont jusqu'à leur renouvellement.
+        Ok(p)
+    }
+
+    /// La clé privée, après contrôle (une fois par ouverture) de sa provenance.
     fn find_private_key(&self) -> Result<cryptoki::object::ObjectHandle, HsmError> {
+        use std::sync::atomic::Ordering;
+        if !self.provenance_verified.load(Ordering::Acquire) {
+            self.verify_key_provenance()?;
+            self.provenance_verified.store(true, Ordering::Release);
+        }
+        self.find_unique_private_key()
+    }
+
+    /// Le seul objet qui répond au label et au `CKA_ID` : plusieurs → refus
+    /// (constat H-1, ambiguïté entre une clé générée et une clé importée).
+    fn find_unique_private_key(&self) -> Result<cryptoki::object::ObjectHandle, HsmError> {
         let template = vec![
             Attribute::Class(ObjectClass::PRIVATE_KEY),
             Attribute::Id(self.key_id.clone()),
@@ -231,7 +345,11 @@ impl Pkcs11Token {
                 key_label: self.key_label.clone(),
                 source,
             })?;
-        keys.into_iter().next().ok_or(HsmError::KeyNotFound)
+        match keys.len() {
+            0 => Err(HsmError::KeyNotFound),
+            1 => Ok(keys[0]),
+            n => Err(HsmError::KeyAmbiguous(n, self.key_label.clone())),
+        }
     }
 
     /// Génère une bi-clé RSA dans le token (équivalent de `Token.GenerateRSAKey`).
@@ -252,6 +370,13 @@ impl Pkcs11Token {
             Attribute::Sensitive(true),
             Attribute::Extractable(false),
             Attribute::Sign(true),
+            // Constat H-3 : une clé de signature n'est restreinte à la
+            // signature que par construction, pas par le comportement par
+            // défaut du token.
+            Attribute::Decrypt(false),
+            Attribute::Unwrap(false),
+            Attribute::Derive(false),
+            Attribute::Modifiable(false),
             Attribute::Id(self.key_id.clone()),
             Attribute::Label(self.key_label.clone().into_bytes()),
         ];
