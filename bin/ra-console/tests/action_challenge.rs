@@ -349,7 +349,7 @@ macro_rules! env {
 }
 
 fn approve(tx: &str) -> serde_json::Value {
-    serde_json::json!({ "action": "approve_request", "transaction_id": tx, "comment": "identité vérifiée" })
+    serde_json::json!({ "action": "approve_request", "transaction_id": tx, "csr_fingerprint": format!("empreinte-{tx}"), "comment": "identité vérifiée" })
 }
 
 fn allowed(challenge: &serde_json::Value) -> Vec<String> {

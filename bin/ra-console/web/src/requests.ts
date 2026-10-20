@@ -8,6 +8,7 @@ import { sign } from "./sign";
 
 interface EnrollmentRequest {
   transaction_id: string;
+  csr_fingerprint: string;
   profile: string;
   subject_cn: string;
   state: string;
@@ -91,6 +92,8 @@ export function requestsView(onDecided: () => void): View {
         h("dd", {}, r.subject_cn),
         h("dt", {}, "Profil"),
         h("dd", {}, r.profile),
+        h("dt", {}, "Empreinte de la CSR"),
+        h("dd", { class: "mono hash", "data-testid": "csr-fingerprint" }, r.csr_fingerprint),
         h("dt", {}, "Déposée le"),
         h("dd", { class: "mono" }, utc(r.created_at)),
       ),
@@ -109,13 +112,12 @@ export function requestsView(onDecided: () => void): View {
         ["Transaction", r.transaction_id],
         ["Sujet (CN)", r.subject_cn],
         ["Profil", r.profile],
+        ...(approving ? [["Empreinte de la CSR (vérifiée avec le demandeur)", r.csr_fingerprint] as [string, string]] : []),
         ["Justification", comment === "" ? "—" : comment],
       ],
-      action: {
-        action: approving ? "approve_request" : "reject_request",
-        transaction_id: r.transaction_id,
-        comment,
-      },
+      action: approving
+        ? { action: "approve_request", transaction_id: r.transaction_id, csr_fingerprint: r.csr_fingerprint, comment }
+        : { action: "reject_request", transaction_id: r.transaction_id, comment },
       route: `/api/v1/requests/${encodeURIComponent(r.transaction_id)}/${kind}`,
     });
     if (ok !== null) {

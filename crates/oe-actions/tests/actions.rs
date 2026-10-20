@@ -191,11 +191,15 @@ impl Env {
 
     /// Une demande d'enrôlement en attente de décision.
     async fn pending_request(&self) -> Request {
+        self.pending_request_for("tsa_signer").await
+    }
+
+    async fn pending_request_for(&self, profile: &str) -> Request {
         let r = Request {
             transaction_id: unique("tx"),
             csr_fingerprint: unique("fp"),
             csr_der: vec![1, 2, 3],
-            profile: "tsa_signer".to_string(),
+            profile: profile.to_string(),
             subject_cn: "Unité de test".to_string(),
             state: RequestState::Pending,
             created_at: OffsetDateTime::now_utc(),
@@ -220,7 +224,7 @@ impl Env {
     fn approve(r: &Request) -> Action {
         Action::ApproveRequest {
             transaction_id: r.transaction_id.clone(),
-            csr_fingerprint: None,
+            csr_fingerprint: Some(r.csr_fingerprint.clone()),
             comment: "identité vérifiée".to_string(),
         }
     }
@@ -613,4 +617,65 @@ async fn a_counter_that_goes_backwards_blocks_the_key() {
         Err(Error::Verification(_))
     ));
     assert_eq!(env.state_of(&r).await, RequestState::Pending);
+}
+
+/// Constat A-1 (EN 319 411-1 `GEN-6.3.2-00A`) : pour l'unité d'horodatage et les
+/// profils du lien interne, l'approbation exige l'empreinte de la CSR vérifiée
+/// avec le demandeur ; elle reste facultative pour les autres profils.
+#[tokio::test]
+async fn sensitive_profiles_need_the_csr_fingerprint_to_be_approved() {
+    let mut env = env!();
+    let alice = env.operator(Role::RaOperateur).await;
+    for profile in ["tsa_signer", "internal_client", "internal_server"] {
+        let r = env.pending_request_for(profile).await;
+        let without = Action::ApproveRequest {
+            transaction_id: r.transaction_id.clone(),
+            csr_fingerprint: None,
+            comment: "x".to_string(),
+        };
+        let err = env.svc.issue_challenge(without, alice.id).await;
+        assert!(
+            matches!(err, Err(Error::BadRequest(_))),
+            "{profile}: {err:?}"
+        );
+    }
+    // Un autre profil n'y est pas tenu.
+    let ocsp = env.pending_request_for("ocsp_responder").await;
+    let without = Action::ApproveRequest {
+        transaction_id: ocsp.transaction_id.clone(),
+        csr_fingerprint: None,
+        comment: "x".to_string(),
+    };
+    env.svc
+        .issue_challenge(without, alice.id)
+        .await
+        .expect("profil non sensible");
+}
+
+/// Constat A-1 : délivrer un certificat `internal_client` (accès au lien
+/// interne) est un acte de la CA, pas d'un opérateur RA.
+#[tokio::test]
+async fn an_internal_client_certificate_is_approved_by_the_ca_not_the_ra() {
+    let mut env = env!();
+    let ra = env.operator(Role::RaOperateur).await;
+    let ca = env.operator(Role::CaOperateur).await;
+    let r = env.pending_request_for("internal_client").await;
+    let action = Env::approve(&r);
+    let err = env.svc.issue_challenge(action.clone(), ra.id).await;
+    assert!(matches!(err, Err(Error::Denied(_))), "{err:?}");
+    env.svc
+        .issue_challenge(action, ca.id)
+        .await
+        .expect("un opérateur CA peut approuver");
+}
+
+#[tokio::test]
+async fn a_ra_operator_still_approves_a_tsa_signer_request() {
+    let mut env = env!();
+    let ra = env.operator(Role::RaOperateur).await;
+    let r = env.pending_request().await;
+    env.svc
+        .issue_challenge(Env::approve(&r), ra.id)
+        .await
+        .expect("l'opérateur RA approuve une unité d'horodatage");
 }
