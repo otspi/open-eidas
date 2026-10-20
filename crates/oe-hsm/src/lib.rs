@@ -137,6 +137,8 @@ pub enum HsmError {
     #[cfg(feature = "pkcs11")]
     #[error("hsm: opération PKCS#11: {0}")]
     Pkcs11(#[from] cryptoki::error::Error),
+    #[error("hsm: la signature produite ne se vérifie pas avec la clé publique (faute du module ou de la session ?)")]
+    SignatureVerification,
     #[error("hsm: signature logicielle de test: {0}")]
     SoftwareSign(#[from] rsa::Error),
     #[error("hsm: encodage SubjectPublicKeyInfo: {0}")]
@@ -164,6 +166,29 @@ fn key_id(key_label: &str) -> Vec<u8> {
     hasher.finalize()[..8].to_vec()
 }
 
+/// Vérifie une signature RSA PKCS#1 v1.5 de `digest` avec la clé publique
+/// correspondante (constat H-2 de l'audit du 2026-09-25 : vérification après
+/// signature). Une seule opération publique ; protège contre les fautes de
+/// calcul du module (attaque de Bellcore sur RSA-CRT) et contre une erreur de
+/// token ou de configuration, avant qu'une signature fautive ne sorte du
+/// service.
+pub fn verify_signature(
+    public_key: &rsa::RsaPublicKey,
+    alg: DigestAlg,
+    digest: &[u8],
+    signature: &[u8],
+) -> Result<(), HsmError> {
+    use rsa::pkcs1v15::Pkcs1v15Sign;
+    let scheme = match alg {
+        DigestAlg::Sha256 => Pkcs1v15Sign::new::<sha2::Sha256>(),
+        DigestAlg::Sha384 => Pkcs1v15Sign::new::<sha2::Sha384>(),
+        DigestAlg::Sha512 => Pkcs1v15Sign::new::<sha2::Sha512>(),
+    };
+    public_key
+        .verify(scheme, digest, signature)
+        .map_err(|_| HsmError::SignatureVerification)
+}
+
 /// Implémentation réelle : token PKCS#11 (SoftHSM2 en dev/CI, HSM FIPS en prod).
 #[cfg(feature = "pkcs11")]
 pub struct Pkcs11Token {
@@ -173,6 +198,8 @@ pub struct Pkcs11Token {
     /// Constat H-1 : la provenance de la clé n'est contrôlée qu'une fois par
     /// ouverture, avant la première utilisation.
     provenance_verified: std::sync::atomic::AtomicBool,
+    /// Clé publique, lue une fois pour vérifier chaque signature (constat H-2).
+    public_key: std::sync::OnceLock<rsa::RsaPublicKey>,
 }
 
 /// Attributs PKCS#11 de la clé privée qui prouvent qu'elle est née dans le
@@ -250,6 +277,7 @@ impl Pkcs11Token {
             key_id: key_id(&o.key_label),
             key_label: o.key_label.clone(),
             provenance_verified: std::sync::atomic::AtomicBool::new(false),
+            public_key: std::sync::OnceLock::new(),
         })
     }
 
@@ -433,7 +461,24 @@ impl SigningToken for Pkcs11Token {
     fn sign_digest(&self, alg: DigestAlg, digest: &[u8]) -> Result<Vec<u8>, HsmError> {
         let key = self.find_private_key()?;
         let digest_info = alg.wrap(digest)?;
-        Ok(self.session.sign(&Mechanism::RsaPkcs, key, &digest_info)?)
+        let signature = self.session.sign(&Mechanism::RsaPkcs, key, &digest_info)?;
+        // Constat H-2 : jamais de signature qui ne se vérifie pas avec la clé
+        // publique du token.
+        if self.public_key.get().is_none() {
+            let (modulus, exponent) = self.rsa_public_components()?;
+            let public_key = rsa::RsaPublicKey::new(
+                rsa::BigUint::from_bytes_be(&modulus),
+                rsa::BigUint::from_bytes_be(&exponent),
+            )
+            .map_err(HsmError::SoftwareSign)?;
+            let _ = self.public_key.set(public_key);
+        }
+        let public_key = self
+            .public_key
+            .get()
+            .expect("clé publique tout juste posée");
+        verify_signature(public_key, alg, digest, &signature)?;
+        Ok(signature)
     }
 
     fn public_key_der(&self) -> Result<Vec<u8>, HsmError> {
@@ -548,6 +593,31 @@ pub mod testing {
 #[cfg(all(test, feature = "pkcs11"))]
 mod tests {
     use super::*;
+
+    /// Constat H-2 : `verify_signature` accepte une signature correcte et
+    /// refuse une signature altérée, un autre condensé ou une autre clé.
+    #[test]
+    fn verify_signature_accepts_only_a_genuine_signature() {
+        use crate::testing::SoftwareToken;
+        let token = SoftwareToken::generate(1024);
+        let other = SoftwareToken::generate(1024);
+        let digest = Sha256::digest(b"message");
+        let signature = token.sign_digest(DigestAlg::Sha256, &digest).unwrap();
+        let public = token.public_key();
+        verify_signature(&public, DigestAlg::Sha256, &digest, &signature).unwrap();
+
+        let mut faulty = signature.clone();
+        faulty[10] ^= 0x01;
+        assert!(matches!(
+            verify_signature(&public, DigestAlg::Sha256, &digest, &faulty),
+            Err(HsmError::SignatureVerification)
+        ));
+        let other_digest = Sha256::digest(b"autre");
+        assert!(verify_signature(&public, DigestAlg::Sha256, &other_digest, &signature).is_err());
+        assert!(
+            verify_signature(&other.public_key(), DigestAlg::Sha256, &digest, &signature).is_err()
+        );
+    }
 
     #[test]
     fn digest_info_prefix_rejects_wrong_length() {
