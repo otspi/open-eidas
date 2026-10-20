@@ -1211,6 +1211,47 @@ async fn a_cli_revocation_without_a_comment_is_refused_before_the_store_is_touch
     );
 }
 
+/// Constat C-3 (EN 319 411-1 `REV-6.3.9-04`, `OVR-6.6.2-01`) : un motif hors
+/// liste blanche est refusé par `Issuer::revoke` lui-même, avant toute trace
+/// au journal et sans toucher au registre — pour la CLI comme pour les actions.
+#[tokio::test]
+async fn revoke_refuses_every_reason_outside_the_allow_list() {
+    let store = store();
+    let (issuer, _issuing_signer) = issuer_from_ceremony(store.clone()).await;
+    let end_entity = SoftwareToken::generate(2048);
+    let cert = issuer
+        .issue(
+            &end_entity.public_key_der().unwrap(),
+            "ocsp.example.test",
+            &profile::ocsp_responder(),
+            "txn-c3",
+        )
+        .await
+        .unwrap();
+    let serial = oe_ca_core::canonical_serial(cert.tbs_certificate().serial_number());
+
+    for reason in [-1, 0, 2, 6, 7, 8, 10, 11, 99] {
+        let err = issuer
+            .revoke(&serial, reason, "test-operator", "", &Via::WebAuthn)
+            .await
+            .expect_err(&format!("le motif {reason} doit être refusé"));
+        assert!(err.to_string().contains("refusé"), "{reason}: {err}");
+    }
+    // Rien n'a été révoqué par ces refus.
+    let crl = issuer.publish_crl().await.unwrap();
+    let parsed: x509_cert::crl::CertificateList =
+        x509_cert::crl::CertificateList::from_der(&crl.der).unwrap();
+    assert!(parsed.tbs_cert_list.revoked_certificates.is_none());
+
+    for reason in oe_ca_core::ALLOWED_REVOCATION_REASONS {
+        // Un motif admis passe ; la révocation est idempotente (première raison conservée).
+        issuer
+            .revoke(&serial, reason, "test-operator", "", &Via::WebAuthn)
+            .await
+            .unwrap_or_else(|e| panic!("le motif {reason} doit être admis : {e}"));
+    }
+}
+
 /// Le `cRLNumber` est un INTEGER DER canonique : un lecteur strict (le
 /// répondeur OCSP, via `der`) le décode, et il vaut le numéro publié.
 #[tokio::test]

@@ -1,0 +1,363 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <title>Open-eIDAS Console - Cérémonie WebAuthn</title>
+  <style>
+    :root {
+      --bg-canvas: #090d16;
+      --bg-surface: #111827;
+      --bg-surface-elevated: #1e293b;
+      --border-subtle: #374151;
+      --text-main: #f3f4f6;
+      --text-muted: #9ca3af;
+      --danger-action: #dc2626;
+      --danger-bg: #450a0a;
+      --focus-ring: #38bdf8;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: var(--bg-canvas);
+      color: var(--text-main);
+      height: 100vh;
+      overflow: hidden;
+      font-size: 13px;
+      position: relative;
+    }
+
+    /* BACKGROUND MOCK (BLURRED) */
+    .bg-mock {
+      filter: blur(5px) brightness(0.4);
+      pointer-events: none;
+      user-select: none;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+    .security-bar-mock {
+      background: #881337;
+      color: #fff;
+      padding: 6px 16px;
+      font-size: 11px;
+      font-weight: bold;
+    }
+    .header-mock {
+      background: #111827;
+      padding: 12px 20px;
+      border-bottom: 1px solid #374151;
+      display: flex;
+      justify-content: space-between;
+    }
+    .content-mock {
+      flex: 1;
+      background: #090d16;
+      padding: 20px;
+    }
+
+    /* MODAL BACKDROP & CONTAINER */
+    .modal-overlay {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 50;
+      background: rgba(0, 0, 0, 0.75);
+    }
+
+    .modal-dialog {
+      background: #111827;
+      border: 1px solid #4b5563;
+      box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.8), 0 0 0 1px rgba(255, 255, 255, 0.05);
+      border-radius: 10px;
+      width: 600px;
+      max-width: 95vw;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .modal-header {
+      padding: 16px 24px;
+      background: #1f2937;
+      border-bottom: 1px solid var(--border-subtle);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .modal-title-group {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .modal-icon {
+      width: 28px;
+      height: 28px;
+      background: #991b1b;
+      color: #fecaca;
+      border-radius: 6px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 14px;
+    }
+    .modal-title {
+      font-size: 16px;
+      font-weight: 700;
+      color: #fff;
+    }
+    .critical-badge {
+      background: #450a0a;
+      border: 1px solid #dc2626;
+      color: #f87171;
+      padding: 2px 8px;
+      border-radius: 4px;
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+
+    .modal-body {
+      padding: 24px;
+      display: flex;
+      flex-direction: column;
+      gap: 18px;
+    }
+
+    .notice-box {
+      background: #1e293b;
+      border-left: 4px solid #f87171;
+      padding: 12px 16px;
+      border-radius: 0 6px 6px 0;
+      font-size: 13px;
+      line-height: 1.5;
+    }
+    .notice-box strong { color: #fff; }
+
+    /* CANONICAL PAYLOAD RECAP */
+    .recap-table {
+      width: 100%;
+      background: #090d16;
+      border: 1px solid var(--border-subtle);
+      border-radius: 6px;
+      border-collapse: collapse;
+      font-size: 12px;
+    }
+    .recap-table td {
+      padding: 8px 12px;
+      border-bottom: 1px solid #1f2937;
+    }
+    .recap-table tr:last-child td {
+      border-bottom: none;
+    }
+    .recap-label {
+      color: var(--text-muted);
+      width: 160px;
+      font-weight: 600;
+    }
+    .recap-value {
+      color: #fff;
+      font-family: system-ui, sans-serif;
+    }
+    .recap-value.mono {
+      font-family: 'JetBrains Mono', ui-monospace, monospace;
+      color: #93c5fd;
+    }
+
+    /* SHA-256 CANONICAL HASH */
+    .hash-card {
+      background: #090d16;
+      border: 1px solid #1e293b;
+      border-radius: 6px;
+      padding: 12px;
+    }
+    .hash-label {
+      font-size: 11px;
+      color: #9ca3af;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      margin-bottom: 6px;
+      display: flex;
+      justify-content: space-between;
+    }
+    .hash-value {
+      font-family: 'JetBrains Mono', ui-monospace, monospace;
+      font-size: 12px;
+      color: #a5f3fc;
+      letter-spacing: 0.05em;
+      line-height: 1.6;
+      word-break: break-all;
+    }
+
+    /* FIDO2 HARDWARE PROMPT */
+    .fido-prompt-box {
+      background: linear-gradient(135deg, #064e3b 0%, #022c22 100%);
+      border: 1px solid #059669;
+      border-radius: 8px;
+      padding: 16px 20px;
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      position: relative;
+      overflow: hidden;
+    }
+    .fido-key-icon {
+      width: 44px;
+      height: 44px;
+      background: #10b981;
+      color: #022c22;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 22px;
+      flex-shrink: 0;
+      box-shadow: 0 0 15px rgba(16, 185, 129, 0.5);
+      animation: pulse 2s infinite ease-in-out;
+    }
+    @keyframes pulse {
+      0% { transform: scale(0.96); box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.7); }
+      70% { transform: scale(1.04); box-shadow: 0 0 0 10px rgba(16, 185, 129, 0); }
+      100% { transform: scale(0.96); box-shadow: 0 0 0 0 rgba(16, 185, 129, 0); }
+    }
+    .fido-prompt-text {
+      flex: 1;
+    }
+    .fido-prompt-title {
+      font-size: 14px;
+      font-weight: 700;
+      color: #fff;
+      margin-bottom: 2px;
+    }
+    .fido-prompt-desc {
+      font-size: 12px;
+      color: #6ee7b7;
+    }
+    .fido-timeout {
+      font-family: ui-monospace, monospace;
+      font-size: 12px;
+      font-weight: 700;
+      color: #34d399;
+      background: rgba(0,0,0,0.3);
+      padding: 4px 8px;
+      border-radius: 4px;
+    }
+
+    .modal-footer {
+      padding: 16px 24px;
+      background: #1f2937;
+      border-top: 1px solid var(--border-subtle);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .btn-cancel {
+      background: transparent;
+      border: 1px solid var(--border-subtle);
+      color: var(--text-muted);
+      padding: 8px 16px;
+      border-radius: 6px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    .btn-cancel:hover {
+      background: #374151;
+      color: #fff;
+    }
+    .security-note {
+      font-size: 11px;
+      color: var(--text-muted);
+    }
+  </style>
+</head>
+<body>
+
+  <!-- BACKGROUND MOCK -->
+  <div class="bg-mock">
+    <div class="security-bar-mock">ENVIRONNEMENT : PRODUCTION — AUTORITÉ DE CERTIFICATION QUALIFIÉE</div>
+    <div class="header-mock">
+      <div>Open-eIDAS Console</div>
+      <div>Alice Durand (ca_operateur)</div>
+    </div>
+    <div class="content-mock">
+      <h2>Certificats émis & Gestion du cycle de vie</h2>
+    </div>
+  </div>
+
+  <!-- MODAL -->
+  <div class="modal-overlay">
+    <div class="modal-dialog">
+      <div class="modal-header">
+        <div class="modal-title-group">
+          <div class="modal-icon">⚠️</div>
+          <div class="modal-title">Signature d'Action Critique (WebAuthn)</div>
+        </div>
+        <div class="critical-badge">RÉVOCATION DÉFINITIVE</div>
+      </div>
+
+      <div class="modal-body">
+        <div class="notice-box">
+          Vous êtes sur le point d'émettre une <strong>révocation définitive</strong>. Cette opération est irréversible et sera immédiatement publiée dans la prochaine CRL.
+        </div>
+
+        <!-- RECAP CANONIQUE -->
+        <table class="recap-table">
+          <tr>
+            <td class="recap-label">Certificat Cible</td>
+            <td class="recap-value"><strong>CN=Open-eIDAS OCSP Responder 2026-1</strong></td>
+          </tr>
+          <tr>
+            <td class="recap-label">Numéro de Série</td>
+            <td class="recap-value mono">04:A1:88:B2:99:4C:E1:5D:82:11</td>
+          </tr>
+          <tr>
+            <td class="recap-label">Motif RFC 5280</td>
+            <td class="recap-value" style="color: #f87171; font-weight: 600;">keyCompromise (1)</td>
+          </tr>
+          <tr>
+            <td class="recap-label">Justification Auditée</td>
+            <td class="recap-value">Signalement CERT-FR incident #2026-991 (compromission clé privée suspectée)</td>
+          </tr>
+          <tr>
+            <td class="recap-label">Opérateur Responsable</td>
+            <td class="recap-value">Alice Durand (<span class="mono">alice@pki.internal</span>)</td>
+          </tr>
+        </table>
+
+        <!-- CANONICAL SHA-256 -->
+        <div class="hash-card">
+          <div class="hash-label">
+            <span>Empreinte canonique de la requête (SHA-256)</span>
+            <span style="color:#6ee7b7;">Vérifiée localement</span>
+          </div>
+          <div class="hash-value">
+            e3b0c442 98fc1c14 9afbf4c8 996fb924 27ae41e4 649b934c a495991b 7852b855
+          </div>
+        </div>
+
+        <!-- FIDO2 PROMPT -->
+        <div class="fido-prompt-box">
+          <div class="fido-key-icon">🔑</div>
+          <div class="fido-prompt-text">
+            <div class="fido-prompt-title">Touchez votre clé de sécurité FIDO2</div>
+            <div class="fido-prompt-desc">Vérification de présence et saisie du code PIN matériel requises</div>
+          </div>
+          <div class="fido-timeout">42s</div>
+        </div>
+      </div>
+
+      <div class="modal-footer">
+        <button class="btn-cancel">Annuler l'opération [Esc]</button>
+        <div class="security-note">
+          Assertion cryptographique transmise via <span class="mono">navigator.credentials.get()</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</body>
+</html>

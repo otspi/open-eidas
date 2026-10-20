@@ -1,0 +1,479 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <title>Open-eIDAS Console - Double Contrôle Quorum</title>
+  <style>
+    :root {
+      --bg-canvas: #090d16;
+      --bg-surface: #111827;
+      --bg-surface-elevated: #1f2937;
+      --bg-surface-hover: #1a2332;
+      --border-subtle: #374151;
+      --border-strong: #4b5563;
+      --text-main: #f3f4f6;
+      --text-muted: #9ca3af;
+      --text-dim: #6b7280;
+      
+      --prod-banner-bg: #881337;
+      --prod-banner-text: #ffe4e6;
+
+      --quorum-purple: #7c3aed;
+      --quorum-purple-light: #c084fc;
+      --quorum-bg: #2e1065;
+      
+      --valid-bg: #064e3b;
+      --valid-text: #34d399;
+
+      --pending-border: #d97706;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: var(--bg-canvas);
+      color: var(--text-main);
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+      overflow: hidden;
+      font-size: 13px;
+    }
+
+    /* BANNIERE SECURITE */
+    .security-bar {
+      background: var(--prod-banner-bg);
+      color: var(--prod-banner-text);
+      padding: 4px 16px;
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .security-bar-right { display: flex; gap: 16px; font-weight: 500; }
+
+    /* HEADER */
+    header {
+      background: var(--bg-surface);
+      border-bottom: 1px solid var(--border-subtle);
+      padding: 10px 20px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .brand { display: flex; align-items: center; gap: 12px; }
+    .brand-logo {
+      width: 24px; height: 24px; background: #3b82f6; border-radius: 4px;
+      display: flex; align-items: center; justify-content: center; font-weight: bold; color: white;
+    }
+    .brand-title { font-size: 15px; font-weight: 600; color: #fff; }
+    .system-status { display: flex; align-items: center; gap: 20px; }
+    .status-pill {
+      display: flex; align-items: center; gap: 6px; background: #0f172a;
+      border: 1px solid var(--border-subtle); padding: 4px 10px; border-radius: 9999px; font-size: 12px;
+    }
+    .dot-online { width: 8px; height: 8px; background: #10b981; border-radius: 50%; box-shadow: 0 0 6px #10b981; }
+    .role-badge {
+      background: #581c87; color: #e9d5ff; border: 1px solid #7e22ce; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 600;
+    }
+
+    /* MAIN LAYOUT */
+    .app-body { display: flex; flex: 1; overflow: hidden; }
+
+    /* SIDEBAR */
+    aside {
+      width: 230px; background: var(--bg-surface); border-right: 1px solid var(--border-subtle);
+      display: flex; flex-direction: column; padding: 16px 0;
+    }
+    .nav-group-title { font-size: 10px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-dim); padding: 0 16px 8px 16px; font-weight: 700; }
+    .nav-item {
+      display: flex; align-items: center; justify-content: space-between; padding: 8px 16px;
+      color: var(--text-muted); text-decoration: none; font-size: 13px; font-weight: 500; border-left: 3px solid transparent; cursor: pointer;
+    }
+    .nav-item.active { background: #1e293b; color: #fff; border-left-color: #7c3aed; font-weight: 600; }
+    .counter { background: #374151; color: #f3f4f6; padding: 1px 7px; border-radius: 9999px; font-size: 11px; font-weight: 600; }
+    .counter.quorum { background: #7c3aed; color: #fff; }
+
+    /* MAIN CONTENT */
+    main {
+      flex: 1;
+      padding: 24px 32px;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 20px;
+    }
+
+    .page-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      border-bottom: 1px solid var(--border-subtle);
+      padding-bottom: 16px;
+    }
+    .page-title { font-size: 20px; font-weight: 700; color: #fff; margin-bottom: 4px; }
+    .page-desc { color: var(--text-muted); font-size: 13px; }
+
+    /* QUORUM CARD */
+    .quorum-card {
+      background: var(--bg-surface);
+      border: 1px solid #6d28d9;
+      border-radius: 10px;
+      box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.5), 0 0 15px rgba(124, 58, 237, 0.2);
+      overflow: hidden;
+    }
+    .quorum-card-header {
+      background: linear-gradient(90deg, #2e1065 0%, #1e1b4b 100%);
+      padding: 16px 24px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      border-bottom: 1px solid #4c1d95;
+    }
+    .quorum-card-title {
+      font-size: 16px;
+      font-weight: 700;
+      color: #fff;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .quorum-badge {
+      background: #7c3aed;
+      color: #fff;
+      padding: 3px 10px;
+      border-radius: 4px;
+      font-weight: 700;
+      font-size: 12px;
+    }
+    .quorum-timer {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      color: #fbbf24;
+      font-family: ui-monospace, monospace;
+      font-size: 13px;
+      font-weight: 600;
+      background: rgba(0, 0, 0, 0.4);
+      padding: 4px 12px;
+      border-radius: 6px;
+    }
+
+    .quorum-card-body {
+      padding: 24px;
+      display: flex;
+      flex-direction: column;
+      gap: 20px;
+    }
+
+    /* PROGRESS JAUGE */
+    .quorum-progress-section {
+      background: #0f172a;
+      border: 1px solid var(--border-subtle);
+      border-radius: 8px;
+      padding: 16px 20px;
+    }
+    .progress-header {
+      display: flex;
+      justify-content: space-between;
+      margin-bottom: 8px;
+      font-weight: 600;
+    }
+    .progress-bar-bg {
+      height: 10px;
+      background: #1f2937;
+      border-radius: 9999px;
+      overflow: hidden;
+    }
+    .progress-bar-fill {
+      height: 100%;
+      width: 50%;
+      background: linear-gradient(90deg, #10b981 0%, #7c3aed 100%);
+      border-radius: 9999px;
+    }
+
+    /* DUAL OPERATORS TIMELINE */
+    .operators-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 20px;
+    }
+    .operator-card {
+      background: #0f172a;
+      border: 1px solid var(--border-subtle);
+      border-radius: 8px;
+      padding: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .operator-card.verified {
+      border-color: #059669;
+      background: #064e3b11;
+    }
+    .operator-card.pending {
+      border-color: #7c3aed;
+      background: #2e106511;
+    }
+    .op-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .op-title { font-weight: 700; font-size: 13px; color: #fff; }
+    .op-status {
+      font-size: 11px;
+      font-weight: 700;
+      padding: 2px 8px;
+      border-radius: 4px;
+    }
+    .op-status.ok { background: #064e3b; color: #34d399; }
+    .op-status.wait { background: #451a03; color: #fbbf24; }
+
+    .op-details {
+      font-size: 12px;
+      color: var(--text-muted);
+      line-height: 1.6;
+    }
+    .mono { font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 11px; }
+
+    /* ACTION AREA */
+    .quorum-action-box {
+      background: #172033;
+      border: 1px solid #2563eb;
+      border-radius: 8px;
+      padding: 16px 20px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .action-prompt-text {
+      color: #bfdbfe;
+      font-size: 13px;
+    }
+    .action-prompt-text strong { color: #fff; }
+    .btn-quorum-sign {
+      background: #7c3aed;
+      color: #fff;
+      font-weight: 700;
+      font-size: 13px;
+      padding: 10px 20px;
+      border-radius: 6px;
+      border: none;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      box-shadow: 0 4px 12px rgba(124, 58, 237, 0.4);
+      transition: background 0.15s;
+    }
+    .btn-quorum-sign:hover {
+      background: #6d28d9;
+    }
+
+    /* RECENT RESOLVED QUORUMS */
+    .history-table {
+      width: 100%;
+      border-collapse: collapse;
+      background: var(--bg-surface);
+      border: 1px solid var(--border-subtle);
+      border-radius: 8px;
+      overflow: hidden;
+      font-size: 12px;
+    }
+    .history-table th {
+      background: #0f172a;
+      padding: 10px 16px;
+      text-align: left;
+      color: var(--text-muted);
+      font-weight: 600;
+      border-bottom: 1px solid var(--border-subtle);
+    }
+    .history-table td {
+      padding: 10px 16px;
+      border-bottom: 1px solid #1f2937;
+    }
+  </style>
+</head>
+<body>
+
+  <!-- GLOBAL SECURITY BAR -->
+  <div class="security-bar">
+    <div>⚠️ ENVIRONNEMENT : PRODUCTION — AUTORITÉ DE CERTIFICATION QUALIFIÉE (ETSI EN 319 411-1 §6.5.1)</div>
+    <div class="security-bar-right">
+      <span>SERVEUR : ca.prod.internal:8443</span>
+      <span>SESSION : 12m</span>
+    </div>
+  </div>
+
+  <!-- HEADER -->
+  <header>
+    <div class="brand">
+      <div class="brand-logo">OE</div>
+      <div class="brand-title">Open-eIDAS Console</div>
+    </div>
+    <div class="system-status">
+      <div class="status-pill">
+        <div class="dot-online"></div>
+        <span>HSM Thales Luna : <strong>OK</strong></span>
+      </div>
+      <div class="user-profile">
+        <span>Alice Durand</span>
+        <span class="role-badge">ca_operateur</span>
+        <span>🔑 FIDO2</span>
+      </div>
+    </div>
+  </header>
+
+  <div class="app-body">
+    <!-- SIDEBAR -->
+    <aside>
+      <div class="nav-group-title">Opérations Trust Service</div>
+      <div class="nav-item">
+        <span>📥 Demandes d'enrôlement</span>
+        <span class="counter">4</span>
+      </div>
+      <div class="nav-item">
+        <span>📜 Certificats émis</span>
+        <span class="counter">1 428</span>
+      </div>
+      <div class="nav-item active">
+        <span>⚠️ Salle Quorum (M-sur-N)</span>
+        <span class="counter quorum">1</span>
+      </div>
+      <div class="nav-item">
+        <span>🛡️ Dossiers d'Incident</span>
+        <span class="counter">0</span>
+      </div>
+
+      <div class="nav-group-title" style="margin-top: 20px;">Gouvernance & Audit</div>
+      <div class="nav-item">
+        <span>🔍 Journal d'Audit (Inaltérable)</span>
+      </div>
+      <div class="nav-item">
+        <span>⚖️ Matrice ETSI EN 319 411-1</span>
+      </div>
+    </aside>
+
+    <!-- MAIN -->
+    <main>
+      <div class="page-header">
+        <div>
+          <div class="page-title">Salle de Quorum & Double Contrôle M-sur-N</div>
+          <div class="page-desc">Exigence ETSI EN 319 411-1 §6.5.1 : Deux opérateurs distincts munis de clés matérielles indépendantes sont requis pour toute opération sur une autorité subordonnée.</div>
+        </div>
+      </div>
+
+      <!-- QUORUM CARD -->
+      <div class="quorum-card">
+        <div class="quorum-card-header">
+          <div class="quorum-card-title">
+            <span>🛡️ Révocation d'Autorité Subordonnée : Open-eIDAS Intermediate CA G1</span>
+          </div>
+          <div style="display: flex; gap: 12px; align-items: center;">
+            <div class="quorum-badge">QUORUM 2/2 EXIGÉ</div>
+            <div class="quorum-timer">
+              <span>⏱ Expire dans :</span>
+              <span>21m 45s</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="quorum-card-body">
+          <!-- JAUGE -->
+          <div class="quorum-progress-section">
+            <div class="progress-header">
+              <span>Progression du Quorum : <strong>1 / 2 signatures recueillies</strong></span>
+              <span style="color: #a78bfa;">50% complété</span>
+            </div>
+            <div class="progress-bar-bg">
+              <div class="progress-bar-fill"></div>
+            </div>
+          </div>
+
+          <!-- OPERATEURS GRID -->
+          <div class="operators-grid">
+            <!-- OP 1: VALIDE -->
+            <div class="operator-card verified">
+              <div class="op-header">
+                <div class="op-title">1. Initiateur de la demande</div>
+                <div class="op-status ok">✓ VALIDÉ PAR FIDO2</div>
+              </div>
+              <div class="op-details">
+                <strong>Bob Martin</strong> (<span class="mono">bob@pki.internal</span>)<br>
+                Rôle : <span class="mono">ca_operateur</span><br>
+                Signé le : <strong>2026-09-19 13:42:10 UTC</strong><br>
+                Credential : <span class="mono">YubiKey 5 NFC (#77219)</span><br>
+                Hash signé : <span class="mono" style="color:#34d399;">9f82d1c...88e4 (Vérifié)</span>
+              </div>
+            </div>
+
+            <!-- OP 2: EN ATTENTE -->
+            <div class="operator-card pending">
+              <div class="op-header">
+                <div class="op-title">2. Seconde validation indépendante</div>
+                <div class="op-status wait">⏳ EN ATTENTE DE SIGNATURE</div>
+              </div>
+              <div class="op-details">
+                Opérateur éligible requis (différent de Bob Martin).<br>
+                Vous êtes connectée en tant que : <strong>Alice Durand</strong> (<span class="mono">ca_operateur</span>).<br>
+                Contrôle d'imputabilité : <strong>ÉLIGIBLE</strong> (Identité distincte confirmée).
+              </div>
+            </div>
+          </div>
+
+          <!-- ACTION PROMPT -->
+          <div class="quorum-action-box">
+            <div class="action-prompt-text">
+              <strong>Action requise :</strong> Vous confirmez avoir vérifié le motif de révocation et le hash canonique de la demande émise par Bob Martin.
+            </div>
+            <button class="btn-quorum-sign">
+              <span>🔑</span>
+              <span>Contresigner et exécuter avec ma clé FIDO2</span>
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- HISTORIQUE DES QUORUMS -->
+      <div>
+        <h3 style="font-size: 14px; font-weight: 600; margin-bottom: 10px; color: var(--text-muted);">Dernières opérations exécutées en double contrôle</h3>
+        <table class="history-table">
+          <thead>
+            <tr>
+              <th>ID Action</th>
+              <th>Opération</th>
+              <th>Opérateur 1</th>
+              <th>Opérateur 2</th>
+              <th>Date d'exécution</th>
+              <th>Résultat</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td class="mono">QRM-2026-003</td>
+              <td>Rotation de clé répondeur OCSP-2026</td>
+              <td>Bob Martin</td>
+              <td>Alice Durand</td>
+              <td>2026-08-15 10:22 UTC</td>
+              <td><span style="color:#34d399; font-weight: 600;">✓ SUCCÈS (CRL #42)</span></td>
+            </tr>
+            <tr>
+              <td class="mono">QRM-2026-002</td>
+              <td>Génération sous-autorité TSA 2026</td>
+              <td>Alice Durand</td>
+              <td>Claire Dupont</td>
+              <td>2026-01-10 14:05 UTC</td>
+              <td><span style="color:#34d399; font-weight: 600;">✓ SUCCÈS (CEREMONY-01)</span></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </main>
+  </div>
+
+</body>
+</html>

@@ -183,11 +183,11 @@ d'expiration]`.
 
 | | |
 |---|---|
-| Motifs admis | Codes RFC 5280 §5.3.1 (voir [CA.md](CA.md) §5) ; `[À COMPLÉTER — le code entier n'est pas validé à la révocation, un motif hors nomenclature est normalisé en `unspecified` sur la CRL plutôt que rejeté]` |
+| Motifs admis | Codes RFC 5280 §5.3.1 : `keyCompromise` (1), `affiliationChanged` (3), `superseded` (4), `cessationOfOperation` (5), `privilegeWithdrawn` (9). Tout autre code (dont `unspecified` 0, `certificateHold` 6, `removeFromCRL` 8, et les motifs propres aux autorités 2 et 10) est **refusé** par `oe_ca_core::Issuer::revoke` lui-même, quelle que soit la voie (CLI, action signée, renouvellement) — constat C-3 |
 | Délai de publication après révocation | Immédiat pour `ca-server revoke` (republie la CRL dans le même appel) ; pour la révocation automatique déclenchée par un renouvellement (`oe_raflow`), la CRL n'est republiée qu'au cycle périodique suivant, pas dans le même appel |
 | Fréquence de publication de la CRL | Toutes les heures, fenêtre de validité 24 h (`OPENEIDAS_CRL_REFRESH`, `OPENEIDAS_CRL_VALIDITY`) |
 | Disponibilité de l'information de révocation après expiration | **Sans limite de durée** : un certificat révoqué reste dans la CRL même expiré (extension `ExpiredCertsOnCRL`, datée de la naissance de la CA émettrice), et le répondeur OCSP continue d'en rendre le statut `revoked` ; l'ARL de la racine fait de même (constat C-4 de l'audit du 2026-09-25, EN 319 411-2 `CSS-6.3.10-02`, `-03`, `-05`) |
-| Suspension | `certificateHold` (code RFC 5280 6) est accepté et encodé sur la CRL comme n'importe quel motif, mais aucun mécanisme de levée de suspension n'existe : une fois révoqué, un certificat ne redevient jamais actif |
+| Suspension | Aucune : `certificateHold` (code RFC 5280 6) est refusé à la révocation, faute de mécanisme de levée de suspension ; une révocation est définitive (EN 319 411-1 `REV-6.3.9-04`) |
 | Vérification du statut en ligne | OCSP (RFC 6960), `oe_ocsp_core::Responder`, refuse de répondre plutôt que de garantir un statut obsolète |
 
 #### A.4.8 Services d'état de certificat

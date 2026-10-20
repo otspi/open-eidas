@@ -171,6 +171,15 @@ pub struct Options {
     pub recorder: Option<Arc<dyn Recorder>>,
 }
 
+/// Motifs de révocation admis pour un certificat d'entité finale (constat C-3,
+/// EN 319 411-1 `REV-6.3.9-04`, `OVR-6.6.2-01`) : keyCompromise (1),
+/// affiliationChanged (3), superseded (4), cessationOfOperation (5),
+/// privilegeWithdrawn (9). Sont exclus « unspecified » (0, ne justifie rien
+/// devant un auditeur), « certificateHold » (6, réversible : ce système ne sait
+/// pas lever une suspension), « removeFromCRL » (8, réservé aux CRL delta) et
+/// les motifs propres aux autorités (2 et 10, voir `revoke_authority`).
+pub const ALLOWED_REVOCATION_REASONS: [i32; 5] = [1, 3, 4, 5, 9];
+
 pub struct Issuer {
     opts: Options,
 }
@@ -416,7 +425,10 @@ impl Issuer {
 
     /// Révoque un certificat émis par cette autorité et consigne la
     /// décision, avec la voie par laquelle son opérateur a été identifié
-    /// (constat R-1). La CRL n'est pas republiée ici : `publish_crl` la reprend.
+    /// (constat R-1). Le motif doit figurer dans [`ALLOWED_REVOCATION_REASONS`]
+    /// (constat C-3) : ce contrôle unique vaut pour la CLI, les actions signées
+    /// et le renouvellement. La CRL n'est pas republiée ici : `publish_crl` la
+    /// reprend.
     pub async fn revoke(
         &self,
         serial: &[u8],
@@ -429,6 +441,11 @@ impl Issuer {
             return Err(CaError::Other(
                 "la révocation exige l'identité de l'opérateur qui la décide".to_string(),
             ));
+        }
+        if !ALLOWED_REVOCATION_REASONS.contains(&reason) {
+            return Err(CaError::Other(format!(
+                "motif {reason} refusé : motifs admis {ALLOWED_REVOCATION_REASONS:?} (RFC 5280 §5.3.1)"
+            )));
         }
         via.check_comment(comment).map_err(CaError::Other)?;
         let cert = self.opts.store.certificate(&serial.to_vec()).await?;
