@@ -160,6 +160,10 @@ une fois pour que les deux ne puissent pas diverger sur le DSN ou les secrets.
   value: {{ $ctx.Values.ca.organization | quote }}
 - name: OPENEIDAS_CA_COUNTRY
   value: {{ $ctx.Values.ca.country | quote }}
+{{- if $ctx.Values.ca.organizationIdentifier }}
+- name: OPENEIDAS_ORG_IDENTIFIER
+  value: {{ $ctx.Values.ca.organizationIdentifier | quote }}
+{{- end }}
 - name: OPENEIDAS_CEREMONY_OPERATOR
   value: {{ $ctx.Values.ca.ceremonyOperator | quote }}
 - name: OPENEIDAS_PKI_PUBLIC_URL

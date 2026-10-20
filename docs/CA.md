@@ -104,6 +104,8 @@ soit un test rouge.
 | `id-pkix-ocsp-nocheck` | — | oui |
 | Point de distribution de CRL | oui | non |
 | AIA (ca_issuers, ocsp) | oui | non |
+| Politique (`certificatePolicies`) | **NCP+** `0.4.0.2042.1.2` (EN 319 411-1 `GEN-6.3.3-12`, clé en HSM ; constat C-6) | — |
+| `organizationIdentifier` du sujet (2.5.4.97) | oui, si `OPENEIDAS_ORG_IDENTIFIER` est posé (obligatoire en production) | non |
 
 Le sujet est **composé** : seul le nom courant vient de la demande, l'unité,
 l'organisation et le pays sont imposés par le profil. Un service ne peut donc
@@ -517,6 +519,7 @@ il est porté comme exigence hors périmètre dans la matrice.
 | `OPENEIDAS_ISSUING_PIN` | — (obligatoire) | PIN du token de la CA émettrice |
 | `OPENEIDAS_ROOT_PIN` | valeur de `ISSUING_PIN` hors production ; **obligatoire et distinct en production** | PIN du token de la racine |
 | `OPENEIDAS_ROOT_SO_PIN` / `OPENEIDAS_ISSUING_SO_PIN` | PIN utilisateur du token hors production ; **obligatoires et distincts du PIN utilisateur en production** | PIN SO des deux tokens SoftHSM (entrypoint, à l'initialisation du token seulement) |
+| `OPENEIDAS_ORG_IDENTIFIER` | — (obligatoire en production) | `organizationIdentifier` du sujet des certificats TSU (EN 319 412-3 `LEG-4.2.1-2`, `-6`), préfixé par son type et son pays, par ex. `NTRFR-<identifiant>` ; valeur de l'association à fixer (RNA) |
 | `OPENEIDAS_PRODUCTION` | false | Mode production : `serve` et l'entrypoint refusent tout repli de PIN (racine sur émettrice, PIN SO sur PIN utilisateur) ; posé par le chart quand `production: true` (la TSA y refuse en plus l'OID de test) — constat C-2 |
 | `OPENEIDAS_PKI_PUBLIC_URL` | — (obligatoire) | Adresse **publique** gravée dans les extensions CDP/AIA |
 | `OPENEIDAS_OCSP_PUBLIC_URL` | — | Adresse publique du répondeur OCSP (AIA) |

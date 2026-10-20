@@ -1415,3 +1415,87 @@ async fn signature_algorithms_carry_explicit_null_parameters() {
     );
     assert_eq!(parsed.signature_algorithm.parameters.as_ref(), Some(&null));
 }
+
+/// Constat C-6 (EN 319 412-3 `LEG-4.2.1-2`, EN 319 411-1 `GEN-6.3.3-12`) : le
+/// certificat TSU porte la politique NCP+ et, quand l'autorité en connaît un,
+/// `organizationIdentifier` (2.5.4.97) dans son sujet ; les autres profils
+/// n'en portent pas.
+#[tokio::test]
+async fn tsu_certificate_carries_ncp_plus_and_the_organization_identifier() {
+    let store = store();
+    let (issuer, _issuing_signer) = issuer_from_ceremony(store.clone()).await;
+    let issuer = issuer
+        .with_organization_identifier("NTRFR-W123456789")
+        .unwrap();
+    let key = SoftwareToken::generate(2048).public_key_der().unwrap();
+    let tsu = issuer
+        .issue(&key, "tsu.example.test", &profile::tsa_signer(), "txn-c6a")
+        .await
+        .unwrap();
+    assert!(oe_conformance::has_certificate_policy(
+        &tsu,
+        "0.4.0.2042.1.2"
+    ));
+    let oid = der::asn1::ObjectIdentifier::new("2.5.4.97").unwrap();
+    let value = tsu
+        .tbs_certificate()
+        .subject()
+        .iter()
+        .find(|atv| atv.oid == oid)
+        .expect("organizationIdentifier dans le sujet");
+    assert_eq!(value.value.value(), b"NTRFR-W123456789");
+    // openssl le lit sous son nom.
+    let path = std::env::temp_dir().join(format!("oe-tsu-c6-{}.der", std::process::id()));
+    std::fs::write(&path, tsu.to_der().unwrap()).unwrap();
+    let out = std::process::Command::new("openssl")
+        .args([
+            "x509",
+            "-inform",
+            "DER",
+            "-noout",
+            "-subject",
+            "-nameopt",
+            "oneline,-esc_msb",
+            "-in",
+        ])
+        .arg(&path)
+        .output()
+        .unwrap();
+    let _ = std::fs::remove_file(&path);
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("NTRFR-W123456789"),
+        "{out:?}"
+    );
+
+    // Un profil qui ne le demande pas n'en porte pas.
+    let ocsp = issuer
+        .issue(
+            &key,
+            "ocsp.example.test",
+            &profile::ocsp_responder(),
+            "txn-c6b",
+        )
+        .await
+        .unwrap();
+    assert!(!ocsp
+        .tbs_certificate()
+        .subject()
+        .iter()
+        .any(|atv| atv.oid == oid));
+    // Sans identifiant configuré, le certificat TSU n'en porte pas non plus.
+    let (bare, _) = issuer_from_ceremony(Arc::new(oe_castore::Memory::new())).await;
+    let tsu = bare
+        .issue(&key, "tsu.example.test", &profile::tsa_signer(), "txn-c6c")
+        .await
+        .unwrap();
+    assert!(!tsu
+        .tbs_certificate()
+        .subject()
+        .iter()
+        .any(|atv| atv.oid == oid));
+    // Valeurs refusées.
+    for bad in ["", "   ", &"x".repeat(65), "a\nb"] {
+        let (i, _) = issuer_from_ceremony(Arc::new(oe_castore::Memory::new())).await;
+        assert!(i.with_organization_identifier(bad).is_err(), "{bad:?}");
+    }
+}

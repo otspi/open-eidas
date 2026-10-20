@@ -201,6 +201,9 @@ ca:
   # Identité consignée au procès-verbal de cérémonie (ETSI EN 319 411-1
   # §6.5.1). En production, une personne nommée, pas un compte technique.
   ceremonyOperator: "ci-bootstrap"
+  # `organizationIdentifier` du sujet des certificats TSU (EN 319 412-3
+  # LEG-4.2.1-2), ex. NTRFR-<identifiant> : obligatoire en production (constat C-6) : ca-server refuse de démarrer sans lui.
+  organizationIdentifier: ""
   crl:
     # Écart entre thisUpdate et nextUpdate des CRL publiées.
     validity: 24h

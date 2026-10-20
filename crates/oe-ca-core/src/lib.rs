@@ -75,12 +75,36 @@ pub enum CaError {
 /// `pkix.Name.ToRDNSequence`, Go) — seul le CN provient de la CSR, le reste
 /// est imposé par l'autorité.
 pub fn build_subject(cn: &str, ou: &str, o: &str, c: &str) -> Result<Name, CaError> {
+    build_subject_with_identifier(cn, ou, o, None, c)
+}
+
+/// OID `organizationIdentifier` (EN 319 412-1 §5.1.4).
+const OID_ORGANIZATION_IDENTIFIER: &str = "2.5.4.97";
+
+/// Comme [`build_subject`], avec `organizationIdentifier` (UTF8String) à la
+/// suite de `O` quand il est donné.
+pub fn build_subject_with_identifier(
+    cn: &str,
+    ou: &str,
+    o: &str,
+    organization_identifier: Option<&str>,
+    c: &str,
+) -> Result<Name, CaError> {
     let mut parts = Vec::new();
     if !c.is_empty() {
         parts.push(format!("C={}", escape_rdn(c)));
     }
     if !o.is_empty() {
         parts.push(format!("O={}", escape_rdn(o)));
+    }
+    if let Some(id) = organization_identifier {
+        // Forme RFC 4514 « OID=#hex » : la valeur est l'UTF8String DER.
+        let mut der = vec![0x0c, id.len() as u8];
+        der.extend_from_slice(id.as_bytes());
+        parts.push(format!(
+            "{OID_ORGANIZATION_IDENTIFIER}=#{}",
+            hex::encode(der)
+        ));
     }
     if !ou.is_empty() {
         parts.push(format!("OU={}", escape_rdn(ou)));
@@ -182,6 +206,9 @@ pub const ALLOWED_REVOCATION_REASONS: [i32; 5] = [1, 3, 4, 5, 9];
 
 pub struct Issuer {
     opts: Options,
+    /// `organizationIdentifier` des sujets dont le profil le demande
+    /// (constat C-6) ; voir [`Issuer::with_organization_identifier`].
+    organization_identifier: Option<String>,
 }
 
 impl Issuer {
@@ -192,7 +219,27 @@ impl Issuer {
             .subject_public_key_info()
             .to_der()?;
         matches_signer(&cert_spki_der, opts.signer.as_ref())?;
-        Ok(Issuer { opts })
+        Ok(Issuer {
+            opts,
+            organization_identifier: None,
+        })
+    }
+
+    /// Identifiant de l'organisation gravé dans `organizationIdentifier` des
+    /// certificats dont le profil le demande (constat C-6 ; EN 319 412-1
+    /// §5.1.4, EN 319 412-3 `LEG-4.2.1-2` et `-6`) : un identifiant officiel
+    /// préfixé par son type et son pays, par exemple `NTRFR-<SIREN>`. Vide ou
+    /// de plus de 64 caractères : refusé.
+    pub fn with_organization_identifier(mut self, id: &str) -> Result<Issuer, CaError> {
+        let id = id.trim();
+        if id.is_empty() || id.chars().count() > 64 || id.chars().any(|c| c.is_control()) {
+            return Err(CaError::Other(
+                "organizationIdentifier : 1 à 64 caractères, sans caractère de contrôle"
+                    .to_string(),
+            ));
+        }
+        self.organization_identifier = Some(id.to_string());
+        Ok(self)
     }
 
     /// Bloquant : un journal qui n'a pas pu être écrit (par ex. le stockage
@@ -258,10 +305,16 @@ impl Issuer {
         let serial = self.reserve_serial(profile.name).await?;
         let serial_bytes = canonical_serial(&serial);
 
-        let subject = build_subject(
+        let organization_identifier = if profile.organization_identifier {
+            self.organization_identifier.as_deref()
+        } else {
+            None
+        };
+        let subject = build_subject_with_identifier(
             subject_cn,
             profile.organizational_unit,
             profile.organization,
+            organization_identifier,
             profile.country,
         )?;
         let issuer_name = self.opts.certificate.tbs_certificate().subject().clone();

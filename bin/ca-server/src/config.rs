@@ -89,6 +89,10 @@ pub struct Config {
     /// opérateur nommé. Affiché par `/healthz` (constat R-2), sans effet sur
     /// le comportement de ce service.
     pub ra_auto_approve: bool,
+    /// `organizationIdentifier` des certificats TSU (constat C-6, EN 319 412-3
+    /// `LEG-4.2.1-2`), par exemple `NTRFR-<identifiant>` ; vide = non gravé.
+    /// Obligatoire quand `OPENEIDAS_PRODUCTION` est activé.
+    pub organization_identifier: String,
 }
 
 /// Stockage objet compatible S3, auto-hébergé (MinIO, Garage, Ceph… jamais
@@ -267,6 +271,11 @@ impl Config {
             root_pin
         };
 
+        let organization_identifier = env_str("OPENEIDAS_ORG_IDENTIFIER", "");
+        if production && needs_hsm && organization_identifier.is_empty() {
+            return Err("OPENEIDAS_ORG_IDENTIFIER est obligatoire quand OPENEIDAS_PRODUCTION est activé (organizationIdentifier du certificat TSU, ex. NTRFR-<identifiant>)".to_string());
+        }
+
         let max_request_bytes = env_i64("OPENEIDAS_MAX_REQUEST_BYTES", 64 * 1024)?.max(0) as usize;
         let root_validity = to_time_duration(
             env_duration(
@@ -373,6 +382,7 @@ impl Config {
                 Duration::from_secs(60),
             )?,
             ra_auto_approve: env_bool("OPENEIDAS_RA_AUTO_APPROVE")?,
+            organization_identifier,
         })
     }
 }

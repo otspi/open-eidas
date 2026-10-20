@@ -56,6 +56,10 @@ pub struct Profile {
     pub san_dns_from_cn: bool,
     /// Politique de certification gravée dans `certificatePolicies`.
     pub policy_oid: Option<&'static str>,
+    /// Le sujet porte `organizationIdentifier` (2.5.4.97, EN 319 412-1 §5.1.4,
+    /// exigé par EN 319 412-3 `LEG-4.2.1-2` pour une personne morale) quand
+    /// l'autorité en connaît un (`Issuer::with_organization_identifier`).
+    pub organization_identifier: bool,
     /// Durée de vie de la **clé privée**, plus courte que `validity`
     /// (constat T-3 de l'audit du 2026-09-25, EN 319 421 `TIS-7.6.7-*`) :
     /// gravée dans l'extension `privateKeyUsagePeriod`. `None` pour un
@@ -74,6 +78,9 @@ pub const OID_EKU_TIME_STAMPING: &str = "1.3.6.1.5.5.7.3.8";
 pub const OID_EKU_OCSP_SIGNING: &str = "1.3.6.1.5.5.7.3.9";
 /// `id-pkix-ocsp-nocheck` (RFC 6960 §4.2.2.2.1).
 pub const OID_OCSP_NO_CHECK: &str = "1.3.6.1.5.5.7.48.1.5";
+/// Politique NCP+ d'EN 319 411-1 (`0.4.0.2042.1.2`) : certificat normalisé dont
+/// la clé privée est dans un dispositif cryptographique sûr.
+pub const OID_POLICY_NCP_PLUS: &str = "0.4.0.2042.1.2";
 
 pub fn eku_oids(p: &Profile) -> Vec<ObjectIdentifier> {
     p.eku.iter().map(|s| oid(s)).collect()
@@ -103,7 +110,11 @@ pub fn tsa_signer() -> Profile {
         include_ocsp_responder: true,
         required_cn: None,
         san_dns_from_cn: false,
-        policy_oid: None,
+        // NCP+ (EN 319 411-1 `GEN-6.3.3-12`) : clé de signature en HSM — cible
+        // de l'audit (constat C-6) ; un OID propre est possible après approbation
+        // du CPC.
+        policy_oid: Some(OID_POLICY_NCP_PLUS),
+        organization_identifier: true,
         private_key_validity: Some(time::Duration::days(365)),
         check: oe_conformance::check_tsu_certificate,
     }
@@ -130,6 +141,7 @@ pub fn ocsp_responder() -> Profile {
         required_cn: None,
         san_dns_from_cn: false,
         policy_oid: None,
+        organization_identifier: false,
         private_key_validity: None,
         check: oe_conformance::check_ocsp_responder_certificate,
     }
@@ -157,6 +169,7 @@ pub fn internal_client() -> Profile {
         required_cn: Some(INTERNAL_CLIENT_CN),
         san_dns_from_cn: false,
         policy_oid: Some(OID_POLICY_INTERNAL_CLIENT),
+        organization_identifier: false,
         private_key_validity: None,
         check: oe_conformance::check_internal_client_certificate,
     }
@@ -182,6 +195,7 @@ pub fn internal_server() -> Profile {
         required_cn: None,
         san_dns_from_cn: true,
         policy_oid: Some(OID_POLICY_INTERNAL_SERVER),
+        organization_identifier: false,
         private_key_validity: None,
         check: oe_conformance::check_internal_server_certificate,
     }
