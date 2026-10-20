@@ -18,7 +18,7 @@ async-trait = "0.1"
 time = { version = "0.3", features = ["std"] }
 thiserror = "2"
 hex = "0.4"
-sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "tls-rustls", "postgres", "time", "macros", "migrate"], optional = true }
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "tls-rustls-ring-native-roots", "postgres", "time", "macros", "migrate"], optional = true }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
