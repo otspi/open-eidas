@@ -50,6 +50,10 @@ pub enum ConfigError {
     InvalidOid(String),
     #[error("OPENEIDAS_POLICY_OID={0:?} appartient à l'arc de test : refusé quand OPENEIDAS_PRODUCTION est activé")]
     TestPolicyOidInProduction(String),
+    #[error("OPENEIDAS_TIME_POLICY={0} est refusée quand OPENEIDAS_PRODUCTION est activé (seule « enforce » est admise : constat S-2)")]
+    DegradedTimePolicyInProduction(String),
+    #[error("OPENEIDAS_ENROLL_INSECURE (TLS non vérifié vers la CA) est refusé quand OPENEIDAS_PRODUCTION est activé (constat S-2)")]
+    InsecureEnrollmentInProduction,
     #[error("algorithme de signature non supporté: {0:?} (sha256, sha384 ou sha512)")]
     UnsupportedDigest(String),
     #[error("OPENEIDAS_PIN est obligatoire (code PIN du token PKCS#11)")]
@@ -198,6 +202,18 @@ impl Config {
                 &policy_oid,
             )));
         }
+        // Constat S-2 : un mode dégradé (heure non surveillée, TLS non vérifié
+        // vers la CA) n'est pas admissible en production.
+        let time_policy: Policy = env_str("OPENEIDAS_TIME_POLICY", "enforce").parse()?;
+        if production && time_policy != Policy::Enforce {
+            return Err(ConfigError::DegradedTimePolicyInProduction(
+                time_policy.to_string(),
+            ));
+        }
+        let enroll_insecure = env_bool("OPENEIDAS_ENROLL_INSECURE", false)?;
+        if production && enroll_insecure {
+            return Err(ConfigError::InsecureEnrollmentInProduction);
+        }
 
         let accuracy = env_duration("OPENEIDAS_ACCURACY", Duration::from_secs(1))?;
         let time_max_offset =
@@ -253,7 +269,7 @@ impl Config {
             accuracy,
             signing_digest: parse_digest(&env_str("OPENEIDAS_SIGNING_DIGEST", "sha256"))?,
 
-            time_policy: env_str("OPENEIDAS_TIME_POLICY", "enforce").parse()?,
+            time_policy,
             time_sources: split_list(&env_str(
                 "OPENEIDAS_TIME_SOURCES",
                 "ntp.obspm.fr,ptbtime1.ptb.de",
@@ -268,7 +284,7 @@ impl Config {
 
             enroll_endpoint: env_str("OPENEIDAS_ENROLL_ENDPOINT", ""),
             enroll_ca_file: env_str("OPENEIDAS_ENROLL_CA_FILE", ""),
-            enroll_insecure: env_bool("OPENEIDAS_ENROLL_INSECURE", false)?,
+            enroll_insecure,
             enroll_timeout: env_duration("OPENEIDAS_ENROLL_TIMEOUT", Duration::from_secs(300))?,
             enroll_hmac_key: env::var("OPENEIDAS_ENROLL_HMAC_KEY").unwrap_or_default(),
             enroll_profile: env_str("OPENEIDAS_ENROLL_PROFILE", "tsa_signer"),
@@ -557,6 +573,37 @@ mod tests {
         env::set_var("OPENEIDAS_PRODUCTION", "true");
         let err = Config::load().unwrap_err();
         assert!(matches!(err, ConfigError::TestPolicyOidInProduction(_)));
+        clear_env();
+    }
+
+    /// Constat S-2 : en production, seule la politique de temps « enforce » et
+    /// une vérification TLS complète vers la CA sont admises.
+    #[test]
+    #[serial]
+    fn load_refuses_degraded_modes_in_production() {
+        for (var, value) in [
+            ("OPENEIDAS_TIME_POLICY", "monitor"),
+            ("OPENEIDAS_TIME_POLICY", "disabled"),
+            ("OPENEIDAS_ENROLL_INSECURE", "true"),
+        ] {
+            clear_env();
+            env::set_var("OPENEIDAS_PIN", "1234");
+            env::set_var("OPENEIDAS_PRODUCTION", "true");
+            env::set_var("OPENEIDAS_POLICY_OID", "1.3.6.1.4.1.12345.1.1.1");
+            env::set_var(var, value);
+            let err = Config::load().unwrap_err();
+            assert!(
+                matches!(
+                    err,
+                    ConfigError::DegradedTimePolicyInProduction(_)
+                        | ConfigError::InsecureEnrollmentInProduction
+                ),
+                "{var}={value}: {err}"
+            );
+            // Hors production, les mêmes réglages restent admis.
+            env::remove_var("OPENEIDAS_PRODUCTION");
+            assert!(Config::load().is_ok(), "{var}={value} hors production");
+        }
         clear_env();
     }
 

@@ -220,7 +220,7 @@ Toutes les options sont pilotées par variables d'environnement.
 | `OPENEIDAS_ENROLL_PROFILE` | `tsa_signer` | Profil de certificat demandé |
 | `OPENEIDAS_ENROLL_HMAC_KEY` | — | Secret partagé authentifiant la demande de certificat (HMAC-SHA256 sur la CSR) |
 | `OPENEIDAS_ENROLL_CA_FILE` | — | Ancre de confiance TLS de la PKI |
-| `OPENEIDAS_ENROLL_INSECURE` | `false` | Désactive la vérification TLS (démonstration seulement) |
+| `OPENEIDAS_ENROLL_INSECURE` | `false` | Désactive la vérification TLS (démonstration seulement) ; **refusé au démarrage quand `OPENEIDAS_PRODUCTION` est activé**, comme `OPENEIDAS_TIME_POLICY` autre que `enforce` (constat S-2) |
 | `OPENEIDAS_ENROLL_TIMEOUT` | `5m` | Délai maximal d'attente d'un certificat |
 | `OPENEIDAS_RENEW_BEFORE` | `720h` | Fenêtre de renouvellement anticipé |
 | `OPENEIDAS_SUBJECT_CN` | `Open eIDAS Time-Stamping Unit 1` | `CN` demandé dans la CSR |
