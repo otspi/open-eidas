@@ -11,7 +11,7 @@ ARG VERSION=dev
 # le reste du workspace, l'unification des fonctionnalités de Cargo réactiverait
 # la feature `pkcs11` d'`oe-hsm` ; `bin/ra-console/tests/no_pkcs11.rs` en est la
 # garde. `oe-webauthn` lie OpenSSL dynamiquement (`libssl3` à l'exécution).
-RUN cargo build --release -p ra-console --bin ra-console \
+RUN cargo build --locked --release -p ra-console --bin ra-console \
  && cp target/release/ra-console /out-ra-console \
  && rm -rf target
 
