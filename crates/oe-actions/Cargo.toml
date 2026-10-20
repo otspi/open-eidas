@@ -15,7 +15,7 @@ oe-webauthn = { path = "../oe-webauthn" }
 oe-raflow = { path = "../oe-raflow" }
 oe-castore = { path = "../oe-castore" }
 async-trait = "0.1"
-sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "tls-rustls", "postgres", "time", "json", "uuid"] }
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "tls-rustls-ring-native-roots", "postgres", "time", "json", "uuid"] }
 sha2 = "0.10"
 base64 = "0.22"
 openssl = "0.10"
