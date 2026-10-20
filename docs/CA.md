@@ -420,6 +420,15 @@ Elle est publiée **même vide**. Une CRL récente sans aucune entrée prouve qu
 le service de statut fonctionne ; l'absence de CRL ne prouve rien
 (ETSI EN 319 411-1 §6.3.10).
 
+**Un certificat révoqué n'en sort jamais**, même expiré (constat C-4 de l'audit
+du 2026-09-25 ; EN 319 411-2 `CSS-6.3.10-03`, exigence de la cible qualifiée) :
+l'information de révocation reste disponible sans limite de durée, par la CRL
+comme par OCSP. La CRL le déclare aux vérificateurs par l'extension
+`ExpiredCertsOnCRL` (`2.5.29.60`, `CSS-6.3.10-05`), dont la date est celle de
+naissance de la CA émettrice — rien n'a jamais été purgé. L'ARL de la racine
+fait de même. (Jusqu'au 2026-10-19, un révoqué sortait de la CRL 30 jours après
+son expiration, `OPENEIDAS_CRL_GRACE` ; la variable n'existe plus.)
+
 `/healthz` bascule en **503** dès que la CRL publiée est périmée : un service
 qui ne peut plus dire ce qui est révoqué ne doit pas se déclarer sain.
 
@@ -513,7 +522,6 @@ il est porté comme exigence hors périmètre dans la matrice.
 | `OPENEIDAS_CRL_VALIDITY` | 24h | Fenêtre `thisUpdate` → `nextUpdate` |
 | `OPENEIDAS_CRL_REFRESH` | 1h | Fréquence de republication |
 | `OPENEIDAS_ARL_VALIDITY` | 8760h | Validité de l'ARL de la racine (au plus un an) |
-| `OPENEIDAS_CRL_GRACE` | 720h | Délai après expiration pendant lequel un certificat révoqué reste listé |
 | `OPENEIDAS_AUDIT_FILE` | `/var/lib/open-eidas/state/ca-audit.log` | Journal d'audit |
 | `OPENEIDAS_AUDIT_RETENTION` | 8760h | Durée de conservation ; le service refuse de démarrer en deçà d'un an |
 | `OPENEIDAS_TSA_URL` | — (pas de scellement) | TSA de la maison (`tsa-server`, `POST /tsa`) qui horodate la tête du journal à chaque scellement (`log.sealed`, jeton RFC 3161 conservé). Vide, le journal n'est chaîné que par hachage |

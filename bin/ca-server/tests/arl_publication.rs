@@ -62,7 +62,6 @@ async fn fixture() -> Fixture {
             public_url: PUBLIC_URL.to_string(),
             ocsp_url: None,
             crl_validity: time::Duration::hours(24),
-            crl_grace: time::Duration::hours(1),
             recorder: None,
         })
         .unwrap(),
@@ -197,5 +196,21 @@ async fn the_arl_is_served_where_the_issuing_cdp_points_and_reflects_revocation(
     assert_eq!(
         entries[0].serial_number,
         *f.issuing.tbs_certificate().serial_number()
+    );
+    // Constat C-4 : l'ARL déclare conserver ses révoqués, expirés compris,
+    // depuis la naissance de la racine.
+    let oid = der::asn1::ObjectIdentifier::new("2.5.29.60").unwrap();
+    let ext = arl
+        .tbs_cert_list
+        .crl_extensions
+        .as_ref()
+        .and_then(|exts| exts.iter().find(|e| e.extn_id == oid))
+        .expect("l'ARL doit porter ExpiredCertsOnCRL");
+    assert!(!ext.critical);
+    let since = der::asn1::GeneralizedTime::from_der(ext.extn_value.as_bytes()).unwrap();
+    let root = f.server.issuer().chain().last().unwrap().clone();
+    assert_eq!(
+        since.to_date_time(),
+        root.tbs_certificate().validity().not_before.to_date_time()
     );
 }

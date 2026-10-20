@@ -39,8 +39,12 @@ pub struct Requirement {
 
 /// Normes dont chaque exigence porte un identifiant : une ligne de matrice
 /// qui les cite doit nommer les identifiants, pas seulement la clause.
-pub const STANDARDS_WITH_IDS: &[&str] =
-    &["ETSI EN 319 401", "ETSI EN 319 411-1", "ETSI EN 319 421"];
+pub const STANDARDS_WITH_IDS: &[&str] = &[
+    "ETSI EN 319 401",
+    "ETSI EN 319 411-1",
+    "ETSI EN 319 411-2",
+    "ETSI EN 319 421",
+];
 
 impl fmt::Display for Requirement {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -892,6 +896,22 @@ pub fn system_matrix() -> Matrix {
             mechanism: "Le répondeur ne sert qu'une CRL dont la signature est vérifiée avec la clé de la CA émettrice et dont le cRLNumber n'est pas inférieur au dernier accepté (une CRL plus ancienne rejouée est refusée, l'instantané courant conservé) ; passé le nextUpdate de la CRL en cache, il répond tryLater plutôt que de signer un statut échu. Réponses RFC 6960 : nonce RFC 8954 repris tel quel (1 à 32 octets, sinon malformedRequest), une SingleResponse par requête de la liste (au plus oe_ocsp_core::MAX_REQUESTS) — constat O-2, levé.",
             test: "crates/oe-ocsp-core/tests/against_real_crl.rs (a_crl_past_its_next_update_yields_try_later, a_replayed_older_crl_is_refused_and_the_current_snapshot_kept, the_request_nonce_is_echoed_in_the_response, an_oversized_nonce_is_a_malformed_request, every_request_of_the_list_gets_its_own_single_response, an_oversized_request_list_is_a_malformed_request)",
             in_service: ".github/workflows/ci.yml (Interroge le répondeur OCSP pour le certificat TSU)",
+            target: "",
+        },
+        Entry {
+            requirement: Requirement { standard: "ETSI EN 319 411-1", version: "V1.5.1 (2025-04)", clause: "§6.3.10", ids: &["CSS-6.3.10-04"], title: "Information de révocation disponible au moins jusqu'à l'expiration des certificats" },
+            status: Status::Covered,
+            mechanism: "Un certificat révoqué reste dans la CRL sans limite de durée, expiré compris (oe_castore::Store::revoked ne filtre plus sur not_after ; l'ancien délai de grâce OPENEIDAS_CRL_GRACE est supprimé), et le répondeur OCSP en rend le statut revoked tant que la CA existe (constat C-4, levé).",
+            test: "crates/oe-ca-core/tests/issuance.rs (an_expired_revoked_certificate_stays_on_the_crl_which_declares_it)",
+            in_service: ".github/workflows/ci.yml (Vérifie le certificat TSU et la CRL avec openssl)",
+            target: "",
+        },
+        Entry {
+            requirement: Requirement { standard: "ETSI EN 319 411-2", version: "V2.6.1 (2025-06)", clause: "§6.3.10", ids: &["CSS-6.3.10-02", "CSS-6.3.10-03", "CSS-6.3.10-05"], title: "Révoqués expirés conservés dans la CRL et déclarés par ExpiredCertsOnCRL (cible qualifiée)" },
+            status: Status::Covered,
+            mechanism: "La CRL de l'émettrice et l'ARL de la racine conservent indéfiniment leurs entrées révoquées et portent l'extension ExpiredCertsOnCRL (2.5.29.60, GeneralizedTime, non critique) datée de la naissance de l'autorité : rien n'a jamais été purgé (oe_ca_core::extensions::expired_certs_on_crl, Issuer::publish_crl, RootAuthority::publish_arl). Décision du 2026-10-13 (C-4).",
+            test: "crates/oe-ca-core/tests/issuance.rs (an_expired_revoked_certificate_stays_on_the_crl_which_declares_it), bin/ca-server/tests/arl_publication.rs (the_arl_is_served_where_the_issuing_cdp_points_and_reflects_revocation)",
+            in_service: ".github/workflows/ci.yml (Vérifie le certificat TSU et la CRL avec openssl)",
             target: "",
         },
         Entry {

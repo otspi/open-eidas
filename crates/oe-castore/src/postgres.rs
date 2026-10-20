@@ -352,18 +352,13 @@ impl Store for Postgres {
         }
     }
 
-    async fn revoked(
-        &self,
-        now: OffsetDateTime,
-        grace: time::Duration,
-    ) -> Result<Vec<Certificate>, StoreError> {
+    async fn revoked(&self) -> Result<Vec<Certificate>, StoreError> {
+        // Constat C-4 : jamais de purge des révoqués, expirés compris.
         let rows = sqlx::query(&format!(
             "SELECT {CERTIFICATE_COLUMNS} FROM certificates
-             WHERE status = 'revoked' AND not_after + $2::interval >= $1
+             WHERE status = 'revoked'
              ORDER BY serial_hex"
         ))
-        .bind(now)
-        .bind(format!("{} seconds", grace.whole_seconds()))
         .fetch_all(&self.pool)
         .await
         .map_err(map_err)?;

@@ -185,13 +185,11 @@ pub trait Store: Send + Sync {
         at: OffsetDateTime,
         reason: i32,
     ) -> Result<(), StoreError>;
-    /// Certificats révoqués à porter dans la CRL. Un certificat expiré
-    /// depuis plus de `grace` en est retiré (RFC 5280 §5).
-    async fn revoked(
-        &self,
-        now: OffsetDateTime,
-        grace: time::Duration,
-    ) -> Result<Vec<Certificate>, StoreError>;
+    /// Certificats révoqués à porter dans la CRL : **tous**, sans limite de
+    /// durée, expirés compris (constat C-4 de l'audit du 2026-09-25,
+    /// EN 319 411-2 `CSS-6.3.10-03` : les révoqués expirés ne sont pas
+    /// retirés de la CRL, qui le déclare par `ExpiredCertsOnCRL`).
+    async fn revoked(&self) -> Result<Vec<Certificate>, StoreError>;
 
     /// Tous les numéros de série émis (`issued` ou `revoked`, jamais
     /// `reserved`), sans limite de durée — jamais purgé, à la différence de
@@ -399,16 +397,12 @@ impl Store for Memory {
         Ok(())
     }
 
-    async fn revoked(
-        &self,
-        now: OffsetDateTime,
-        grace: time::Duration,
-    ) -> Result<Vec<Certificate>, StoreError> {
+    async fn revoked(&self) -> Result<Vec<Certificate>, StoreError> {
         let state = self.inner.lock().unwrap();
         let mut out: Vec<Certificate> = state
             .certificates
             .values()
-            .filter(|c| c.status == CertificateStatus::Revoked && now <= c.not_after + grace)
+            .filter(|c| c.status == CertificateStatus::Revoked)
             .cloned()
             .collect();
         out.sort_by(|a, b| a.serial.cmp(&b.serial));
