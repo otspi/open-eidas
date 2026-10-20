@@ -61,7 +61,15 @@ pub(crate) fn subject_key_identifier(ski: &[u8]) -> Result<Extension, CaError> {
 /// `cRLNumber` (RFC 5280 §5.2.3) : entier monotone propre à la CRL, distinct
 /// du numéro de série des certificats.
 pub(crate) fn crl_number(number: i64) -> Result<Extension, CaError> {
-    let value = der::asn1::Int::new(&(number as u64).to_be_bytes())?;
+    // INTEGER canonique : sans zéro de tête superflu (un lecteur DER strict,
+    // tel le répondeur OCSP via `der`, refuse l'encodage sur 8 octets que
+    // produisait `Int::new(&u64::to_be_bytes())`).
+    let bytes = (number.max(0) as u64).to_be_bytes();
+    let first = bytes
+        .iter()
+        .position(|&b| b != 0)
+        .unwrap_or(bytes.len() - 1);
+    let value = der::asn1::Uint::new(&bytes[first..])?;
     build(OID_CRL_NUMBER, false, &value)
 }
 

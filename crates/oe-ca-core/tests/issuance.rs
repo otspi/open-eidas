@@ -1219,3 +1219,30 @@ async fn a_cli_revocation_without_a_comment_is_refused_before_the_store_is_touch
         oe_castore::CertificateStatus::Revoked
     );
 }
+
+/// Le `cRLNumber` est un INTEGER DER canonique : un lecteur strict (le
+/// répondeur OCSP, via `der`) le décode, et il vaut le numéro publié.
+#[tokio::test]
+async fn the_crl_number_is_a_canonical_der_integer() {
+    use der::oid::AssociatedOid;
+    let store = store();
+    let (issuer, _issuing_signer) = issuer_from_ceremony(store.clone()).await;
+    for _ in 0..3 {
+        let crl = issuer.publish_crl().await.unwrap();
+        let parsed: x509_cert::crl::CertificateList =
+            x509_cert::crl::CertificateList::from_der(&crl.der).unwrap();
+        let ext = parsed
+            .tbs_cert_list
+            .crl_extensions
+            .as_ref()
+            .and_then(|exts| {
+                exts.iter()
+                    .find(|e| e.extn_id == x509_cert::ext::pkix::CrlNumber::OID)
+            })
+            .expect("cRLNumber présent");
+        let number = x509_cert::ext::pkix::CrlNumber::from_der(ext.extn_value.as_bytes())
+            .expect("INTEGER canonique");
+        let expected = x509_cert::ext::pkix::CrlNumber::try_from(crl.number as u64).unwrap();
+        assert_eq!(number, expected);
+    }
+}

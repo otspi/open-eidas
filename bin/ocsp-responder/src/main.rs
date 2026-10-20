@@ -227,6 +227,7 @@ async fn run_serve() {
             issuer,
             crl_url,
             crl_refresh: cfg.crl_refresh,
+            clock: None,
             max_request_bytes: cfg.max_request_bytes,
             http_client: Some(http_client),
         })

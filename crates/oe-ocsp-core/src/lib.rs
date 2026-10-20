@@ -6,6 +6,13 @@
 //! à son registre : le répondeur ne voit donc que ce qu'un tiers pourrait
 //! voir lui-même, et ne peut pas attester d'un statut que la CA n'a pas
 //! publié.
+//!
+//! Constat O-2 de l'audit du 2026-09-25 (EN 319 411-1 `CSS-6.3.10-03`,
+//! `OVR-6.6.3-01`) : la CRL consommée doit être fraîche et authentique, et
+//! les réponses conformes à la RFC 6960 — une CRL dont `nextUpdate` est passé
+//! vaut `tryLater`, une CRL au `cRLNumber` inférieur au dernier accepté est
+//! refusée (rejeu), le nonce de la requête (RFC 8954) est repris dans la
+//! réponse, et chaque requête de la liste reçoit sa réponse.
 
 pub mod asn1;
 
@@ -46,6 +53,10 @@ pub enum OcspError {
     InvalidCrl(der::Error),
     #[error("ocspresponder: signature de la CRL invalide: {0}")]
     InvalidCrlSignature(String),
+    #[error("ocspresponder: CRL sans cRLNumber (RFC 5280 §5.2.3)")]
+    CrlWithoutNumber,
+    #[error("ocspresponder: CRL rejouée: cRLNumber {received} reçu, {current} déjà accepté")]
+    CrlReplayed { received: String, current: String },
     #[error("ocspresponder: {0}")]
     Der(#[from] der::Error),
     #[error("ocspresponder: signature de la réponse: {0}")]
@@ -67,6 +78,10 @@ struct CrlSnapshot {
     this_update: time::OffsetDateTime,
     next_update: time::OffsetDateTime,
     last_fetch: Option<std::time::Instant>,
+    /// Constat O-2 : `cRLNumber` de la CRL en cache (entier non signé,
+    /// octets de poids fort en tête, sans zéro de tête). Une CRL au numéro
+    /// inférieur est un rejeu, quelle que soit sa signature.
+    crl_number: Option<Vec<u8>>,
 }
 
 impl Default for CrlSnapshot {
@@ -77,9 +92,21 @@ impl Default for CrlSnapshot {
             this_update: time::OffsetDateTime::UNIX_EPOCH,
             next_update: time::OffsetDateTime::UNIX_EPOCH,
             last_fetch: None,
+            crl_number: None,
         }
     }
 }
+
+/// Nombre maximal de requêtes dans une `requestList` : au-delà, la requête
+/// est refusée (`malformedRequest`) plutôt que de faire signer une réponse
+/// arbitrairement grande.
+pub const MAX_REQUESTS: usize = 100;
+
+/// Taille maximale d'un nonce (RFC 8954 §2.1) ; au-delà, `malformedRequest`.
+pub const MAX_NONCE_BYTES: usize = 32;
+
+/// OID `id-pkix-ocsp-nonce` (1.3.6.1.5.5.7.48.1.2).
+pub const OID_PKIX_OCSP_NONCE: &str = "1.3.6.1.5.5.7.48.1.2";
 
 pub struct Options {
     /// Clé et certificat de signature OCSP, émis par la PKI avec
@@ -97,6 +124,9 @@ pub struct Options {
     /// non vérifiable en démonstration locale (`newCRLHTTPClient`, Go).
     /// `None` construit un client par défaut.
     pub http_client: Option<reqwest::Client>,
+    /// Horloge du répondeur (`producedAt`, péremption de la CRL) ; `None` =
+    /// l'heure du système. Injectable pour les tests.
+    pub clock: Option<std::sync::Arc<dyn Fn() -> time::OffsetDateTime + Send + Sync>>,
 }
 
 /// Répond aux requêtes OCSP en consultant un instantané de CRL rafraîchi
@@ -236,21 +266,46 @@ impl Responder {
             .map(|s| s.as_bytes().to_vec())
             .collect();
 
-        let mut snap = self.snapshot.write().expect("verrou de CRL empoisonné");
-        snap.revoked = revoked;
-        snap.issued = issued;
-        snap.this_update = x509_time_to_offset(&crl.tbs_cert_list.this_update);
-        snap.next_update = crl
+        // Constat O-2 : une CRL plus ancienne que celle en cache, même
+        // valablement signée, est un rejeu — elle ferait disparaître une
+        // révocation récente. Le cRLNumber est obligatoire (RFC 5280 §5.2.3).
+        let number = crl_number(&crl)?;
+        let next_update = crl
             .tbs_cert_list
             .next_update
             .as_ref()
             .map(x509_time_to_offset)
             .unwrap_or(time::OffsetDateTime::UNIX_EPOCH);
+        if next_update < self.now() {
+            tracing::warn!(next_update = %next_update, "la CRL publiée par la CA est périmée : réponses tryLater jusqu'à sa republication");
+        }
+
+        let mut snap = self.snapshot.write().expect("verrou de CRL empoisonné");
+        if let Some(current) = &snap.crl_number {
+            if uint_cmp(&number, current) == std::cmp::Ordering::Less {
+                return Err(OcspError::CrlReplayed {
+                    received: hex_upper(&number),
+                    current: hex_upper(current),
+                });
+            }
+        }
+        snap.revoked = revoked;
+        snap.issued = issued;
+        snap.this_update = x509_time_to_offset(&crl.tbs_cert_list.this_update);
+        snap.next_update = next_update;
         snap.last_fetch = Some(std::time::Instant::now());
+        snap.crl_number = Some(number);
         drop(snap);
 
         tracing::info!(revoques = ?self.snapshot.read().unwrap().revoked.len(), "CRL rafraîchie");
         Ok(())
+    }
+
+    fn now(&self) -> time::OffsetDateTime {
+        match &self.opts.clock {
+            Some(clock) => clock(),
+            None => time::OffsetDateTime::now_utc(),
+        }
     }
 
     /// Traite une requête OCSP encodée en DER (RFC 6960 §4.1) et retourne
@@ -272,10 +327,13 @@ impl Responder {
         serial: &[u8],
     ) -> Option<(CertStatus, time::OffsetDateTime, time::OffsetDateTime)> {
         let snap = self.snapshot.read().expect("verrou de CRL empoisonné");
+        // Constat O-2 : la fraîcheur se juge sur le `nextUpdate` de la CRL,
+        // pas seulement sur l'heure de son téléchargement — une CRL que la
+        // CA n'a pas pu republier se retélécharge très bien, périmée.
         let stale = match snap.last_fetch {
             Some(t) => t.elapsed() > self.opts.crl_refresh * 2,
             None => true,
-        };
+        } || self.now() > snap.next_update;
         if stale {
             return None;
         }
@@ -299,24 +357,37 @@ impl Responder {
             Ok(r) => r,
             Err(_) => return Ok(error_response(OcspResponseStatus::MalformedRequest)),
         };
-        let Some(single) = req.tbs_request.request_list.first() else {
+        let requests = &req.tbs_request.request_list;
+        if requests.is_empty() || requests.len() > MAX_REQUESTS {
             return Ok(error_response(OcspResponseStatus::MalformedRequest));
+        }
+        // Constat O-2 : le nonce (RFC 8954) est repris tel quel dans la
+        // réponse ; vide ou trop long, la requête est malformée.
+        let nonce = match request_nonce(&req) {
+            Ok(nonce) => nonce,
+            Err(()) => return Ok(error_response(OcspResponseStatus::MalformedRequest)),
         };
-        let cert_id = &single.req_cert;
 
-        let Some((issuer_name_hash, issuer_key_hash)) =
-            compute_issuer_hashes(&self.opts.issuer, &cert_id.hash_algorithm)
-        else {
-            return Ok(error_response(OcspResponseStatus::MalformedRequest));
-        };
-        if cert_id.issuer_name_hash.as_bytes() != issuer_name_hash
-            || cert_id.issuer_key_hash.as_bytes() != issuer_key_hash
-        {
-            return Ok(error_response(OcspResponseStatus::Unauthorized));
+        // Constat O-2 : chaque requête de la liste reçoit sa réponse, aucune
+        // n'est ignorée en silence. Une requête pour un autre émetteur rend
+        // toute la réponse `unauthorized`.
+        let mut serials = Vec::with_capacity(requests.len());
+        for single in requests {
+            let cert_id = &single.req_cert;
+            let Some((issuer_name_hash, issuer_key_hash)) =
+                compute_issuer_hashes(&self.opts.issuer, &cert_id.hash_algorithm)
+            else {
+                return Ok(error_response(OcspResponseStatus::MalformedRequest));
+            };
+            if cert_id.issuer_name_hash.as_bytes() != issuer_name_hash
+                || cert_id.issuer_key_hash.as_bytes() != issuer_key_hash
+            {
+                return Ok(error_response(OcspResponseStatus::Unauthorized));
+            }
+            serials.push(cert_id.serial_number.as_bytes().to_vec());
         }
 
-        let serial = cert_id.serial_number.as_bytes().to_vec();
-        let Some((mut status, mut this_update, mut next_update)) = self.lookup(&serial) else {
+        let Some(mut found) = self.lookup_all(&serials) else {
             return Ok(error_response(OcspResponseStatus::TryLater));
         };
 
@@ -324,42 +395,59 @@ impl Responder {
         // l'instantané courant — un rafraîchissement à la volée (borné,
         // `try_on_demand_refresh`) lui laisse une chance avant de répondre
         // `unknown` pour de bon.
-        if matches!(status, CertStatus::Unknown(_)) && self.try_on_demand_refresh().await {
-            if let Some((s, tu, nu)) = self.lookup(&serial) {
-                status = s;
-                this_update = tu;
-                next_update = nu;
+        if found
+            .iter()
+            .any(|(status, _, _)| matches!(status, CertStatus::Unknown(_)))
+            && self.try_on_demand_refresh().await
+        {
+            if let Some(again) = self.lookup_all(&serials) {
+                found = again;
             }
         }
 
-        let single_response = SingleResponse {
-            cert_id: cert_id.clone(),
-            cert_status: status,
-            this_update: der::asn1::GeneralizedTime::from_date_time(offset_to_der_datetime(
-                this_update,
-            )?),
-            next_update: Some(der::asn1::GeneralizedTime::from_date_time(
-                offset_to_der_datetime(next_update)?,
-            )),
-            single_extensions: None,
-        };
+        let mut responses = Vec::with_capacity(requests.len());
+        for (single, (status, this_update, next_update)) in requests.iter().zip(found) {
+            responses.push(SingleResponse {
+                cert_id: single.req_cert.clone(),
+                cert_status: status,
+                this_update: der::asn1::GeneralizedTime::from_date_time(offset_to_der_datetime(
+                    this_update,
+                )?),
+                next_update: Some(der::asn1::GeneralizedTime::from_date_time(
+                    offset_to_der_datetime(next_update)?,
+                )),
+                single_extensions: None,
+            });
+        }
 
-        self.sign_response(single_response)
+        self.sign_response(responses, nonce)
     }
 
-    fn sign_response(&self, single: SingleResponse) -> Result<Vec<u8>, OcspError> {
+    /// [`Responder::lookup`] pour chaque numéro, d'un seul tenant : `None`
+    /// dès que l'instantané est périmé.
+    fn lookup_all(
+        &self,
+        serials: &[Vec<u8>],
+    ) -> Option<Vec<(CertStatus, time::OffsetDateTime, time::OffsetDateTime)>> {
+        serials.iter().map(|s| self.lookup(s)).collect()
+    }
+
+    fn sign_response(
+        &self,
+        responses: Vec<SingleResponse>,
+        nonce: Option<x509_cert::ext::Extension>,
+    ) -> Result<Vec<u8>, OcspError> {
         let responder_id =
             ResponderId::ByName(self.opts.certificate.tbs_certificate().subject().clone());
-        let produced_at = der::asn1::GeneralizedTime::from_date_time(offset_to_der_datetime(
-            time::OffsetDateTime::now_utc(),
-        )?);
+        let produced_at =
+            der::asn1::GeneralizedTime::from_date_time(offset_to_der_datetime(self.now())?);
 
         let tbs = ResponseData {
             version: None,
             responder_id,
             produced_at,
-            responses: vec![single],
-            response_extensions: None,
+            responses,
+            response_extensions: nonce.map(|n| vec![n]),
         };
         let tbs_der = tbs.to_der()?;
         let digest = Sha256::digest(&tbs_der);
@@ -387,6 +475,96 @@ impl Responder {
         };
         Ok(resp.to_der()?)
     }
+}
+
+/// Le nonce de la requête (RFC 8954), à reprendre tel quel dans la réponse :
+/// `Ok(None)` sans nonce, `Err(())` si sa taille sort de 1..=32 octets.
+fn request_nonce(req: &OcspRequest) -> Result<Option<x509_cert::ext::Extension>, ()> {
+    let oid = der::asn1::ObjectIdentifier::new(OID_PKIX_OCSP_NONCE).expect("OID constant invalide");
+    let Some(ext) = req
+        .tbs_request
+        .request_extensions
+        .as_ref()
+        .and_then(|exts| exts.iter().find(|e| e.extn_id == oid))
+    else {
+        return Ok(None);
+    };
+    // RFC 8954 : la valeur est un OCTET STRING encapsulé ; des clients plus
+    // anciens (RFC 6960) y mettent les octets bruts. Dans les deux cas, c'est
+    // la taille du nonce lui-même qui est bornée.
+    let raw = ext.extn_value.as_bytes();
+    let len = match der::asn1::OctetString::from_der(raw) {
+        Ok(inner) => inner.as_bytes().len(),
+        Err(_) => raw.len(),
+    };
+    if len == 0 || len > MAX_NONCE_BYTES {
+        return Err(());
+    }
+    Ok(Some(ext.clone()))
+}
+
+/// Le `cRLNumber` d'une CRL, en octets de poids fort en tête, sans zéro de
+/// tête. L'INTEGER est lu tel quel plutôt que par `der`, qui refuse un
+/// encodage non canonique (zéros de tête superflus) : des CRL en circulation
+/// en portent — dont celles émises par `ca-server` avant le 2026-10-19 — et
+/// seule la grandeur compte ici.
+fn crl_number(crl: &x509_cert::crl::CertificateList) -> Result<Vec<u8>, OcspError> {
+    let ext = crl
+        .tbs_cert_list
+        .crl_extensions
+        .as_ref()
+        .and_then(|exts| {
+            exts.iter()
+                .find(|e| e.extn_id == x509_cert::ext::pkix::CrlNumber::OID)
+        })
+        .ok_or(OcspError::CrlWithoutNumber)?;
+    der_integer_magnitude(ext.extn_value.as_bytes()).ok_or(OcspError::CrlWithoutNumber)
+}
+
+/// La grandeur d'un INTEGER DER positif (tag, longueur courte ou longue sur
+/// deux octets au plus, contenu), zéros de tête retirés ; `None` si ce
+/// n'est pas un INTEGER positif bien formé.
+fn der_integer_magnitude(raw: &[u8]) -> Option<Vec<u8>> {
+    if raw.first() != Some(&0x02) {
+        return None;
+    }
+    let (len, start) = match *raw.get(1)? {
+        short @ 0..=0x7f => (short as usize, 2),
+        long => {
+            let n = (long & 0x7f) as usize;
+            if n == 0 || n > 2 {
+                return None;
+            }
+            let mut len = 0usize;
+            for i in 0..n {
+                len = (len << 8) | *raw.get(2 + i)? as usize;
+            }
+            (len, 2 + n)
+        }
+    };
+    let content = raw.get(start..start + len)?;
+    if content.is_empty() || content[0] & 0x80 != 0 || raw.len() != start + len {
+        return None;
+    }
+    let first = content
+        .iter()
+        .position(|&b| b != 0)
+        .unwrap_or(content.len());
+    Some(content[first..].to_vec())
+}
+
+/// Compare deux entiers non signés en octets de poids fort en tête.
+fn uint_cmp(a: &[u8], b: &[u8]) -> std::cmp::Ordering {
+    let strip = |x: &[u8]| {
+        let start = x.iter().position(|&b| b != 0).unwrap_or(x.len());
+        x[start..].to_vec()
+    };
+    let (a, b) = (strip(a), strip(b));
+    a.len().cmp(&b.len()).then_with(|| a.cmp(&b))
+}
+
+fn hex_upper(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02X}")).collect()
 }
 
 fn error_response(status: OcspResponseStatus) -> Vec<u8> {
@@ -463,4 +641,42 @@ fn sha1_of(data: &[u8]) -> Vec<u8> {
 
 fn sha256_of(data: &[u8]) -> Vec<u8> {
     Sha256::digest(data).to_vec()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reads_the_magnitude_of_canonical_and_padded_der_integers() {
+        assert_eq!(der_integer_magnitude(&[0x02, 0x01, 0x02]), Some(vec![0x02]));
+        assert_eq!(
+            der_integer_magnitude(&[0x02, 0x08, 0, 0, 0, 0, 0, 0, 0x10, 0x00]),
+            Some(vec![0x10, 0x00])
+        );
+        assert_eq!(
+            der_integer_magnitude(&[0x02, 0x02, 0x00, 0xFF]),
+            Some(vec![0xFF])
+        );
+        assert_eq!(der_integer_magnitude(&[0x02, 0x01, 0x00]), Some(vec![]));
+        // Négatif, mauvais tag, longueur incohérente : refusés.
+        assert_eq!(der_integer_magnitude(&[0x02, 0x01, 0x80]), None);
+        assert_eq!(der_integer_magnitude(&[0x04, 0x01, 0x02]), None);
+        assert_eq!(der_integer_magnitude(&[0x02, 0x03, 0x02]), None);
+        assert_eq!(der_integer_magnitude(&[0x02, 0x01, 0x02, 0x00]), None);
+    }
+
+    #[test]
+    fn compares_magnitudes_without_leading_zeros() {
+        use std::cmp::Ordering;
+        assert_eq!(uint_cmp(&[0x0F, 0xFF], &[0x10, 0x00]), Ordering::Less);
+        assert_eq!(
+            uint_cmp(&[0x00, 0x10, 0x00], &[0x10, 0x00]),
+            Ordering::Equal
+        );
+        assert_eq!(
+            uint_cmp(&[0x01, 0x00, 0x00], &[0xFF, 0xFF]),
+            Ordering::Greater
+        );
+    }
 }
