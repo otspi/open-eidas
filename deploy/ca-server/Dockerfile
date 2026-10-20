@@ -13,7 +13,7 @@ ARG VERSION=dev
 # OpenSSL dynamiquement : les en-têtes (`libssl-dev`, `pkg-config`) sont dans
 # `rust:1-bookworm`, et `libssl3` est déjà dans l'image d'exécution, dont
 # SoftHSM2 dépend.
-RUN cargo build --release --bin ca-server \
+RUN cargo build --locked --release --bin ca-server \
  && cp target/release/ca-server /out-ca-server \
  && rm -rf target
 

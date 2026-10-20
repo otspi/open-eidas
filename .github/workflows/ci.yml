@@ -94,6 +94,9 @@ jobs:
         with:
           tool: cargo-audit
 
+      # RUSTSEC-2023-0071 (rsa, Marvin) est écarté parce qu'aucun binaire de
+      # production ne fait d'opération privée avec la crate : voir
+      # docs/ARCHITECTURE.md §10 et l'étape de garde ci-dessous (constat S-1).
       - name: cargo audit
         run: cargo audit --ignore RUSTSEC-2023-0071
 

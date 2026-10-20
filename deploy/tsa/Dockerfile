@@ -10,7 +10,7 @@ ARG VERSION=dev
 # module du HSM via dlopen au même titre que le binaire Go, mais sans lien
 # statique contre une bibliothèque C particulière au moment de la
 # compilation.
-RUN cargo build --release --bin tsa-server \
+RUN cargo build --locked --release --bin tsa-server \
  && cp target/release/tsa-server /out-tsa-server \
  && rm -rf target
 

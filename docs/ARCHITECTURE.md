@@ -363,3 +363,28 @@ CP/CPS publiés), identiques quel que soit le moteur.
 7. **Qualification.** Constituer le dossier ANSSI et engager l'audit d'un
    organisme accrédité, en s'appuyant sur
    [CONFORMITE-ETSI.md](CONFORMITE-ETSI.md) comme point d'entrée.
+
+## 10. Chaîne d'approvisionnement
+
+Constat S-1 de l'audit du 2026-09-25 (EN 319 401 `REQ-7.7-03`,
+`REQ-7.14.2-09`, `REQ-7.14.2-11`).
+
+- **Dépendances figées.** Les `Dockerfile` compilent avec `cargo build
+  --locked` : `Cargo.lock` n'est jamais réécrit pendant la construction, et
+  l'image livrée correspond aux dépendances que `cargo audit` a examinées en CI.
+- **Exclusion de RUSTSEC-2023-0071** (`rsa`, attaque de Marvin par canal
+  auxiliaire sur les opérations **privées** RSA (déchiffrement, signature)). Elle est écartée par
+  `cargo audit --ignore RUSTSEC-2023-0071`, pour une raison vérifiable : **aucun
+  binaire de production n'effectue d'opération privée avec la crate `rsa`**. Les
+  clés privées vivent dans le module PKCS#11 (`oe-hsm`, signature par
+  `C_Sign`) ; la crate ne sert en production qu'à des opérations **publiques**
+  (vérification de CSR, de CRL, de signatures après signature, reconstruction
+  de clés publiques). La seule implémentation privée, `SoftwareToken`, est
+  derrière la feature `testing` d'`oe-hsm`, et une étape de la CI échoue si cette
+  feature apparaît dans le graphe de production (constat H-2). **À réexaminer à
+  chaque mise à jour de `rsa`** et si une opération privée y était un jour
+  ajoutée.
+- **Reste à faire** : épingler les images de base (`rust:1-bookworm`,
+  `debian:bookworm-slim`) et les GitHub Actions par empreinte ou SHA de commit ;
+  produire SBOM, signature d'image (cosign) et attestation de provenance (SLSA)
+  dans la CI, et vérifier la signature au déploiement (politique d'admission).
