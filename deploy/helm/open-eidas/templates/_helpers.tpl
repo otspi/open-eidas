@@ -161,6 +161,14 @@ une fois pour que les deux ne puissent pas diverger sur le DSN ou les secrets.
   value: /var/lib/open-eidas/state/ca-audit.log
 - name: OPENEIDAS_AUDIT_RETENTION
   value: {{ $ctx.Values.ca.audit.retention | quote }}
+# Scellement de la tête du journal par la TSA de la release, en HTTP, et
+# contreseing par les mêmes autorités tierces que la TSA (constat J-1).
+- name: OPENEIDAS_TSA_URL
+  value: {{ printf "http://%s-tsa:%d/tsa" (include "open-eidas.fullname" $ctx) ($ctx.Values.tsa.service.port | int) | quote }}
+- name: OPENEIDAS_AUDIT_SEAL_INTERVAL
+  value: {{ $ctx.Values.ca.audit.sealInterval | quote }}
+- name: OPENEIDAS_CROSS_TSA_URLS
+  value: {{ $ctx.Values.tsa.crossTSA.urls | quote }}
 {{- end -}}
 
 {{/*

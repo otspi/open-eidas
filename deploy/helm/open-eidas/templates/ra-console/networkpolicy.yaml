@@ -6,9 +6,11 @@
 # Entrée : le seul namespace de la Gateway interne (raConsole.gateway). Sans
 # Gateway, personne n'atteint la console par le réseau du cluster ;
 # `kubectl port-forward` reste possible pour l'exploitation.
-# Sortie : DNS, PostgreSQL (rôle en lecture seule), et la CA — son API
+# Sortie : DNS, PostgreSQL (rôle en lecture seule), la CA — son API
 # publique (certificat de la CA, enrôlement du certificat client) et son port
-# interne (actions signées, mTLS).
+# interne (actions signées, mTLS) — et la TSA de la release, qui scelle le
+# journal de la console (constat J-1). Vers l'extérieur, rien, sauf si des
+# TSA tierces sont déclarées (raConsole.crossTSA.urls) : HTTP et HTTPS alors.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -54,4 +56,15 @@ spec:
         - podSelector:
             matchLabels:
               {{- include "open-eidas.componentSelectorLabels" (dict "context" . "component" "ca") | nindent 14 }}
+    - ports:
+        - port: {{ .Values.tsa.service.port }}
+      to:
+        - podSelector:
+            matchLabels:
+              {{- include "open-eidas.componentSelectorLabels" (dict "context" . "component" "tsa") | nindent 14 }}
+    {{- if .Values.raConsole.crossTSA.urls }}
+    - ports:
+        - port: 80
+        - port: 443
+    {{- end }}
 {{- end }}

@@ -41,8 +41,9 @@ fn die(context: &str, err: impl std::fmt::Display) -> ! {
 }
 
 /// Construit le journal (local, et S3 best-effort si configuré, docs/WEBUI.md
-/// §7, §15 étape 2b-C).
-fn open_recorder(cfg: &Config) -> AuditRecorder {
+/// §7, §15 étape 2b-C) et, si une TSA est configurée, son scellement
+/// périodique (constat J-1), à lancer par l'appelant.
+fn open_recorder(cfg: &Config) -> (AuditRecorder, Option<Arc<oe_seal::Sealer>>) {
     let log = Arc::new(
         oe_audit::Log::open(&cfg.audit_file).unwrap_or_else(|e| die("journal d'audit", e)),
     );
@@ -58,7 +59,25 @@ fn open_recorder(cfg: &Config) -> AuditRecorder {
         .unwrap_or_else(|e| die("client S3 du journal", e));
         (Arc::new(client), c.key.clone())
     });
-    AuditRecorder::new(log, cfg.audit_file.clone(), s3)
+    // Scellement périodique de la tête du journal par la TSA de la maison,
+    // contreseing tiers et copie hors site (constat J-1) : voir oe-seal.
+    let sealer = if cfg.tsa_url.is_empty() {
+        tracing::warn!("OPENEIDAS_TSA_URL vide : le journal d'audit n'est pas scellé");
+        None
+    } else {
+        Some(Arc::new(oe_seal::Sealer::new(oe_seal::Options {
+            log: log.clone(),
+            path: cfg.audit_file.clone(),
+            stamper: Arc::new(oe_seal::HttpStamper::new(
+                cfg.tsa_url.clone(),
+                cfg.cross_tsa_timeout,
+            )),
+            cross_tsas: cfg.cross_tsa_urls.clone(),
+            cross_timeout: cfg.cross_tsa_timeout,
+            s3: s3.clone(),
+        })))
+    };
+    (AuditRecorder::new(log, cfg.audit_file.clone(), s3), sealer)
 }
 
 fn bind_addr(listen: &str) -> String {
@@ -104,7 +123,14 @@ async fn run_serve() {
 
     // Son propre journal chaîné (docs/WEBUI.md §7, §15 étape 2b-A/2b-C) : jamais
     // celui de ca-server, une chaîne distincte, copiée best-effort sur S3 si configuré.
-    let journal: Arc<dyn ra_console::audit::Recorder> = Arc::new(open_recorder(&cfg));
+    let (recorder, sealer) = open_recorder(&cfg);
+    let journal: Arc<dyn ra_console::audit::Recorder> = Arc::new(recorder);
+    let journal_health: Option<Arc<dyn oe_audit::JournalHealth>> = sealer
+        .as_ref()
+        .map(|s| s.health() as Arc<dyn oe_audit::JournalHealth>);
+    if let Some(sealer) = sealer {
+        sealer.spawn_periodic(cfg.audit_seal_interval);
+    }
 
     let login = LoginService::new(
         oe_actions::Registry::new(pool.clone()),
@@ -129,6 +155,7 @@ async fn run_serve() {
             sessions,
             journal,
             s3: cfg.s3.clone(),
+            journal_health,
         }),
         console,
     );

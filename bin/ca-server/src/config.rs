@@ -59,6 +59,16 @@ pub struct Config {
     /// S3. Configuré, un échec de l'envoi bloque l'écriture qui en dépend
     /// (`oe_ca_core::Recorder`/`oe_raflow::Recorder` sont bloquants).
     pub s3: Option<S3Config>,
+    /// TSA de la maison (`tsa-server`, `POST /tsa`) qui horodate la tête du
+    /// journal à chaque scellement (`log.sealed`, constat J-1). Vide = pas de
+    /// scellement : le journal n'est alors chaîné que par hachage, sans clé.
+    pub tsa_url: String,
+    /// Période du scellement, du contreseing et de la copie hors site.
+    pub audit_seal_interval: Duration,
+    /// TSA tierces qui contresignent la même tête (`log.cross_sealed`) ; vide
+    /// = contreseing désactivé. Seule l'empreinte leur est envoyée.
+    pub cross_tsa_urls: Vec<String>,
+    pub cross_tsa_timeout: Duration,
 
     /// Adresse du lien interne (`/internal/v1/*`, docs/WEBUI.md §17). Vide :
     /// pas de lien interne, `ca-server` ne sert que le port public.
@@ -127,6 +137,16 @@ fn env_str(key: &str, fallback: &str) -> String {
         .ok()
         .filter(|v| !v.is_empty())
         .unwrap_or_else(|| fallback.to_string())
+}
+
+/// Une liste séparée par des virgules, entrées vides ignorées.
+fn split_list(value: &str) -> Vec<String> {
+    value
+        .split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .collect()
 }
 
 fn env_bool(key: &str) -> Result<bool, String> {
@@ -323,6 +343,20 @@ impl Config {
                 "/var/lib/open-eidas/state/ca-audit.log",
             ),
             s3: s3_config()?,
+            tsa_url: env_str("OPENEIDAS_TSA_URL", ""),
+            audit_seal_interval: env_duration(
+                "OPENEIDAS_AUDIT_SEAL_INTERVAL",
+                Duration::from_secs(3600),
+            )?,
+            // Absente : les mêmes autorités publiques que tsa-server ; posée à
+            // vide : contreseing désactivé (la CI, un réseau sans sortie).
+            cross_tsa_urls: split_list(&std::env::var("OPENEIDAS_CROSS_TSA_URLS").unwrap_or_else(
+                |_| "https://freetsa.org/tsr,http://timestamp.digicert.com".to_string(),
+            )),
+            cross_tsa_timeout: env_duration(
+                "OPENEIDAS_CROSS_TSA_TIMEOUT",
+                Duration::from_secs(15),
+            )?,
             internal_listen: env_str("OPENEIDAS_INTERNAL_LISTEN", ""),
             webauthn_rp_id: env_str("OPENEIDAS_WEBAUTHN_RP_ID", ""),
             webauthn_origin: env_str("OPENEIDAS_WEBAUTHN_ORIGIN", ""),

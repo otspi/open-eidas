@@ -50,8 +50,9 @@ pub struct Attestation {
     pub token: String,
 }
 
+/// Pourquoi une TSA n'a pas rendu de jeton exploitable.
 #[derive(Debug, thiserror::Error)]
-enum QueryError {
+pub enum QueryError {
     #[error("encodage de la requête RFC 3161: {0}")]
     Encode(#[from] der::Error),
     #[error("requête HTTP: {0}")]
@@ -86,7 +87,7 @@ impl Client {
     ) -> Vec<Attestation> {
         let mut out = Vec::new();
         for url in &self.urls {
-            match self.query(url, digest, hash_alg.clone()).await {
+            match self.attest(url, digest, hash_alg.clone()).await {
                 Ok(att) => out.push(att),
                 Err(e) => {
                     tracing::warn!(tsa = %url, erreur = %e, "contreseing par une TSA tierce impossible")
@@ -96,7 +97,11 @@ impl Client {
         out
     }
 
-    async fn query(
+    /// Soumet l'empreinte à une seule TSA, par son URL (configurée ou non
+    /// dans ce client), et rend son attestation ou la raison de l'échec :
+    /// pour qui a besoin de savoir pourquoi une autorité précise n'a pas
+    /// répondu, là où [`Client::seal`] ne fait que l'omettre.
+    pub async fn attest(
         &self,
         url: &str,
         digest: &[u8],

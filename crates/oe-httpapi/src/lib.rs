@@ -44,19 +44,7 @@ pub struct Options {
     pub journal: Option<Arc<dyn JournalHealth>>,
 }
 
-/// Ce que `/healthz` dit du journal d'audit (constat J-1 de l'audit du
-/// 2026-09-25) : un scellement ou une copie hors site en échec prolongé doit
-/// se voir et déclencher une alerte.
-pub trait JournalHealth: Send + Sync {
-    fn report(&self) -> JournalReport;
-}
-
-pub struct JournalReport {
-    /// `Some(raison)` quand le journal n'est plus scellé ou copié comme prévu.
-    pub degraded: Option<String>,
-    /// Le détail rendu tel quel sous la clé `journal`.
-    pub detail: serde_json::Value,
-}
+pub use oe_audit::{JournalHealth, JournalReport};
 
 #[derive(Clone)]
 struct AppState {

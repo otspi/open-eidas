@@ -516,6 +516,10 @@ il est porté comme exigence hors périmètre dans la matrice.
 | `OPENEIDAS_CRL_GRACE` | 720h | Délai après expiration pendant lequel un certificat révoqué reste listé |
 | `OPENEIDAS_AUDIT_FILE` | `/var/lib/open-eidas/state/ca-audit.log` | Journal d'audit |
 | `OPENEIDAS_AUDIT_RETENTION` | 8760h | Durée de conservation ; le service refuse de démarrer en deçà d'un an |
+| `OPENEIDAS_TSA_URL` | — (pas de scellement) | TSA de la maison (`tsa-server`, `POST /tsa`) qui horodate la tête du journal à chaque scellement (`log.sealed`, jeton RFC 3161 conservé). Vide, le journal n'est chaîné que par hachage |
+| `OPENEIDAS_AUDIT_SEAL_INTERVAL` | 1h | Période du scellement, du contreseing et de la copie hors site (`log.replicated`, avec `OPENEIDAS_S3_*`). Une passe au démarrage ; un scellement en échec est repris au bout d'une minute |
+| `OPENEIDAS_CROSS_TSA_URLS` | `https://freetsa.org/tsr,http://timestamp.digicert.com` | TSA tierces qui horodatent la même tête (`log.cross_sealed`). Seule l'empreinte leur est envoyée ; **posée à vide, la variable désactive le contreseing** |
+| `OPENEIDAS_CROSS_TSA_TIMEOUT` | 15s | Délai de réponse des TSA, maison comprise |
 | `OPENEIDAS_LISTEN` | `:8320` | Adresse d'écoute |
 | `OPENEIDAS_INTERNAL_LISTEN` | — (désactivé) | Adresse du lien interne `/internal/v1/*` |
 | `OPENEIDAS_INTERNAL_TLS_CERT_FILE` / `_KEY_FILE` | — | Certificat `internal_server` et sa clé (PEM). Les deux ou aucun ; sans eux, boucle locale seulement |

@@ -15,12 +15,13 @@ use oe_hsm::testing::SoftwareToken;
 use tower::ServiceExt;
 
 async fn build_server(crl_validity: time::Duration) -> Arc<http::Server> {
-    build_server_with(crl_validity, None).await
+    build_server_with(crl_validity, None, None).await
 }
 
 async fn build_server_with(
     crl_validity: time::Duration,
     guard: Option<Arc<oe_actions::RegistryGuard>>,
+    journal: Option<Arc<dyn oe_audit::JournalHealth>>,
 ) -> Arc<http::Server> {
     let store = Arc::new(Memory::new());
     let root_signer = Arc::new(SoftwareToken::generate(3072));
@@ -76,6 +77,9 @@ async fn build_server_with(
     let mut server = http::Server::new(issuer, flow, "test-version".to_string());
     if let Some(guard) = guard {
         server = server.with_registry_guard(guard);
+    }
+    if let Some(journal) = journal {
+        server = server.with_journal_health(journal);
     }
     Arc::new(server)
 }
@@ -184,7 +188,7 @@ async fn repository_page_lists_the_real_hierarchy() {
 #[tokio::test]
 async fn healthz_degrades_while_the_registry_is_blocked() {
     let guard = oe_actions::RegistryGuard::new();
-    let server = build_server_with(time::Duration::hours(24), Some(guard.clone())).await;
+    let server = build_server_with(time::Duration::hours(24), Some(guard.clone()), None).await;
     let (_shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
     server
         .start_crl_publication(std::time::Duration::from_secs(3600), shutdown_rx)
@@ -246,4 +250,72 @@ async fn healthz_declares_automatic_approval() {
     let (status, body) = get(&server, "/healthz").await;
     assert_eq!(status, axum::http::StatusCode::OK, "{body}");
     assert_eq!(body["approbation_automatique"], serde_json::json!(true));
+}
+
+/// Un état de journal de test : dégradé ou non, à la demande.
+struct FakeJournal(Option<&'static str>);
+
+impl oe_audit::JournalHealth for FakeJournal {
+    fn report(&self) -> oe_audit::JournalReport {
+        oe_audit::JournalReport {
+            degraded: self.0.map(str::to_string),
+            detail: serde_json::json!({ "degraded": self.0.is_some(), "seal_failures": 3 }),
+        }
+    }
+}
+
+/// Le scellement du journal (constat J-1) se lit dans `/healthz` : son
+/// détail sous `journal`, et un journal plus scellé comme prévu passe le
+/// statut en « degrade » — sans 503, l'autorité émet toujours et la sonde de
+/// vivacité ne doit pas la redémarrer.
+#[tokio::test]
+async fn healthz_reports_the_journal_seal_state_without_a_503() {
+    let (_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+
+    let server = build_server(time::Duration::hours(24)).await;
+    server
+        .start_crl_publication(std::time::Duration::from_secs(3600), shutdown_rx.clone())
+        .await
+        .unwrap();
+    let (status, body) = get(&server, "/healthz").await;
+    assert_eq!(status, axum::http::StatusCode::OK, "{body}");
+    assert!(body.get("journal").is_none(), "{body}");
+
+    let healthy = build_server_with(
+        time::Duration::hours(24),
+        None,
+        Some(Arc::new(FakeJournal(None))),
+    )
+    .await;
+    healthy
+        .start_crl_publication(std::time::Duration::from_secs(3600), shutdown_rx.clone())
+        .await
+        .unwrap();
+    let (status, body) = get(&healthy, "/healthz").await;
+    assert_eq!(status, axum::http::StatusCode::OK, "{body}");
+    assert_eq!(body["statut"], "ok");
+    assert_eq!(body["journal"]["degraded"], false, "{body}");
+
+    let degraded = build_server_with(
+        time::Duration::hours(24),
+        None,
+        Some(Arc::new(FakeJournal(Some(
+            "scellement en échec depuis 3 passes",
+        )))),
+    )
+    .await;
+    degraded
+        .start_crl_publication(std::time::Duration::from_secs(3600), shutdown_rx)
+        .await
+        .unwrap();
+    let (status, body) = get(&degraded, "/healthz").await;
+    assert_eq!(status, axum::http::StatusCode::OK, "{body}");
+    assert_eq!(body["statut"], "degrade");
+    assert_eq!(body["journal"]["seal_failures"], 3, "{body}");
+    assert!(
+        body["detail"]
+            .as_str()
+            .is_some_and(|d| d.contains("journal d'audit : scellement en échec")),
+        "{body}"
+    );
 }

@@ -10,6 +10,7 @@ members = [
     "crates/oe-rfc3161-asn1",
     "crates/oe-tsa-core",
     "crates/oe-crosstsa",
+    "crates/oe-seal",
     "crates/oe-replicate",
     "crates/oe-s3",
     "crates/oe-enroll",

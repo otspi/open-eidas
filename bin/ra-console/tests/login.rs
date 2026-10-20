@@ -119,6 +119,7 @@ impl Env {
             login,
             journal: Arc::new(ra_console::audit::NullRecorder),
             s3: None,
+            journal_health: None,
         }));
         Some(Env {
             console,

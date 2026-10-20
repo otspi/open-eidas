@@ -68,6 +68,13 @@ services:
       OPENEIDAS_CRL_REFRESH: 1h
       OPENEIDAS_AUDIT_FILE: /var/lib/open-eidas/state/ca-audit.log
       OPENEIDAS_AUDIT_RETENTION: ${OPENEIDAS_AUDIT_RETENTION:-8760h}
+      # Scellement de la tête du journal par la TSA de la maison (service
+      # tsa, en HTTP), contreseing par les mêmes TSA tierces que la TSA
+      # (constat J-1). La TSA démarre après la CA : la première passe échoue
+      # et est reprise une minute plus tard.
+      OPENEIDAS_TSA_URL: http://tsa:8318/tsa
+      OPENEIDAS_AUDIT_SEAL_INTERVAL: 1h
+      OPENEIDAS_CROSS_TSA_URLS: ${OPENEIDAS_CROSS_TSA_URLS-https://freetsa.org/tsr,http://timestamp.digicert.com}
     volumes:
       - catokens:/var/lib/softhsm/tokens
       - castate:/var/lib/open-eidas/state
