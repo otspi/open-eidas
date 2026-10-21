@@ -132,10 +132,11 @@ async fn an_action_goes_through_the_two_routes() {
         .unwrap();
 
     let tx = unique("tx");
+    let fingerprint = unique("fp");
     store
         .create_request(Request {
             transaction_id: tx.clone(),
-            csr_fingerprint: unique("fp"),
+            csr_fingerprint: fingerprint.clone(),
             csr_der: vec![1, 2, 3],
             profile: "tsa_signer".to_string(),
             subject_cn: "Unité de test".to_string(),
@@ -167,7 +168,7 @@ async fn an_action_goes_through_the_two_routes() {
         &app,
         "/internal/v1/challenge",
         serde_json::json!({
-            "body": {"action": "approve_request", "transaction_id": tx, "comment": "ok"},
+            "body": {"action": "approve_request", "transaction_id": tx, "csr_fingerprint": fingerprint, "comment": "ok"},
             "operator_hint": op,
         }),
     )

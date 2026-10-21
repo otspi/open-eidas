@@ -16,6 +16,9 @@ pub const STATES: &[&str] = &["PENDING", "APPROVED", "ISSUED", "REJECTED"];
 #[derive(Debug, Serialize)]
 pub struct EnrollmentRequest {
     pub transaction_id: String,
+    /// Empreinte de la CSR, que l'opérateur compare avec le demandeur avant
+    /// d'approuver (constat A-1, WEBUI §11).
+    pub csr_fingerprint: String,
     pub profile: String,
     pub subject_cn: String,
     pub state: String,
@@ -34,6 +37,7 @@ fn from_row(r: &sqlx::postgres::PgRow) -> EnrollmentRequest {
     let operator: String = r.get("operator");
     EnrollmentRequest {
         transaction_id: r.get("transaction_id"),
+        csr_fingerprint: r.get("csr_fingerprint"),
         profile: r.get("profile"),
         subject_cn: r.get("subject_cn"),
         state: r.get("state"),
@@ -45,7 +49,7 @@ fn from_row(r: &sqlx::postgres::PgRow) -> EnrollmentRequest {
 }
 
 const COLUMNS: &str =
-    "transaction_id, profile, subject_cn, state, operator, created_at, decided_at, certificate_serial_hex";
+    "transaction_id, csr_fingerprint, profile, subject_cn, state, operator, created_at, decided_at, certificate_serial_hex";
 
 /// Les demandes, les plus récentes d'abord ; filtrées par état si demandé.
 /// `state` n'est pas revalidé ici : à l'appelant de le confronter à

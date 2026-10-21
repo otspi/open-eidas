@@ -1285,7 +1285,9 @@ proposée :
 7. **Approbation liée à la clé du demandeur, vérifiée avec lui.** Le corps
    que signe l'opérateur RA pour approuver contient l'empreinte de la clé
    publique de la CSR (`csr_fingerprint`), pas seulement le
-   `transaction_id`. Avant de signer, l'opérateur fait lire cette empreinte
+   `transaction_id`. Cette empreinte est **obligatoire** pour `tsa_signer` et les
+   profils du lien interne (constat A-1) ; approuver un certificat
+   `internal_client` est réservé au rôle `ca_operateur`. Avant de signer, l'opérateur fait lire cette empreinte
    au demandeur (téléphone, visio). Le demandeur la calcule *avec son
    propre outil* :
 

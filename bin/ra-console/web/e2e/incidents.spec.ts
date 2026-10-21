@@ -47,7 +47,7 @@ test("ouvrir un dossier, y consigner, le clore en signant", async ({ page }) => 
   // signée) : le dossier la désigne, avec l'empreinte relue chez l'autorité.
   const prepared = (await (
     await page.request.post("/api/v1/webauthn/challenge", {
-      data: { action: "approve_request", transaction_id: fixture().pending[7]!, comment: "liée au dossier" },
+      data: { action: "approve_request", transaction_id: fixture().pending[7]!, csr_fingerprint: `empreinte-${fixture().pending[7]!}`, comment: "liée au dossier" },
     })
   ).json()) as { action_id: string; body_hash: string };
   await page.getByTestId("link-action").fill(prepared.action_id);

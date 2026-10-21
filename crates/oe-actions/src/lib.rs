@@ -54,6 +54,17 @@ use time::OffsetDateTime;
 /// Durée de validité d'une action et de son challenge.
 pub const CHALLENGE_TTL: time::Duration = time::Duration::minutes(5);
 
+/// Profils dont l'approbation exige l'empreinte de la CSR vérifiée avec le
+/// demandeur (constat A-1, WEBUI §11) : l'unité d'horodatage et les deux
+/// profils du lien interne. Les noms sont ceux de `oe_ca_core::profile`.
+pub const FINGERPRINT_REQUIRED_PROFILES: [&str; 3] =
+    ["tsa_signer", "internal_client", "internal_server"];
+
+/// Profil dont l'approbation relève de la CA et non de la RA : délivrer un
+/// nouveau certificat `internal_client` donne un accès au lien interne, donc à
+/// `ca-server` (constat A-1).
+pub const CA_ONLY_PROFILE: &str = "internal_client";
+
 pub type Clock = Arc<dyn Fn() -> OffsetDateTime + Send + Sync>;
 
 /// Ce que l'opérateur demande. L'énumération est fermée : une action qui n'y
@@ -64,7 +75,9 @@ pub enum Action {
     ApproveRequest {
         transaction_id: String,
         /// Empreinte de la CSR que l'opérateur a vérifiée avec le demandeur
-        /// (§11). Si présente, elle doit correspondre à la demande.
+        /// (§11). Si présente, elle doit correspondre à la demande ; elle est
+        /// **obligatoire** pour les profils de [`FINGERPRINT_REQUIRED_PROFILES`]
+        /// (constat A-1 de l'audit du 2026-09-25).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         csr_fingerprint: Option<String>,
         comment: String,
@@ -405,14 +418,22 @@ impl Service {
             )));
         }
         if let Action::ApproveRequest {
-            csr_fingerprint: Some(fp),
-            ..
+            csr_fingerprint, ..
         } = action
         {
-            if *fp != request.csr_fingerprint {
-                return Err(Error::Denied(
-                    "l'empreinte de CSR annoncée n'est pas celle de la demande".to_string(),
-                ));
+            match csr_fingerprint {
+                Some(fp) if *fp != request.csr_fingerprint => {
+                    return Err(Error::Denied(
+                        "l'empreinte de CSR annoncée n'est pas celle de la demande".to_string(),
+                    ));
+                }
+                None if FINGERPRINT_REQUIRED_PROFILES.contains(&request.profile.as_str()) => {
+                    return Err(Error::BadRequest(format!(
+                        "l'empreinte de CSR vérifiée avec le demandeur est obligatoire pour le profil {}",
+                        request.profile
+                    )));
+                }
+                _ => {}
             }
         }
         if let Action::RejectRequest { comment, .. } = action {
@@ -437,7 +458,22 @@ impl Service {
     ) -> Result<(), Error> {
         match action {
             Action::ApproveRequest { .. } | Action::RejectRequest { .. } => {
-                self.check_target(action).await
+                self.check_target(action).await?;
+                // Constat A-1 : un certificat `internal_client` ouvre le lien
+                // interne ; le délivrer est un acte de la CA, pas de la RA.
+                if let Action::ApproveRequest { transaction_id, .. } = action {
+                    let request = self
+                        .store
+                        .request_by_transaction_id(transaction_id)
+                        .await
+                        .map_err(|e| Error::Effect(e.to_string()))?;
+                    if request.profile == CA_ONLY_PROFILE && actor.role != Role::CaOperateur {
+                        return Err(Error::Denied(format!(
+                            "approuver un certificat {CA_ONLY_PROFILE} exige le rôle ca_operateur"
+                        )));
+                    }
+                }
+                Ok(())
             }
             Action::RevokeCertificate { .. } => self.check_revocation(action).await,
             _ => self
