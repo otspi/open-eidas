@@ -122,6 +122,9 @@ pub struct Config {
     pub listen: String,
     pub shutdown_timeout: Duration,
     pub max_request_bytes: i64,
+    /// Requêtes de signature simultanées au plus (`0` : pas de limite), au-delà
+    /// desquelles le service répond 503 (constat de l'audit : aucune limite de débit).
+    pub max_concurrent_requests: i64,
 
     pub pkcs11_module: String,
     pub token_label: String,
@@ -257,6 +260,7 @@ impl Config {
             listen: env_str("OPENEIDAS_LISTEN", ":8318"),
             shutdown_timeout: Duration::from_secs(15),
             max_request_bytes: env_int("OPENEIDAS_MAX_REQUEST_BYTES", 64 * 1024)?,
+            max_concurrent_requests: env_int("OPENEIDAS_MAX_CONCURRENT_REQUESTS", 64)?,
 
             pkcs11_module: env_str("OPENEIDAS_PKCS11_MODULE", "/usr/lib/softhsm/libsofthsm2.so"),
             token_label: env_str("OPENEIDAS_TOKEN_LABEL", "open-eidas-tsa"),

@@ -107,6 +107,15 @@ tsa:
     name: shared-gateway
     namespace: ingress
     host: tsa.open-eidas.example
+    # Limite de débit par adresse source à la Gateway (audit : aucune limite sur
+    # /tsa). Propre à Envoy Gateway (BackendTrafficPolicy, gateway.envoyproxy.io) :
+    # la Gateway API standard n'a pas de limitation de débit. Désactivée par
+    # défaut ; à dimensionner par mesure. Le service se protège aussi lui-même
+    # (OPENEIDAS_MAX_CONCURRENT_REQUESTS, 503 + Retry-After).
+    rateLimit:
+      enabled: false
+      requests: 60
+      unit: Minute
 
 ocsp:
   # Secret d'enrôlement propre au répondeur (constat R-3) ; vide = secret partagé.

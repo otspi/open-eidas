@@ -554,6 +554,16 @@ jobs:
             --set tsa.audit.s3.endpoint=https://s3.example.test \
             --set tsa.audit.s3.bucket=journaux \
             --set tsa.audit.s3.existingSecret=s3-journal > /dev/null
+      - name: helm template pose la limite de débit de la TSA à la demande
+        # Désactivée par défaut ; demandée, elle doit produire la politique.
+        run: |
+          if helm template open-eidas deploy/helm/open-eidas | grep -q BackendTrafficPolicy; then
+            echo "la limite de débit est posée sans avoir été demandée" >&2
+            exit 1
+          fi
+          helm template open-eidas deploy/helm/open-eidas \
+            --set tsa.gateway.enabled=true --set tsa.gateway.rateLimit.enabled=true \
+            | grep -q BackendTrafficPolicy
       - name: helm lint et rendu avec ra-console
         run: |
           helm lint deploy/helm/open-eidas -f deploy/helm/open-eidas/ci/ra-console-values.yaml

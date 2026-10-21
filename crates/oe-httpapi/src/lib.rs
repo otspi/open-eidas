@@ -33,6 +33,10 @@ pub struct Options {
     pub authority: Arc<Authority>,
     pub time_source: Arc<oe_timesource::Monitor>,
     pub max_request_bytes: usize,
+    /// Nombre maximal de requêtes de signature (`/tsa`, `/api/v1/timestamp`)
+    /// traitées en même temps ; au-delà, `503` + `Retry-After` plutôt qu'une file
+    /// qui s'allonge derrière l'unique session PKCS#11. `0` : pas de limite.
+    pub max_concurrent: usize,
     pub version: String,
     /// Origine autorisée en cross-origin (Access-Control-Allow-Origin) pour
     /// les routes de lecture/soumission destinées à un navigateur
@@ -61,9 +65,16 @@ pub fn router(opts: Options) -> Router {
         version: Arc::from(opts.version.as_str()),
         journal: opts.journal,
     };
-    let mut router = Router::new()
+    // Délestage des seules routes qui signent : /healthz et la lecture restent
+    // disponibles quand le service est saturé.
+    let permits = (opts.max_concurrent > 0)
+        .then(|| Arc::new(tokio::sync::Semaphore::new(opts.max_concurrent)));
+    let signing = Router::new()
         .route("/tsa", post(handle_rfc3161))
         .route("/api/v1/timestamp", post(handle_json))
+        .route_layer(axum::middleware::from_fn_with_state(permits, shed_load));
+    let mut router = Router::new()
+        .merge(signing)
         .route("/api/v1/policy", get(handle_policy))
         .route("/api/v1/certificate", get(handle_certificate))
         .route("/healthz", get(handle_health))
@@ -84,6 +95,29 @@ pub fn router(opts: Options) -> Router {
         }
     }
     router.with_state(state)
+}
+
+/// Retient une place pendant toute la requête de signature, ou refuse tout de
+/// suite quand elles sont toutes prises.
+async fn shed_load(
+    State(permits): State<Option<Arc<tokio::sync::Semaphore>>>,
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    let Some(permits) = permits else {
+        return next.run(req).await;
+    };
+    match permits.try_acquire_owned() {
+        Ok(_permit) => next.run(req).await,
+        Err(_) => {
+            let mut resp = json_error(StatusCode::SERVICE_UNAVAILABLE, "service saturé, réessayer");
+            resp.headers_mut().insert(
+                axum::http::header::RETRY_AFTER,
+                axum::http::HeaderValue::from_static("1"),
+            );
+            resp
+        }
+    }
 }
 
 async fn handle_rfc3161(

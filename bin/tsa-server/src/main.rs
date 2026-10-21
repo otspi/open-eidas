@@ -423,6 +423,7 @@ async fn run_serve() {
         authority,
         time_source: monitor,
         max_request_bytes: cfg.max_request_bytes.max(0) as usize,
+        max_concurrent: cfg.max_concurrent_requests.max(0) as usize,
         version: env!("CARGO_PKG_VERSION").to_string(),
         cors_allowed_origin: cfg.cors_allowed_origin.clone(),
         journal: Some(journal),

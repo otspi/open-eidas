@@ -198,6 +198,7 @@ Toutes les options sont pilotées par variables d'environnement.
 | `OPENEIDAS_ACCURACY` | `1s` | Précision annoncée dans le `TSTInfo` |
 | `OPENEIDAS_SIGNING_DIGEST` | `sha256` | Empreinte utilisée pour signer le jeton |
 | `OPENEIDAS_RSA_SCHEME` | `pkcs1v15` | Schéma des signatures RSA (jeton, et pour `ca-server` et `ocsp-responder` certificats, CRL et réponses) : `pss` (RSASSA-PSS, RFC 4055/4056) ou `pkcs1v15`. Les certificats déjà émis gardent leur schéma jusqu'à réémission |
+| `OPENEIDAS_MAX_CONCURRENT_REQUESTS` | `64` | Requêtes de signature (`/tsa`, `/api/v1/timestamp`) traitées en même temps ; au-delà, `503` avec `Retry-After: 1` (délestage plutôt qu'une file derrière l'unique session PKCS#11). `/healthz` n'est jamais délesté ; `0` = pas de limite |
 | `OPENEIDAS_MAX_REQUEST_BYTES` | `65536` | Taille maximale d'une requête |
 | `OPENEIDAS_AUDIT_FILE` | `/var/lib/open-eidas/audit.log` | Journal d'audit chaîné par hachage |
 | `OPENEIDAS_AUDIT_SEAL_INTERVAL` | `1h` | Période à laquelle la TSU horodate la tête de son journal (`log.sealed`, avec le jeton RFC 3161), puis en dépose une copie hors site. Une passe a lieu au démarrage |
