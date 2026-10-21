@@ -221,6 +221,7 @@ Toutes les options sont pilotées par variables d'environnement.
 | `OPENEIDAS_ENROLL_ENDPOINT` | — | URL de l'API d'enrôlement de la CA (`/api/v1/enroll`) |
 | `OPENEIDAS_ENROLL_PROFILE` | `tsa_signer` | Profil de certificat demandé |
 | `OPENEIDAS_ENROLL_HMAC_KEY` | — | Secret partagé authentifiant la demande de certificat (HMAC-SHA256 sur la CSR) |
+| `OPENEIDAS_ENROLL_CLIENT_CERT_FILE` / `OPENEIDAS_ENROLL_CLIENT_KEY_FILE` | — | Certificat client `enroll_client` (PEM) et sa clé : le service s'identifie par TLS mutuel sur le port `OPENEIDAS_ENROLL_MTLS_LISTEN` de la CA (`OPENEIDAS_ENROLL_ENDPOINT` en `https`), sans secret. Les deux ou aucun |
 | `OPENEIDAS_ENROLL_CA_FILE` | — | Ancre de confiance TLS de la PKI |
 | `OPENEIDAS_ENROLL_INSECURE` | `false` | Désactive la vérification TLS (démonstration seulement) ; **refusé au démarrage quand `OPENEIDAS_PRODUCTION` est activé**, comme `OPENEIDAS_TIME_POLICY` autre que `enforce` (constat S-2) |
 | `OPENEIDAS_ENROLL_TIMEOUT` | `5m` | Délai maximal d'attente d'un certificat |

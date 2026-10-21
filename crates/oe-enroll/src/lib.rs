@@ -21,6 +21,37 @@ use x509_cert::name::Name;
 use x509_cert::request::{CertReq, CertReqInfo};
 use x509_cert::{Certificate, SubjectPublicKeyInfo};
 
+/// Certificat client et sa clé (PEM, clé logicielle sur volume dédié) qui
+/// identifient le demandeur sur le port d'enrôlement en TLS mutuel
+/// (docs/R3-MTLS-DEMANDEURS.md).
+#[derive(Clone)]
+pub struct ClientIdentity {
+    pub cert_file: String,
+    pub key_file: String,
+}
+
+impl ClientIdentity {
+    /// Lit `OPENEIDAS_ENROLL_CLIENT_CERT_FILE` et `OPENEIDAS_ENROLL_CLIENT_KEY_FILE` :
+    /// les deux ou aucune (`None` : le demandeur s'authentifie par son secret).
+    pub fn from_env() -> Result<Option<ClientIdentity>, String> {
+        let get = |k: &str| std::env::var(k).ok().filter(|v| !v.is_empty());
+        match (
+            get("OPENEIDAS_ENROLL_CLIENT_CERT_FILE"),
+            get("OPENEIDAS_ENROLL_CLIENT_KEY_FILE"),
+        ) {
+            (None, None) => Ok(None),
+            (Some(cert_file), Some(key_file)) => Ok(Some(ClientIdentity {
+                cert_file,
+                key_file,
+            })),
+            _ => Err(
+                "OPENEIDAS_ENROLL_CLIENT_CERT_FILE et OPENEIDAS_ENROLL_CLIENT_KEY_FILE vont ensemble"
+                    .to_string(),
+            ),
+        }
+    }
+}
+
 pub struct Options {
     /// URL complète de l'API d'enrôlement de la CA, par ex.
     /// `http://ca:8320/api/v1/enroll`.
@@ -29,7 +60,12 @@ pub struct Options {
     pub profile: String,
     /// Authentifie le demandeur auprès de la CA. Sans lui, la demande est
     /// refusée avant même d'atteindre la machine à états.
+    ///
+    /// Vide avec une [`ClientIdentity`] : seul le certificat client identifie.
     pub hmac_secret: String,
+    /// Identité TLS du demandeur (port d'enrôlement mutuel). `endpoint` désigne
+    /// alors ce port, en `https`.
+    pub client_identity: Option<ClientIdentity>,
     pub ca_file: Option<String>,
     pub insecure: bool,
     pub timeout: Duration,
@@ -42,6 +78,7 @@ impl Default for Options {
             endpoint: String::new(),
             profile: String::new(),
             hmac_secret: String::new(),
+            client_identity: None,
             ca_file: None,
             insecure: false,
             timeout: Duration::from_secs(5 * 60),
@@ -58,6 +95,8 @@ pub enum EnrollError {
     MissingProfile,
     #[error("enroll: secret d'enrôlement non configuré")]
     MissingSecret,
+    #[error("enroll: certificat client illisible: {0}")]
+    ClientIdentity(String),
     #[error("enroll: lecture de l'ancre de confiance: {0}")]
     ReadCaFile(#[source] std::io::Error),
     #[error("enroll: ancre de confiance invalide: {0}")]
@@ -121,7 +160,7 @@ impl Client {
         if opts.profile.is_empty() {
             return Err(EnrollError::MissingProfile);
         }
-        if opts.hmac_secret.is_empty() {
+        if opts.hmac_secret.is_empty() && opts.client_identity.is_none() {
             return Err(EnrollError::MissingSecret);
         }
 
@@ -135,6 +174,19 @@ impl Client {
             // CA est jointe en HTTP interne ou derrière un certificat
             // auto-signé.
             builder = builder.danger_accept_invalid_certs(true);
+        }
+        if let Some(identity) = &opts.client_identity {
+            let mut pem = std::fs::read(&identity.cert_file)
+                .map_err(|e| EnrollError::ClientIdentity(format!("{}: {e}", identity.cert_file)))?;
+            pem.push(b'\n');
+            pem.extend(
+                std::fs::read(&identity.key_file).map_err(|e| {
+                    EnrollError::ClientIdentity(format!("{}: {e}", identity.key_file))
+                })?,
+            );
+            let identity = reqwest::Identity::from_pem(&pem)
+                .map_err(|e| EnrollError::ClientIdentity(e.to_string()))?;
+            builder = builder.identity(identity);
         }
         let http = builder.build().map_err(EnrollError::HttpClient)?;
 
@@ -150,7 +202,13 @@ impl Client {
         subject: Subject,
     ) -> Result<EnrollResult, EnrollError> {
         let (csr_der, csr_pem) = build_csr(signer, &subject)?;
-        let signature = hmac_signature(&csr_der, &self.opts.hmac_secret);
+        // Avec un certificat client seul, il n'y a pas de HMAC : la CA identifie le
+        // demandeur par la connexion.
+        let signature = if self.opts.hmac_secret.is_empty() {
+            String::new()
+        } else {
+            hmac_signature(&csr_der, &self.opts.hmac_secret)
+        };
 
         let deadline = std::time::Instant::now() + self.opts.timeout;
         let mut attempt = 1u32;
@@ -358,5 +416,39 @@ fn truncate(s: &str, n: usize) -> String {
         s.to_string()
     } else {
         format!("{}…", s.chars().take(n).collect::<String>())
+    }
+}
+
+#[cfg(test)]
+mod client_identity_tests {
+    use super::*;
+
+    fn opts() -> Options {
+        Options {
+            endpoint: "https://ca.invalid/api/v1/enroll".into(),
+            profile: "tsa_signer".into(),
+            ..Default::default()
+        }
+    }
+
+    /// Ni secret ni certificat client : le client refuse de partir (jamais anonyme) ;
+    /// un certificat illisible est une erreur de configuration, pas un repli.
+    #[test]
+    fn a_client_needs_a_secret_or_a_readable_client_certificate() {
+        assert!(matches!(
+            Client::new(opts()),
+            Err(EnrollError::MissingSecret)
+        ));
+        let unreadable = Options {
+            client_identity: Some(ClientIdentity {
+                cert_file: "/inexistant/c.crt".into(),
+                key_file: "/inexistant/c.key".into(),
+            }),
+            ..opts()
+        };
+        assert!(matches!(
+            Client::new(unreadable),
+            Err(EnrollError::ClientIdentity(_))
+        ));
     }
 }

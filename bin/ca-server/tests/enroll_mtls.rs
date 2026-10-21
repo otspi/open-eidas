@@ -21,7 +21,7 @@ use rustls::pki_types::{CertificateDer, PrivateKeyDer, ServerName};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use x509_cert::Certificate;
 
-const SERVER_NAME: &str = "ca.internal.svc";
+const SERVER_NAME: &str = "localhost";
 
 struct Key {
     private: RsaPrivateKey,
@@ -377,4 +377,78 @@ async fn revoking_the_client_certificate_cuts_enrollment_at_the_next_connection(
         .await,
         None
     );
+}
+
+/// Le vrai client `oe_enroll::Client`, avec son certificat client et sans aucun
+/// secret, contre le vrai port : la demande est acceptée (elle attend ensuite un
+/// opérateur RA, d'où le délai dépassé qui porte l'identifiant de transaction).
+/// Un certificat d'un demandeur inconnu est refusé par la CA.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_enroll_client_authenticates_with_its_certificate_alone() {
+    let pki = pki().await;
+    let port = serve(&pki, vec![tsa_requester()]).await;
+    let dir = std::env::temp_dir().join(format!("enroll-mtls-{}-{port}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("ca.pem"), pem(pki.issuer.certificate())).unwrap();
+
+    let identity = |cn: &str| {
+        let (cert, key) =
+            futures_lite_block(client_cert(&pki.issuer, &profile::enroll_client(), cn));
+        let name = cn.to_string();
+        std::fs::write(dir.join(format!("{name}.crt")), pem(&cert)).unwrap();
+        std::fs::write(dir.join(format!("{name}.key")), key.pkcs8_pem()).unwrap();
+        oe_enroll::ClientIdentity {
+            cert_file: dir.join(format!("{name}.crt")).display().to_string(),
+            key_file: dir.join(format!("{name}.key")).display().to_string(),
+        }
+    };
+    let client = |cn: &str, profile: &str| {
+        oe_enroll::Client::new(oe_enroll::Options {
+            endpoint: format!("https://localhost:{port}/api/v1/enroll"),
+            profile: profile.to_string(),
+            client_identity: Some(identity(cn)),
+            ca_file: Some(dir.join("ca.pem").display().to_string()),
+            timeout: std::time::Duration::from_secs(2),
+            ..Default::default()
+        })
+        .unwrap()
+    };
+    let token = SoftwareToken::generate(3072);
+
+    let err = client("tsa-1", "tsa_signer")
+        .request(
+            &token,
+            oe_enroll::Subject {
+                common_name: "tsu.example.test".into(),
+            },
+        )
+        .await
+        .err()
+        .expect("la demande attend un opérateur");
+    assert!(
+        matches!(err, oe_enroll::EnrollError::Timeout { .. }),
+        "demande acceptée puis en attente, pas refusée : {err}"
+    );
+
+    let err = client("intrus", "tsa_signer")
+        .request(
+            &token,
+            oe_enroll::Subject {
+                common_name: "tsu.example.test".into(),
+            },
+        )
+        .await
+        .err()
+        .expect("un demandeur inconnu est refusé");
+    assert!(
+        matches!(err, oe_enroll::EnrollError::Refused { .. }),
+        "{err}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Les fonctions de la PKI de test sont asynchrones ; le contexte d'un `identity`
+/// synchrone les attend sur le runtime courant.
+fn futures_lite_block<T>(f: impl std::future::Future<Output = T>) -> T {
+    tokio::task::block_in_place(|| tokio::runtime::Handle::current().block_on(f))
 }

@@ -574,6 +574,8 @@ async fn run_enroll() {
         endpoint: cfg.enroll_endpoint.clone(),
         profile: cfg.enroll_profile.clone(),
         hmac_secret: cfg.enroll_hmac_key.clone(),
+        client_identity: oe_enroll::ClientIdentity::from_env()
+            .unwrap_or_else(|e| die("identité du client d'enrôlement", e)),
         ca_file: (!cfg.enroll_ca_file.is_empty()).then(|| cfg.enroll_ca_file.clone()),
         insecure: cfg.enroll_insecure,
         timeout: cfg.enroll_timeout,
