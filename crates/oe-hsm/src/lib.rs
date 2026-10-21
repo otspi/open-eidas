@@ -706,6 +706,37 @@ impl Pkcs11Token {
         }
     }
 
+    /// Détruit la bi-clé de ce label (clé privée ET clé publique) dans le token.
+    /// **Irréversible** : l'appelant s'assure d'abord, et journalise, que la clé
+    /// n'est plus celle d'aucun certificat en service (EN 319 421 `TIS-7.6.7-08`).
+    /// Rend le nombre d'objets détruits ; `KeyNotFound` si aucune clé ne porte
+    /// ce label.
+    pub fn destroy_key_pair(&self) -> Result<usize, HsmError> {
+        let mut destroyed = 0;
+        for class in [ObjectClass::PRIVATE_KEY, ObjectClass::PUBLIC_KEY] {
+            let template = vec![
+                Attribute::Class(class),
+                Attribute::Id(self.key_id.clone()),
+                Attribute::Label(self.key_label.clone().into_bytes()),
+            ];
+            let objects =
+                self.session()
+                    .find_objects(&template)
+                    .map_err(|source| HsmError::FindKey {
+                        key_label: self.key_label.clone(),
+                        source,
+                    })?;
+            for object in objects {
+                self.session().destroy_object(object)?;
+                destroyed += 1;
+            }
+        }
+        if destroyed == 0 {
+            return Err(HsmError::KeyNotFound);
+        }
+        Ok(destroyed)
+    }
+
     /// Génère une bi-clé RSA dans le token (équivalent de `Token.GenerateRSAKey`).
     pub fn generate_rsa_key(&self, bits: u64) -> Result<(), HsmError> {
         let public_exponent: Vec<u8> = vec![0x01, 0x00, 0x01]; // 65537

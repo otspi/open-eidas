@@ -87,6 +87,29 @@ pub fn plan(found: &Generations) -> Result<KeyPlan, String> {
     }
 }
 
+/// Une génération ne peut être détruite que si un certificat plus récent est en
+/// service : jamais celle du certificat courant, jamais une clé en attente de son
+/// certificat, jamais une génération absente du token.
+pub fn check_retirable(found: &Generations, generation: u32) -> Result<(), String> {
+    let Some(current) = found.matching else {
+        return Err(
+            "aucune clé du token ne correspond au certificat en service : rien n'est détruit"
+                .to_string(),
+        );
+    };
+    if generation == current {
+        return Err(format!(
+            "la génération {generation} porte le certificat en service"
+        ));
+    }
+    if generation > current {
+        return Err(format!(
+            "la génération {generation} est plus récente que celle du certificat en service ({current}) : clé en attente de son certificat"
+        ));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -184,6 +207,29 @@ mod tests {
                 newest: Some(2)
             }),
             Ok(KeyPlan::Use(2))
+        );
+    }
+
+    #[test]
+    fn only_a_generation_older_than_the_certificate_in_service_is_retirable() {
+        let found = Generations {
+            matching: Some(3),
+            newest: Some(4),
+        };
+        assert!(check_retirable(&found, 1).is_ok());
+        assert!(check_retirable(&found, 2).is_ok());
+        assert!(
+            check_retirable(&found, 3).is_err(),
+            "le certificat en service"
+        );
+        assert!(check_retirable(&found, 4).is_err(), "la clé en attente");
+        let none = Generations {
+            matching: None,
+            newest: Some(2),
+        };
+        assert!(
+            check_retirable(&none, 1).is_err(),
+            "aucun certificat en service"
         );
     }
 

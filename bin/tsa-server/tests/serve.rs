@@ -539,6 +539,80 @@ async fn the_binary_applies_what_the_matrix_declares() {
             [1, 2],
             "journal des clés générées : {generated:?}"
         );
+
+        // Destruction d'une ancienne génération (TIS-7.6.7-08) : jamais celle du
+        // certificat en service, jamais sans confirmation, jamais sans trace.
+        let retire = |generation: &str, confirm: Option<&str>| {
+            let mut cmd = Command::new(env!("CARGO_BIN_EXE_tsa-server"));
+            cmd.arg("retire-key")
+                .args(["--generation", generation])
+                .env_clear()
+                .env("PATH", std::env::var("PATH").unwrap_or_default())
+                .env("SOFTHSM2_CONF", &fx.conf)
+                .env("OPENEIDAS_PKCS11_MODULE", MODULE)
+                .env("OPENEIDAS_TOKEN_LABEL", TOKEN)
+                .env("OPENEIDAS_KEY_LABEL", &base)
+                .env("OPENEIDAS_PIN", PIN)
+                .env("OPENEIDAS_CERT_FILE", fx.dir.join("tsu-renew.pem"))
+                .env("OPENEIDAS_AUDIT_FILE", fx.dir.join("audit-renew.log"));
+            if let Some(label) = confirm {
+                cmd.args(["--confirm", label]);
+            }
+            cmd.output().unwrap()
+        };
+        // Le certificat en service porte encore la génération 1 : rien à détruire.
+        let out = retire("1", Some(&base));
+        assert!(!out.status.success() && key_exists(&base), "{out:?}");
+        // La génération 2 reçoit son certificat : la 1 devient destructible.
+        let spki2 = {
+            let token = oe_hsm::Pkcs11Token::open(&oe_hsm::Options {
+                module_path: MODULE.to_string(),
+                token_label: TOKEN.to_string(),
+                key_label: format!("{base}.2"),
+                pin: PIN.to_string(),
+            })
+            .unwrap();
+            token.public_key_der().unwrap()
+        };
+        let cert2 = issuer
+            .issue(
+                &spki2,
+                "tsu.example.test",
+                &profile::tsa_signer(),
+                "tx-renew-2",
+            )
+            .await
+            .unwrap();
+        std::fs::write(
+            fx.dir.join("tsu-renew.pem"),
+            pem("CERTIFICATE", &cert2.to_der().unwrap()),
+        )
+        .unwrap();
+        // La génération du certificat en service ne se détruit pas.
+        let out = retire("2", Some(&format!("{base}.2")));
+        assert!(
+            !out.status.success() && key_exists(&format!("{base}.2")),
+            "{out:?}"
+        );
+        // Sans confirmation : simple aperçu, la clé reste.
+        let out = retire("1", None);
+        assert_eq!(out.status.code(), Some(2), "{out:?}");
+        assert!(key_exists(&base));
+        // Mauvaise confirmation : la clé reste.
+        let out = retire("1", Some("autre-label"));
+        assert_eq!(out.status.code(), Some(2), "{out:?}");
+        assert!(key_exists(&base));
+        // Confirmée : détruite, et journalisée.
+        let out = retire("1", Some(&base));
+        assert!(out.status.success(), "{out:?}");
+        assert!(!key_exists(&base) && key_exists(&format!("{base}.2")));
+        let destroyed: Vec<_> = oe_audit::read(fx.dir.join("audit-renew.log"))
+            .unwrap()
+            .into_iter()
+            .filter(|r| r.event == "tsu.key_destroyed")
+            .map(|r| r.data.unwrap()["generation"].clone())
+            .collect();
+        assert_eq!(destroyed, [1]);
     }
 
     // EN 319 421 TIS-7.7.1-07 : politique enforce et heure non traçable → la
