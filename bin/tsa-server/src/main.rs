@@ -337,8 +337,12 @@ async fn run_serve() {
 /// `true` si le certificat en cache correspond déjà à la clé du HSM et n'est
 /// pas trop proche de son expiration — reproduit `currentCertUsable` (Go),
 /// idempotent : ré-exécuter `enroll` sans besoin ne fait rien.
-fn current_cert_usable(cfg: &oe_config::Config, signer: &dyn SigningToken) -> (bool, String) {
-    let existing = match oe_certs::load_file_optional(&cfg.cert_file) {
+fn current_cert_usable(
+    cert_file: &str,
+    renew_before: std::time::Duration,
+    signer: &dyn SigningToken,
+) -> (bool, String) {
+    let existing = match oe_certs::load_file_optional(cert_file) {
         Ok(certs) if !certs.is_empty() => certs,
         _ => {
             return (
@@ -367,7 +371,7 @@ fn current_cert_usable(cfg: &oe_config::Config, signer: &dyn SigningToken) -> (b
         time::OffsetDateTime::from_unix_timestamp(not_after.unix_duration().as_secs() as i64)
             .unwrap_or(time::OffsetDateTime::UNIX_EPOCH);
     let remaining = not_after - time::OffsetDateTime::now_utc();
-    let renew_before = to_time_duration(cfg.renew_before, time::Duration::days(30));
+    let renew_before = to_time_duration(renew_before, time::Duration::days(30));
     if remaining < renew_before {
         return (false, format!("certificat expirant dans {remaining}"));
     }
@@ -397,7 +401,7 @@ async fn run_enroll() {
     if let Some(generation) = found.matching {
         let token = open_token(&cfg, &keys::generation_label(&cfg.key_label, generation))
             .unwrap_or_else(|e| die("ouverture du token PKCS#11", e));
-        let (usable, reason) = current_cert_usable(&cfg, &token);
+        let (usable, reason) = current_cert_usable(&cfg.cert_file, cfg.renew_before, &token);
         if usable {
             eprintln!("tsa-server: certificat TSU déjà en place, enrôlement ignoré ({reason})");
             return;
