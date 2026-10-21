@@ -520,7 +520,8 @@ il est porté comme exigence hors périmètre dans la matrice.
 | `OPENEIDAS_PRODUCTION` | false | Mode production : `serve` et l'entrypoint refusent tout repli de PIN (racine sur émettrice, PIN SO sur PIN utilisateur) ; posé par le chart quand `production: true` (la TSA y refuse en plus l'OID de test) — constat C-2 |
 | `OPENEIDAS_PKI_PUBLIC_URL` | — (obligatoire) | Adresse **publique** gravée dans les extensions CDP/AIA |
 | `OPENEIDAS_OCSP_PUBLIC_URL` | — | Adresse publique du répondeur OCSP (AIA) |
-| `OPENEIDAS_ENROLL_HMAC_KEY` | — | Secret partagé authentifiant les demandes |
+| `OPENEIDAS_ENROLL_HMAC_KEY` | — | Secret historique partagé authentifiant les demandes (demandeur `legacy`, tous profils) |
+| `OPENEIDAS_ENROLL_REQUESTERS_FILE` | — | Fichier JSON des demandeurs (constat R-3) : `[{"name", "secret" (≥ 32 caractères), "profiles" (noms ou `*`), "subject_cn" (optionnel, CN unique autorisé)}]`. Un demandeur n'obtient que ses profils et son CN ; un renouvellement ne révoque que les certificats du même demandeur. Une entrée douteuse empêche le démarrage |
 | `OPENEIDAS_CEREMONY_OPERATOR` | — (obligatoire pour `ceremony`) | Identité consignée au procès-verbal |
 | `OPENEIDAS_CA_KEY_BITS` | 4096 | Taille des clés d'autorité (≥ 3072) |
 | `OPENEIDAS_ROOT_CN` / `OPENEIDAS_ISSUING_CN` | Open eIDAS Root/Issuing CA | Noms courants des autorités |

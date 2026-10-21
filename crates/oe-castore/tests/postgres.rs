@@ -190,8 +190,16 @@ async fn create_request_rejects_duplicate_fingerprint() {
         comment: String::new(),
         issued_at: None,
         certificate_serial: None,
+        requester: String::new(),
     };
+    let mut r = r;
+    r.requester = "tsa".to_string();
     s.create_request(r.clone()).await.unwrap();
+    // Constat R-3 : le demandeur survit à l'aller-retour en base.
+    assert_eq!(
+        s.request_by_transaction_id(&tx).await.unwrap().requester,
+        "tsa"
+    );
     let mut dup = r.clone();
     dup.transaction_id = unique_id("tx");
     assert!(matches!(
@@ -217,6 +225,7 @@ async fn update_request_requires_expected_from_state() {
         comment: String::new(),
         issued_at: None,
         certificate_serial: None,
+        requester: String::new(),
     };
     s.create_request(r.clone()).await.unwrap();
 
@@ -329,6 +338,7 @@ async fn decision_without_operator_is_rejected_by_the_schema_constraint() {
         comment: String::new(),
         issued_at: None,
         certificate_serial: None,
+        requester: String::new(),
     };
     s.create_request(r.clone()).await.unwrap();
 

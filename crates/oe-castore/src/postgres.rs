@@ -136,6 +136,7 @@ impl Postgres {
             comment: row.try_get("comment").map_err(map_err)?,
             issued_at: row.try_get("issued_at").map_err(map_err)?,
             certificate_serial,
+            requester: row.try_get("requester").map_err(map_err)?,
         })
     }
 }
@@ -146,7 +147,7 @@ const CERTIFICATE_COLUMNS: &str = "serial_hex, profile, subject_dn, issuer_dn, \
 
 const REQUEST_COLUMNS: &str = "transaction_id, csr_fingerprint, csr_der, profile, \
     subject_cn, state, created_at, decided_at, operator, comment, issued_at, \
-    certificate_serial_hex";
+    certificate_serial_hex, requester";
 
 #[async_trait::async_trait]
 impl Store for Postgres {
@@ -380,8 +381,8 @@ impl Store for Postgres {
     async fn create_request(&self, r: Request) -> Result<(), StoreError> {
         let result = sqlx::query(
             "INSERT INTO enrollment_requests
-                 (transaction_id, csr_fingerprint, csr_der, profile, subject_cn, state, created_at)
-             VALUES ($1, $2, $3, $4, $5, $6, $7)",
+                 (transaction_id, csr_fingerprint, csr_der, profile, subject_cn, state, created_at, requester)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
         )
         .bind(&r.transaction_id)
         .bind(&r.csr_fingerprint)
@@ -390,6 +391,7 @@ impl Store for Postgres {
         .bind(&r.subject_cn)
         .bind(r.state.to_string())
         .bind(r.created_at)
+        .bind(&r.requester)
         .execute(&self.pool)
         .await;
         match result {

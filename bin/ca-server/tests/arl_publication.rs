@@ -72,6 +72,7 @@ async fn fixture() -> Fixture {
             store: store.clone(),
             issuer: issuer.clone(),
             hmac_secret: "test-secret".to_string(),
+            requesters: vec![],
             recorder: None,
             retry_after: time::Duration::seconds(5),
             clock: None,

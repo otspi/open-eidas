@@ -147,6 +147,7 @@ async fn an_action_goes_through_the_two_routes() {
             comment: String::new(),
             issued_at: None,
             certificate_serial: None,
+            requester: String::new(),
         })
         .await
         .unwrap();
