@@ -372,6 +372,17 @@ Constat S-1 de l'audit du 2026-09-25 (EN 319 401 `REQ-7.7-03`,
 - **Dépendances figées.** Les `Dockerfile` compilent avec `cargo build
   --locked` : `Cargo.lock` n'est jamais réécrit pendant la construction, et
   l'image livrée correspond aux dépendances que `cargo audit` a examinées en CI.
+- **Composants épinglés.** Les actions GitHub le sont par l'empreinte de leur
+  commit, les images de base des `Dockerfile` par celle de leur index ;
+  Dependabot propose les mises à jour chaque semaine.
+- **Images publiées : SBOM, provenance, signature.** À chaque publication sur
+  `dev`, BuildKit joint à l'image un SBOM (SPDX) et une attestation de
+  provenance SLSA (`mode=max`), et `cosign` la signe sans clé, par son
+  empreinte, avec l'identité OIDC du workflow. Vérification :
+  `cosign verify --certificate-identity-regexp '^https://github.com/otspi/open-eidas/'
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+  ghcr.io/otspi/<image>@<empreinte>`. Cette étape ne tourne que sur `dev` : elle
+  n'est pas exercée par les PR.
 - **Exclusion de RUSTSEC-2023-0071** (`rsa`, attaque de Marvin par canal
   auxiliaire sur les opérations **privées** RSA (déchiffrement, signature)). Elle est écartée par
   `cargo audit --ignore RUSTSEC-2023-0071`, pour une raison vérifiable : **aucun
