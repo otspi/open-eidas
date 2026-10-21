@@ -10,6 +10,9 @@
 {{- if and .Values.production (not .Values.enroll.requestersSecret) -}}
 {{- fail "enroll.requestersSecret est obligatoire quand production: true : un secret d'enrôlement par demandeur, lié à ses profils (constat R-3, ETSI EN 319 411-1 REG-6.3.2-01)" -}}
 {{- end -}}
+{{- if and .Values.enroll.mtls.enabled (not .Values.ca.internal.enabled) -}}
+{{- fail "enroll.mtls.enabled exige ca.internal.enabled : le port d'enrôlement mutuel réutilise le certificat de serveur du lien interne" -}}
+{{- end -}}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -49,10 +52,18 @@ spec:
             - name: internal
               containerPort: {{ .Values.ca.service.internalPort }}
             {{- end }}
+            {{- if .Values.enroll.mtls.enabled }}
+            - name: enroll-mtls
+              containerPort: {{ .Values.enroll.mtls.port }}
+            {{- end }}
           env:
             {{- include "open-eidas.caEnv" (dict "context" . "postgres" $postgresHost "port" $postgresPort "secret" $secretName) | nindent 12 }}
             {{- if .Values.ca.internal.enabled }}
             {{- include "open-eidas.caInternalEnv" . | nindent 12 }}
+            {{- end }}
+            {{- if .Values.enroll.mtls.enabled }}
+            - name: OPENEIDAS_ENROLL_MTLS_LISTEN
+              value: {{ printf ":%d" (.Values.enroll.mtls.port | int) | quote }}
             {{- end }}
             {{- if .Values.enroll.requestersSecret }}
             - name: OPENEIDAS_ENROLL_REQUESTERS_FILE

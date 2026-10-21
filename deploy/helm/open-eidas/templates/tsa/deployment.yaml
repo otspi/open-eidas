@@ -106,8 +106,19 @@ spec:
               value: /var/lib/open-eidas/state/tsu.pem
             - name: OPENEIDAS_CHAIN_FILE
               value: /var/lib/open-eidas/state/chain.pem
+            {{- if and .Values.enroll.mtls.enabled .Values.tsa.enrollClient.secretName }}
+            - name: OPENEIDAS_ENROLL_ENDPOINT
+              value: {{ printf "https://%s:%d/api/v1/enroll" (include "open-eidas.caInternalDNS" .) (.Values.enroll.mtls.port | int) | quote }}
+            - name: OPENEIDAS_ENROLL_CLIENT_CERT_FILE
+              value: /etc/open-eidas/enroll-client/tls.crt
+            - name: OPENEIDAS_ENROLL_CLIENT_KEY_FILE
+              value: /etc/open-eidas/enroll-client/tls.key
+            - name: OPENEIDAS_ENROLL_CA_FILE
+              value: /etc/open-eidas/enroll-client/ca.crt
+            {{- else }}
             - name: OPENEIDAS_ENROLL_ENDPOINT
               value: {{ printf "%s/api/v1/enroll" (include "open-eidas.caInternalURL" .) | quote }}
+            {{- end }}
             - name: OPENEIDAS_ENROLL_PROFILE
               value: tsa_signer
             - name: OPENEIDAS_ENROLL_HMAC_KEY
@@ -129,6 +140,11 @@ spec:
               value: {{ .Values.tsa.corsAllowedOrigin | quote }}
             {{- end }}
           volumeMounts:
+            {{- if and .Values.enroll.mtls.enabled .Values.tsa.enrollClient.secretName }}
+            - name: enroll-client
+              mountPath: /etc/open-eidas/enroll-client
+              readOnly: true
+            {{- end }}
             - name: softhsm
               mountPath: /var/lib/softhsm/tokens
             - name: state
@@ -162,6 +178,11 @@ spec:
           resources:
             {{- toYaml .Values.tsa.resources | nindent 12 }}
       volumes:
+        {{- if and .Values.enroll.mtls.enabled .Values.tsa.enrollClient.secretName }}
+        - name: enroll-client
+          secret:
+            secretName: {{ .Values.tsa.enrollClient.secretName }}
+        {{- end }}
         - name: softhsm
           persistentVolumeClaim:
             claimName: {{ $name }}-softhsm

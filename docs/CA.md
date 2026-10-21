@@ -153,6 +153,33 @@ ca-server internal-cert server ca.open-eidas.svc   # écrit le certificat
 Le certificat n'est lu qu'au démarrage : le renouveler (tous les 3 mois) demande
 de relancer la commande puis de redémarrer `ca-server`.
 
+### Certificat client d'enrôlement d'un service (TSA, répondeur OCSP)
+
+Constat R-3 ([R3-MTLS-DEMANDEURS.md](R3-MTLS-DEMANDEURS.md)) : un service peut
+s'identifier auprès de la CA par un certificat client `enroll_client` (90 jours,
+clé logicielle) au lieu d'un secret partagé. Une fois qu'il le détient, il
+s'enrôle et se renouvelle par TLS mutuel seul sur `OPENEIDAS_ENROLL_MTLS_LISTEN`.
+
+**Amorçage du premier certificat** (une fois par service) :
+
+1. Déclarer le demandeur dans `OPENEIDAS_ENROLL_REQUESTERS_FILE`, avec un secret
+   d'amorçage **à durée limitée** et ses profils :
+   `{"name": "tsa", "secret": "<≥ 32 caractères>", "secret_expires_at": "<dans 24 h>",
+   "client_cn": "tsa-1", "profiles": ["enroll_client", "tsa_signer"], "subject_cn": "<CN de la TSU>"}`.
+2. Sur le poste du service, fabriquer la clé et la CSR au nom du demandeur :
+   `openssl genrsa -out client.key 3072` puis
+   `openssl req -new -key client.key -subj "/CN=tsa-1" -outform DER -out client.csr.der`.
+3. Soumettre la CSR avec le secret d'amorçage (HMAC-SHA256 hexadécimal de la CSR DER) :
+   `SIG=$(openssl dgst -sha256 -hmac "$SECRET" client.csr.der | awk '{print $2}')`, puis
+   `POST /api/v1/enroll` `{"profile": "enroll_client", "pkcs10": "<base64 du DER>", "signature": "$SIG"}`.
+   Le secret ne vaut que pour **une** demande de certificat client.
+4. **Deux opérateurs** approuvent la demande dans ra-console (comme pour tout
+   certificat de TSU). Renvoyer la même requête rend alors le certificat.
+5. Créer le Secret Kubernetes (`tls.crt` = le certificat, `tls.key` = `client.key`,
+   `ca.crt` = la CA émettrice) et renseigner `tsa.enrollClient.secretName` (ou
+   `ocsp.enrollClient.secretName`) avec `enroll.mtls.enabled: true` dans le chart.
+   Le secret d'amorçage peut alors être retiré du fichier des demandeurs.
+
 ### Actions à double contrôle
 
 Certaines actions signées par les opérateurs (console d'exploitation,
