@@ -9,8 +9,15 @@
 //!
 //! Durée **fixe** de 8 heures, jamais prolongée (pas de fenêtre glissante) :
 //! une session active depuis 8 heures se termine, un nouveau login est
-//! nécessaire. Révocable côté serveur (`revoked_at`), contrairement à un JWT
+//! nécessaire. S'y ajoute une **expiration d'inactivité** de 30 minutes
+//! ([`SESSION_IDLE`], constat A-2 de l'audit du 2026-09-25) : un rôle de
+//! confiance qui n'a rien fait pendant ce délai doit se reconnecter.
+//! Révocable côté serveur (`revoked_at`), contrairement à un JWT
 //! auto-porteur qu'on ne peut pas rappeler.
+//!
+//! La base ne garde **pas** l'identifiant porté par le cookie mais son
+//! empreinte SHA-256 (constat A-2) : une copie de la base ou d'une sauvegarde
+//! ne permet pas de reprendre une session active.
 
 use std::sync::Arc;
 
@@ -23,6 +30,17 @@ use time::OffsetDateTime;
 use crate::audit::{self, Recorder};
 
 pub const SESSION_TTL: time::Duration = time::Duration::hours(8);
+
+/// Inactivité au-delà de laquelle une session n'est plus acceptée (constat A-2,
+/// EN 319 401 `REQ-7.4.1-05`).
+pub const SESSION_IDLE: time::Duration = time::Duration::minutes(30);
+
+/// Ce que la base garde d'un identifiant de session : son empreinte SHA-256,
+/// en hexadécimal. L'identifiant du cookie, lui, n'y figure jamais.
+pub fn stored_id(cookie_id: &str) -> String {
+    use sha2::{Digest, Sha256};
+    hex::encode(Sha256::digest(cookie_id.as_bytes()))
+}
 
 /// Nom du cookie et du champ qu'il porte : rien d'autre que cet identifiant
 /// opaque n'y est jamais placé.
@@ -73,7 +91,7 @@ impl Sessions {
                (id, operator_id, credential_id, created_at, last_seen_at, expires_at)
              VALUES ($1, $2, $3, $4, $4, $5)",
         )
-        .bind(&id)
+        .bind(stored_id(&id))
         .bind(operator_id)
         .bind(credential_id)
         .bind(now)
@@ -95,10 +113,12 @@ impl Sessions {
         let now = OffsetDateTime::now_utc();
         let row = sqlx::query(
             "SELECT operator_id FROM sessions
-             WHERE id = $1 AND revoked_at IS NULL AND expires_at > $2",
+             WHERE id = $1 AND revoked_at IS NULL AND expires_at > $2
+               AND last_seen_at > $3",
         )
-        .bind(session_id)
+        .bind(stored_id(session_id))
         .bind(now)
+        .bind(now - SESSION_IDLE)
         .fetch_optional(self.registry.pool())
         .await
         .map_err(|_| SessionError::Invalid)?
@@ -116,7 +136,7 @@ impl Sessions {
         // Best-effort : une écriture manquée ici ne remet pas en cause
         // l'authentification qu'on vient d'établir.
         let _ = sqlx::query("UPDATE sessions SET last_seen_at = $2 WHERE id = $1")
-            .bind(session_id)
+            .bind(stored_id(session_id))
             .bind(now)
             .execute(self.registry.pool())
             .await;
@@ -133,7 +153,7 @@ impl Sessions {
     pub async fn revoke(&self, session_id: &str) -> Result<(), sqlx::Error> {
         let done =
             sqlx::query("UPDATE sessions SET revoked_at = $2 WHERE id = $1 AND revoked_at IS NULL")
-                .bind(session_id)
+                .bind(stored_id(session_id))
                 .bind(OffsetDateTime::now_utc())
                 .execute(self.registry.pool())
                 .await?;

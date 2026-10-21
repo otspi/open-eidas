@@ -340,6 +340,10 @@ construction : [`bin/ra-console/web/`](../bin/ra-console/web/README.md).
    scellement du journal (clé `journal`) : trois passes sans sceau, sans contreseing ou
    sans copie passent le statut en `degrade`, sans 503 (la console reste utilisable).
 
+## Sessions
+
+Le cookie porte un identifiant de 256 bits ; la base n'en garde que l'empreinte SHA-256 (une copie de la base ne permet pas de reprendre une session). Une session expire après 8 heures fixes **et** après 30 minutes d'inactivité (constat A-2). Reste à faire : préfixe de cookie `__Host-` (exige HTTPS partout, y compris le harnais de bout en bout) et limitation de débit à la Gateway.
+
 ## Ce qui n'existe pas encore
 
 L'explorateur d'audit du navigateur (écran « Audit », 6d) lit `GET /api/v1/audit/search` :
