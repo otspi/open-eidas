@@ -78,6 +78,32 @@ jobs:
           OE_REQUIRE_SOFTHSM: "1"
           OE_CASTORE_TEST_DSN: postgres://postgres:test@localhost:5432/postgres
 
+      # Constat C-5 : `pkilint` relit la hiérarchie produite par la vraie
+      # cérémonie PSS (racine, émettrice, ARL) — profil PKIX, seuil WARNING.
+      # Pas de lint de chaîne : la version épinglée vérifie toute signature en
+      # PKCS#1 v1.5 et rejette à tort une signature PSS, ce que openssl
+      # (test pss_ceremony) contrôle déjà.
+      - name: pkilint (hiérarchie PSS)
+        run: |
+          set -euo pipefail
+          pip install --user pkilint==0.13.3
+          export PATH="$HOME/.local/bin:$PATH"
+          rm -rf pki-export
+          OE_PKI_EXPORT_DIR="$PWD/pki-export" cargo test -p ca-server --features oe-castore/postgres --test pss_ceremony
+          test -s pki-export/pss-root.pem
+          # Sortie JSON : aucune constatation de gravité WARNING ou plus.
+          clean() {
+            out=$("$@" -f JSON)
+            echo "$*: $out"
+            python3 -c 'import json, sys; sys.exit(1 if json.loads(sys.argv[1])["results"] else 0)' "$out"
+          }
+          clean lint_pkix_cert lint -s WARNING pki-export/pss-root.pem
+          clean lint_pkix_cert lint -s WARNING pki-export/pss-issuing.pem
+          clean lint_crl lint -t ARL -p PKIX -s WARNING pki-export/pss-arl.pem
+        env:
+          OE_REQUIRE_SOFTHSM: "1"
+          OE_CASTORE_TEST_DSN: postgres://postgres:test@localhost:5432/postgres
+
       # RUSTSEC-2023-0071 (« Marvin Attack », rsa < aucune version corrigée
       # à ce jour) est un canal auxiliaire temporel sur les opérations de
       # clé PRIVÉE de la crate `rsa`. Vérifié dans ce dépôt : `rsa` n'y sert
