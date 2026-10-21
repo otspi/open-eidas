@@ -337,33 +337,55 @@ async fn run_serve() {
 /// `true` si le certificat en cache correspond déjà à la clé du HSM et n'est
 /// pas trop proche de son expiration — reproduit `currentCertUsable` (Go),
 /// idempotent : ré-exécuter `enroll` sans besoin ne fait rien.
+/// Pourquoi le certificat en cache ne convient plus. Des constantes plutôt que
+/// des chaînes formées dans la fonction : le message imprimé ne dérive ainsi
+/// d'aucune donnée de la configuration (qui porte le PIN).
+enum Cause {
+    NoCertificate,
+    UnreadableCertificate,
+    UnreadableKey,
+    KeyMismatch,
+    Expiring(time::Duration),
+}
+
+impl Cause {
+    fn describe(&self) -> String {
+        match self {
+            Cause::NoCertificate => "aucun certificat TSU exploitable en cache".to_string(),
+            Cause::UnreadableCertificate => "certificat en cache illisible".to_string(),
+            Cause::UnreadableKey => "clé du HSM illisible".to_string(),
+            Cause::KeyMismatch => {
+                "le certificat en cache ne correspond pas à la clé du HSM".to_string()
+            }
+            Cause::Expiring(remaining) => format!("certificat expirant dans {remaining}"),
+        }
+    }
+}
+
+enum Usability {
+    Usable(time::OffsetDateTime),
+    Unusable(Cause),
+}
+
 fn current_cert_usable(
     cert_file: &str,
     renew_before: std::time::Duration,
     signer_spki: Option<Vec<u8>>,
-) -> (bool, String) {
+) -> Usability {
     let existing = match oe_certs::load_file_optional(cert_file) {
         Ok(certs) if !certs.is_empty() => certs,
-        _ => {
-            return (
-                false,
-                "aucun certificat TSU exploitable en cache".to_string(),
-            )
-        }
+        _ => return Usability::Unusable(Cause::NoCertificate),
     };
     let cert = &existing[0];
     let cert_spki = match cert.tbs_certificate().subject_public_key_info().to_der() {
         Ok(v) => v,
-        Err(_) => return (false, "certificat en cache illisible".to_string()),
+        Err(_) => return Usability::Unusable(Cause::UnreadableCertificate),
     };
     let Some(signer_spki) = signer_spki else {
-        return (false, "clé du HSM illisible".to_string());
+        return Usability::Unusable(Cause::UnreadableKey);
     };
     if cert_spki != signer_spki {
-        return (
-            false,
-            "le certificat en cache ne correspond pas à la clé du HSM".to_string(),
-        );
+        return Usability::Unusable(Cause::KeyMismatch);
     }
     let not_after = cert.tbs_certificate().validity().not_after.to_date_time();
     let not_after =
@@ -372,9 +394,9 @@ fn current_cert_usable(
     let remaining = not_after - time::OffsetDateTime::now_utc();
     let renew_before = to_time_duration(renew_before, time::Duration::days(30));
     if remaining < renew_before {
-        return (false, format!("certificat expirant dans {remaining}"));
+        return Usability::Unusable(Cause::Expiring(remaining));
     }
-    (true, format!("valide jusqu'au {not_after}"))
+    Usability::Usable(not_after)
 }
 
 async fn run_enroll() {
@@ -400,16 +422,21 @@ async fn run_enroll() {
     if let Some(generation) = found.matching {
         let token = open_token(&cfg, &keys::generation_label(&cfg.key_label, generation))
             .unwrap_or_else(|e| die("ouverture du token PKCS#11", e));
-        let (usable, reason) = current_cert_usable(
+        match current_cert_usable(
             &cfg.cert_file,
             cfg.renew_before,
             token.public_key_der().ok(),
-        );
-        if usable {
-            eprintln!("tsa-server: certificat TSU déjà en place, enrôlement ignoré ({reason})");
-            return;
+        ) {
+            Usability::Usable(not_after) => {
+                eprintln!(
+                    "tsa-server: certificat TSU déjà en place, enrôlement ignoré (valide jusqu'au {not_after})"
+                );
+                return;
+            }
+            Usability::Unusable(cause) => {
+                eprintln!("tsa-server: enrôlement nécessaire ({})", cause.describe());
+            }
         }
-        eprintln!("tsa-server: enrôlement nécessaire ({reason})");
     } else {
         eprintln!("tsa-server: enrôlement nécessaire (aucun certificat TSU exploitable en cache)");
     }
