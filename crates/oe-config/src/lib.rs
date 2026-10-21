@@ -173,6 +173,9 @@ pub struct Config {
     /// pays sont imposés par le profil côté autorité.
     pub subject_cn: String,
     pub renew_before: Duration,
+    /// Période à laquelle `serve` relit le certificat de la TSU pour adopter un
+    /// renouvellement sans redémarrer (constat H-3) ; `0s` désactive.
+    pub reload_interval: Duration,
     /// Origine autorisée à appeler l'API HTTP depuis un navigateur
     /// (Access-Control-Allow-Origin). Vide/absent = pas de CORS, aucune
     /// requête cross-origin n'est autorisée — comportement par défaut,
@@ -311,6 +314,7 @@ impl Config {
                 "OPENEIDAS_RENEW_BEFORE",
                 Duration::from_secs(30 * 24 * 3600),
             )?,
+            reload_interval: env_duration("OPENEIDAS_RELOAD_INTERVAL", Duration::from_secs(60))?,
             cors_allowed_origin: env::var("OPENEIDAS_CORS_ALLOWED_ORIGIN")
                 .ok()
                 .filter(|s| !s.is_empty()),

@@ -339,3 +339,26 @@ fn a_journal_failure_blocks_the_timestamp_before_any_signature() {
         "aucune signature ne doit avoir eu lieu : le journal a échoué avant"
     );
 }
+
+/// Constat H-3 : un matériel qui échoue aux contrôles du démarrage ne remplace
+/// pas celui en service ; le service continue d'émettre.
+#[test]
+fn a_reload_with_a_mismatched_key_keeps_the_material_in_service() {
+    let authority = load_authority();
+    let before = authority.certificate();
+
+    let dir = fixtures_dir();
+    let cert_pem = std::fs::read_to_string(dir.join("tsu-cert.pem")).unwrap();
+    let certificate =
+        Certificate::from_der(pem::parse(cert_pem.as_bytes()).unwrap().contents()).unwrap();
+    // Une clé qui n'est pas celle du certificat.
+    let stranger = SoftwareToken::generate(3072);
+    let err = authority
+        .reload(Arc::new(stranger), certificate, Vec::new())
+        .unwrap_err();
+    assert!(err.contains("ne correspond pas"), "{err}");
+    assert_eq!(authority.certificate(), before);
+
+    let resp = authority.timestamp(&any_granted_request());
+    assert!(resp.is_ok(), "{resp:?}");
+}

@@ -447,6 +447,62 @@ async fn the_binary_applies_what_the_matrix_declares() {
         );
     }
 
+    // Constat H-3 (rechargement à chaud) : un nouveau certificat, déposé dans le
+    // fichier pendant que le service tourne, est adopté sans redémarrage ; un
+    // certificat que le token ne sait pas signer est refusé (journalisé une seule
+    // fois) et l'ancien reste en service.
+    {
+        let live = fx.dir.join("tsu-live.pem");
+        std::fs::copy(fx.dir.join("tsu.pem"), &live).unwrap();
+        let (_server, base) = fx
+            .serve_with(
+                "tsu-live.pem",
+                "monitor",
+                "audit-live.log",
+                &[("OPENEIDAS_RELOAD_INTERVAL", "200ms")],
+            )
+            .await;
+        let text = fx.timestamp(&base, "-sha256", "live-1").await;
+        assert!(text.contains("Status: Granted"), "{text}");
+
+        let events = |name: &str| -> Vec<std::collections::BTreeMap<String, serde_json::Value>> {
+            oe_audit::read(fx.dir.join("audit-live.log"))
+                .unwrap()
+                .into_iter()
+                .filter(|r| r.event == name)
+                .map(|r| r.data.unwrap())
+                .collect()
+        };
+        let wait_for = |name: &'static str, count: usize| {
+            let events = &events;
+            async move {
+                for _ in 0..100 {
+                    if events(name).len() >= count {
+                        return;
+                    }
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                }
+                panic!("l'événement {name} n'a pas été consigné");
+            }
+        };
+
+        // Certificat étranger : refusé, une seule fois, le service continue.
+        std::fs::copy(fx.dir.join("tsu-stranger.pem"), &live).unwrap();
+        wait_for("tsu.reload_refused", 1).await;
+        tokio::time::sleep(Duration::from_millis(800)).await;
+        assert_eq!(events("tsu.reload_refused").len(), 1);
+        assert!(events("tsu.reloaded").is_empty());
+        let text = fx.timestamp(&base, "-sha256", "live-2").await;
+        assert!(text.contains("Status: Granted"), "{text}");
+
+        // Certificat de la génération 2 : adopté sans redémarrage.
+        std::fs::copy(fx.dir.join("tsu-gen2.pem"), &live).unwrap();
+        wait_for("tsu.reloaded", 1).await;
+        assert_eq!(events("tsu.reloaded")[0]["generation"], 2);
+        let text = fx.timestamp(&base, "-sha256", "live-3").await;
+        assert!(text.contains("Status: Granted"), "{text}");
+    }
+
     // Constat H-3, côté `enroll` : un certificat à renouveler (la fenêtre de
     // renouvellement couvre toute sa vie) fait générer une clé neuve, journalisée
     // avant l'acte ; l'enrôlement échoue ici (CA injoignable), et un nouvel essai
