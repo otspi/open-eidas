@@ -43,6 +43,9 @@ pub struct Config {
     pub ocsp_url: String,
 
     pub enroll_hmac_key: String,
+    /// Demandeurs d'enrôlement (constat R-3), lus dans
+    /// `OPENEIDAS_ENROLL_REQUESTERS_FILE` ; vide si la variable est absente.
+    pub enroll_requesters: Vec<oe_raflow::Requester>,
 
     pub crl_validity: time::Duration,
     pub crl_refresh: Duration,
@@ -339,6 +342,7 @@ impl Config {
             public_url,
             ocsp_url: env_str("OPENEIDAS_OCSP_PUBLIC_URL", ""),
             enroll_hmac_key: std::env::var("OPENEIDAS_ENROLL_HMAC_KEY").unwrap_or_default(),
+            enroll_requesters: load_requesters(&env_str("OPENEIDAS_ENROLL_REQUESTERS_FILE", ""))?,
             crl_validity,
             crl_refresh,
             arl_validity,
@@ -374,5 +378,111 @@ impl Config {
             )?,
             ra_auto_approve: env_bool("OPENEIDAS_RA_AUTO_APPROVE")?,
         })
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct RequesterEntry {
+    name: String,
+    secret: String,
+    profiles: Vec<String>,
+    #[serde(default)]
+    subject_cn: Option<String>,
+}
+
+/// Longueur minimale d'un secret de demandeur : un secret HMAC court se force.
+const MIN_REQUESTER_SECRET: usize = 32;
+
+/// Lit la liste des demandeurs d'enrôlement (constat R-3) : un tableau JSON de
+/// `{ "name", "secret", "profiles", "subject_cn"? }`. Fichier absent → liste
+/// vide (seul le secret historique, s'il est configuré, authentifie). Toute
+/// entrée douteuse est une erreur de configuration, jamais ignorée.
+pub fn load_requesters(path: &str) -> Result<Vec<oe_raflow::Requester>, String> {
+    if path.is_empty() {
+        return Ok(Vec::new());
+    }
+    let raw = std::fs::read_to_string(path)
+        .map_err(|e| format!("OPENEIDAS_ENROLL_REQUESTERS_FILE ({path}) illisible : {e}"))?;
+    let entries: Vec<RequesterEntry> = serde_json::from_str(&raw)
+        .map_err(|e| format!("OPENEIDAS_ENROLL_REQUESTERS_FILE ({path}) invalide : {e}"))?;
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::with_capacity(entries.len());
+    for e in entries {
+        if e.name.is_empty() || e.name == oe_raflow::LEGACY_REQUESTER {
+            return Err(format!(
+                "demandeur {:?} : nom vide ou réservé au secret historique",
+                e.name
+            ));
+        }
+        if !seen.insert(e.name.clone()) {
+            return Err(format!("demandeur {:?} déclaré deux fois", e.name));
+        }
+        if e.secret.len() < MIN_REQUESTER_SECRET {
+            return Err(format!(
+                "demandeur {:?} : secret de moins de {MIN_REQUESTER_SECRET} caractères",
+                e.name
+            ));
+        }
+        if e.profiles.is_empty() {
+            return Err(format!("demandeur {:?} : aucun profil autorisé", e.name));
+        }
+        for p in &e.profiles {
+            if p != "*" {
+                oe_ca_core::profile_by_name(p)
+                    .map_err(|err| format!("demandeur {:?} : {err}", e.name))?;
+            }
+        }
+        out.push(oe_raflow::Requester {
+            name: e.name,
+            secret: e.secret,
+            profiles: e.profiles,
+            subject_cn: e.subject_cn,
+        });
+    }
+    Ok(out)
+}
+
+#[cfg(test)]
+mod requesters_tests {
+    use super::load_requesters;
+
+    fn file(content: &str) -> String {
+        static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let n = N.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let path = std::env::temp_dir().join(format!("requesters-{}-{n}.json", std::process::id()));
+        std::fs::write(&path, content).unwrap();
+        path.to_string_lossy().to_string()
+    }
+
+    const SECRET: &str = "0123456789abcdef0123456789abcdef";
+
+    #[test]
+    fn a_valid_file_is_read_and_an_absent_one_is_empty() {
+        assert!(load_requesters("").unwrap().is_empty());
+        let ok = file(&format!(
+            r#"[{{"name":"tsa","secret":"{SECRET}","profiles":["tsa_signer"],"subject_cn":"tsu.example"}}]"#
+        ));
+        let r = load_requesters(&ok).unwrap();
+        assert_eq!(r.len(), 1);
+        assert_eq!(r[0].subject_cn.as_deref(), Some("tsu.example"));
+    }
+
+    #[test]
+    fn every_doubtful_entry_is_a_configuration_error() {
+        let bad = [
+            format!(r#"[{{"name":"","secret":"{SECRET}","profiles":["tsa_signer"]}}]"#),
+            format!(r#"[{{"name":"legacy","secret":"{SECRET}","profiles":["tsa_signer"]}}]"#),
+            r#"[{"name":"a","secret":"court","profiles":["tsa_signer"]}]"#.to_string(),
+            format!(r#"[{{"name":"a","secret":"{SECRET}","profiles":[]}}]"#),
+            format!(r#"[{{"name":"a","secret":"{SECRET}","profiles":["inconnu"]}}]"#),
+            format!(
+                r#"[{{"name":"a","secret":"{SECRET}","profiles":["*"]}},{{"name":"a","secret":"{SECRET}","profiles":["*"]}}]"#
+            ),
+            "pas du json".to_string(),
+        ];
+        for content in bad {
+            assert!(load_requesters(&file(&content)).is_err(), "{content}");
+        }
+        assert!(load_requesters("/inexistant/requesters.json").is_err());
     }
 }

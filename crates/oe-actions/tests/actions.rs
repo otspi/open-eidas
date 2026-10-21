@@ -208,6 +208,7 @@ impl Env {
             comment: String::new(),
             issued_at: None,
             certificate_serial: None,
+            requester: String::new(),
         };
         self.store.create_request(r.clone()).await.unwrap();
         r

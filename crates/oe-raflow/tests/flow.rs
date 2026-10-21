@@ -72,6 +72,15 @@ async fn test_flow_with(
     recorder: Option<Arc<dyn oe_raflow::Recorder>>,
     ca_recorder: Option<Arc<dyn oe_ca_core::Recorder>>,
 ) -> (Flow, Arc<Memory>) {
+    test_flow_full(recorder, ca_recorder, HMAC_SECRET, vec![]).await
+}
+
+async fn test_flow_full(
+    recorder: Option<Arc<dyn oe_raflow::Recorder>>,
+    ca_recorder: Option<Arc<dyn oe_ca_core::Recorder>>,
+    hmac_secret: &str,
+    requesters: Vec<oe_raflow::Requester>,
+) -> (Flow, Arc<Memory>) {
     let store = Arc::new(Memory::new());
     let root_signer = Arc::new(SoftwareToken::generate(2048));
     let issuing_signer = Arc::new(SoftwareToken::generate(2048));
@@ -112,7 +121,8 @@ async fn test_flow_with(
     let flow = Flow::new(Options {
         store: store.clone(),
         issuer: Arc::new(issuer),
-        hmac_secret: HMAC_SECRET.to_string(),
+        hmac_secret: hmac_secret.to_string(),
+        requesters,
         recorder,
         retry_after: time::Duration::seconds(5),
         clock: None,
@@ -647,4 +657,142 @@ async fn submit_accepts_a_pss_csr_and_rejects_a_scheme_mismatch() {
             "annonce {algid:?}, signature {signed:?} : doit être refusée"
         );
     }
+}
+
+fn requester(
+    name: &str,
+    secret: &str,
+    profiles: &[&str],
+    cn: Option<&str>,
+) -> oe_raflow::Requester {
+    oe_raflow::Requester {
+        name: name.to_string(),
+        secret: secret.to_string(),
+        profiles: profiles.iter().map(|p| p.to_string()).collect(),
+        subject_cn: cn.map(str::to_string),
+    }
+}
+
+/// Soumet, approuve puis réémet : le certificat délivré à ce demandeur.
+async fn issue_for(flow: &Flow, csr: &[u8], profile: &str, secret: &str) -> Vec<u8> {
+    let sig = oe_raflow::signature(csr, secret);
+    let opened = flow.submit(csr, profile, &sig).await.unwrap();
+    flow.decider()
+        .approve(&opened.transaction_id, "operateur-ra", "", &Via::WebAuthn)
+        .await
+        .unwrap();
+    let issued = flow.submit(csr, profile, &sig).await.unwrap();
+    oe_ca_core::canonical_serial(
+        issued
+            .certificate
+            .unwrap()
+            .tbs_certificate()
+            .serial_number(),
+    )
+}
+
+/// Constat R-3 : le secret d'un demandeur ne vaut que pour ses profils et son CN.
+#[tokio::test]
+async fn a_requester_obtains_only_its_profiles_and_its_cn() {
+    let secret = "s".repeat(40);
+    let (flow, _store) = test_flow_full(
+        None,
+        None,
+        "",
+        vec![requester(
+            "tsa",
+            &secret,
+            &[profile::PROFILE_TSA_SIGNER],
+            Some("tsu.example.test"),
+        )],
+    )
+    .await;
+
+    // Le profil du répondeur OCSP n'est pas le sien.
+    let (csr, _k) = build_csr("ocsp.example.test");
+    let sig = oe_raflow::signature(&csr, &secret);
+    let err = flow
+        .submit(&csr, profile::PROFILE_OCSP_RESPONDER, &sig)
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("n'est pas autorisé"), "{err}");
+
+    // Un autre CN que le sien, sur son profil.
+    let (csr, _k) = build_csr("autre.example.test");
+    let sig = oe_raflow::signature(&csr, &secret);
+    let err = flow
+        .submit(&csr, profile::PROFILE_TSA_SIGNER, &sig)
+        .await
+        .unwrap_err();
+    assert!(
+        err.to_string().contains("ne peut demander que le CN"),
+        "{err}"
+    );
+
+    // Son profil et son CN : ouvert.
+    let (csr, _k) = build_csr("tsu.example.test");
+    let sig = oe_raflow::signature(&csr, &secret);
+    let ok = flow
+        .submit(&csr, profile::PROFILE_TSA_SIGNER, &sig)
+        .await
+        .unwrap();
+    assert_eq!(ok.state, RequestState::Pending);
+
+    // Sans secret historique configuré, un autre secret n'ouvre rien.
+    let (csr, _k) = build_csr("tsu.example.test");
+    let sig = oe_raflow::signature(&csr, HMAC_SECRET);
+    assert!(matches!(
+        flow.submit(&csr, profile::PROFILE_TSA_SIGNER, &sig).await,
+        Err(RaflowError::Unauthenticated)
+    ));
+}
+
+/// Constat R-3 : un renouvellement ne révoque que les certificats du même
+/// demandeur. Un autre porteur de secret qui soumet le même CN n'éteint pas la
+/// TSU légitime.
+#[tokio::test]
+async fn a_renewal_never_revokes_the_certificate_of_another_requester() {
+    let (a, b) = ("a".repeat(40), "b".repeat(40));
+    let (flow, store) = test_flow_full(
+        None,
+        None,
+        "",
+        vec![
+            requester("tsa", &a, &["tsa_signer"], None),
+            requester("intrus", &b, &["tsa_signer"], None),
+        ],
+    )
+    .await;
+
+    let (csr, _k) = build_csr("tsu.example.test");
+    let legitimate = issue_for(&flow, &csr, profile::PROFILE_TSA_SIGNER, &a).await;
+
+    // L'autre demandeur obtient un certificat de même CN : l'ancien reste valide.
+    let (csr, _k) = build_csr("tsu.example.test");
+    let intruder = issue_for(&flow, &csr, profile::PROFILE_TSA_SIGNER, &b).await;
+    assert_eq!(
+        store.certificate(&legitimate).await.unwrap().status,
+        oe_castore::CertificateStatus::Issued,
+        "le certificat d'un autre demandeur ne doit pas être révoqué"
+    );
+    assert_eq!(
+        store.certificate(&intruder).await.unwrap().status,
+        oe_castore::CertificateStatus::Issued
+    );
+
+    // Le renouvellement du demandeur légitime révoque le sien, pas celui de l'intrus.
+    let (csr, _k) = build_csr("tsu.example.test");
+    let renewed = issue_for(&flow, &csr, profile::PROFILE_TSA_SIGNER, &a).await;
+    assert_eq!(
+        store.certificate(&legitimate).await.unwrap().status,
+        oe_castore::CertificateStatus::Revoked
+    );
+    assert_eq!(
+        store.certificate(&intruder).await.unwrap().status,
+        oe_castore::CertificateStatus::Issued
+    );
+    assert_eq!(
+        store.certificate(&renewed).await.unwrap().status,
+        oe_castore::CertificateStatus::Issued
+    );
 }

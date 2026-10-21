@@ -657,6 +657,7 @@ fn build_flow(
             store,
             issuer,
             hmac_secret: cfg.enroll_hmac_key.clone(),
+            requesters: cfg.enroll_requesters.clone(),
             recorder: Some(recorder),
             retry_after: time::Duration::seconds(5),
             clock: None,

@@ -330,13 +330,49 @@ impl Decider {
     }
 }
 
+/// Nom du demandeur qui s'authentifie avec l'unique secret historique.
+pub const LEGACY_REQUESTER: &str = "legacy";
+
+/// Un demandeur d'enrôlement : son secret HMAC, les profils qu'il peut demander
+/// et, optionnellement, le CN unique qu'il peut porter (constat R-3, EN 319
+/// 411-1 `REG-6.3.2-01`).
+#[derive(Clone)]
+pub struct Requester {
+    pub name: String,
+    pub secret: String,
+    /// Noms de profils autorisés ; `*` pour tous.
+    pub profiles: Vec<String>,
+    /// CN imposé, `None` pour laisser la validation du profil seule juge.
+    pub subject_cn: Option<String>,
+}
+
+impl Requester {
+    fn allows(&self, profile: &str) -> bool {
+        self.profiles.iter().any(|p| p == "*" || p == profile)
+    }
+}
+
+/// Un demandeur vide (demande antérieure à R-3) est le demandeur historique.
+fn requester_key(name: &str) -> &str {
+    if name.is_empty() {
+        LEGACY_REQUESTER
+    } else {
+        name
+    }
+}
+
 /// Configure la machine à états complète (décision et émission).
 pub struct Options {
     pub store: std::sync::Arc<dyn Store>,
     pub issuer: std::sync::Arc<oe_ca_core::Issuer>,
     /// Authentifie le demandeur. Vide, l'enrôlement deviendrait anonyme :
     /// refusé explicitement à la construction plutôt que toléré par défaut.
+    ///
+    /// Secret historique, partagé : il identifie le demandeur [`LEGACY_REQUESTER`],
+    /// autorisé pour tous les profils. Remplacé par `requesters` (constat R-3).
     pub hmac_secret: String,
+    /// Un secret par demandeur, lié aux profils qu'il peut demander (constat R-3).
+    pub requesters: Vec<Requester>,
     pub recorder: Option<std::sync::Arc<dyn Recorder>>,
     /// Délai suggéré au client tant que sa demande attend une décision.
     pub retry_after: time::Duration,
@@ -360,15 +396,32 @@ pub struct SubmitResult {
 pub struct Flow {
     decider: Decider,
     opts: Options,
+    /// Demandeurs reconnus : ceux d'`Options::requesters`, puis le demandeur
+    /// historique si son secret est configuré.
+    requesters: Vec<Requester>,
 }
 
 impl Flow {
     pub fn new(opts: Options) -> Result<Flow, RaflowError> {
-        if opts.hmac_secret.is_empty() {
-            // Une PKI qui délivre à quiconque le demande n'a pas de valeur :
-            // le secret partagé n'est pas une identité, mais il est le minimum.
+        let mut requesters = opts.requesters.clone();
+        if !opts.hmac_secret.is_empty() {
+            requesters.push(Requester {
+                name: LEGACY_REQUESTER.to_string(),
+                secret: opts.hmac_secret.clone(),
+                profiles: vec!["*".to_string()],
+                subject_cn: None,
+            });
+        }
+        // Une PKI qui délivre à quiconque le demande n'a pas de valeur : un
+        // secret partagé n'est pas une identité, mais il est le minimum.
+        if requesters.is_empty() || requesters.iter().any(|r| r.secret.is_empty()) {
             return Err(RaflowError::Other(
                 "secret HMAC d'enrôlement non configuré (enrôlement anonyme refusé)".to_string(),
+            ));
+        }
+        if requesters.iter().any(|r| r.name.is_empty()) {
+            return Err(RaflowError::Other(
+                "un demandeur d'enrôlement sans nom".to_string(),
             ));
         }
         let retry_after = if opts.retry_after.is_zero() {
@@ -387,6 +440,7 @@ impl Flow {
                 retry_after,
                 ..opts
             },
+            requesters,
         })
     }
 
@@ -424,9 +478,28 @@ impl Flow {
         profile_name: &str,
         signature_hex: &str,
     ) -> Result<SubmitResult, RaflowError> {
-        verify_hmac(csr_der, &self.opts.hmac_secret, signature_hex)?;
+        let requester = self
+            .requesters
+            .iter()
+            .find(|r| verify_hmac(csr_der, &r.secret, signature_hex).is_ok())
+            .ok_or(RaflowError::Unauthenticated)?;
         let profile = oe_ca_core::profile_by_name(profile_name).map_err(RaflowError::Other)?;
+        // Constat R-3 : un demandeur n'obtient que les profils qui lui sont liés.
+        if !requester.allows(profile_name) {
+            return Err(RaflowError::Other(format!(
+                "le demandeur {:?} n'est pas autorisé pour le profil {profile_name:?}",
+                requester.name
+            )));
+        }
         let (cn, spki_der) = parse_and_verify_csr(csr_der)?;
+        if let Some(expected) = &requester.subject_cn {
+            if *expected != cn {
+                return Err(RaflowError::Other(format!(
+                    "le demandeur {:?} ne peut demander que le CN {expected:?}",
+                    requester.name
+                )));
+            }
+        }
         // Refusé dès le dépôt : une demande vouée à l'échec à l'émission ne
         // doit pas occuper un opérateur RA.
         profile.validate_cn(&cn).map_err(RaflowError::Other)?;
@@ -439,7 +512,13 @@ impl Flow {
         };
 
         match existing {
-            None => self.open(csr_der, &cn, &spki_der, &profile, &fp).await,
+            None => {
+                self.open(csr_der, &cn, &spki_der, &profile, &fp, &requester.name)
+                    .await
+            }
+            Some(r) if requester_key(&r.requester) != requester.name => Err(RaflowError::Other(
+                "cette demande a été soumise par un autre demandeur".to_string(),
+            )),
             Some(r) if r.profile != profile_name => Err(RaflowError::Other(format!(
                 "cette demande a été soumise pour le profil {:?}, pas {:?}",
                 r.profile, profile_name
@@ -455,6 +534,7 @@ impl Flow {
         _spki_der: &[u8],
         profile: &oe_ca_core::Profile,
         fp: &str,
+        requester: &str,
     ) -> Result<SubmitResult, RaflowError> {
         let tx = transaction_id(csr_der);
         let r = Request {
@@ -470,6 +550,7 @@ impl Flow {
             comment: String::new(),
             issued_at: None,
             certificate_serial: None,
+            requester: requester.to_string(),
         };
         // Le journal *avant* l'enregistrement durable (§15 étape 2b) : si
         // l'écriture échoue, aucune demande n'est créée — rejouable sans
@@ -485,6 +566,7 @@ impl Flow {
                 "profil": profile.name,
                 "sujet_cn": cn,
                 "empreinte": fp,
+                "demandeur": requester,
             }),
         )
         .await?;
@@ -585,7 +667,33 @@ impl Flow {
         // reasonCode 4 = superseded (RFC 5280 §5.3.1) : le motif exact
         // compte, « unspecified » ne justifierait rien devant un auditeur.
         const SUPERSEDED: i32 = 4;
+        // Constat R-3 : un renouvellement ne révoque que les certificats du même
+        // demandeur. Celui d'un autre demandeur, même de même DN, reste actif :
+        // un secret volé ne permet pas de faire révoquer la TSU légitime.
         for old in &previous {
+            let owner = match self
+                .opts
+                .store
+                .request_by_transaction_id(&old.request_transaction_id)
+                .await
+            {
+                Ok(prev) => prev.requester,
+                Err(StoreError::NotFound) => String::new(),
+                Err(e) => return Err(e.into()),
+            };
+            if requester_key(&owner) != requester_key(&r.requester) {
+                self.record(
+                    "ca.renewal_revocation_skipped",
+                    serde_json::json!({
+                        "serie_ancienne": hex::encode(&old.serial),
+                        "serie_nouvelle": hex::encode(&serial),
+                        "demandeur_ancien": requester_key(&owner),
+                        "demandeur_nouveau": requester_key(&r.requester),
+                    }),
+                )
+                .await?;
+                continue;
+            }
             self.opts
                 .issuer
                 .revoke(

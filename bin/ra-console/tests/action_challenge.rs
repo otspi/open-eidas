@@ -314,6 +314,7 @@ impl Env {
                 comment: String::new(),
                 issued_at: None,
                 certificate_serial: None,
+                requester: String::new(),
             })
             .await
             .unwrap();

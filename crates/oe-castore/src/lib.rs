@@ -100,6 +100,9 @@ pub struct Request {
     pub comment: String,
     pub issued_at: Option<OffsetDateTime>,
     pub certificate_serial: Option<Serial>,
+    /// Demandeur authentifié qui a soumis la CSR (constat R-3) ; vide pour une
+    /// demande antérieure, soumise avec l'unique secret historique.
+    pub requester: String,
 }
 
 /// Une autorité de la hiérarchie. La clé privée n'y figure pas : elle ne
@@ -635,6 +638,7 @@ mod tests {
             comment: String::new(),
             issued_at: None,
             certificate_serial: None,
+            requester: String::new(),
         };
         store.create_request(r.clone()).await.unwrap();
         let mut dup = r.clone();
@@ -661,6 +665,7 @@ mod tests {
             comment: String::new(),
             issued_at: None,
             certificate_serial: None,
+            requester: String::new(),
         };
         store.create_request(r.clone()).await.unwrap();
 
