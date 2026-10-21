@@ -108,6 +108,7 @@ mod tests {
                 policy: der::asn1::ObjectIdentifier::new("1.3.6.1.4.1.67027.9.1.1.1").unwrap(),
                 accuracy: Duration::from_secs(1),
                 signing_digest: oe_hsm::DigestAlg::Sha256,
+                signature_scheme: oe_hsm::Scheme::Pkcs1v15,
                 clock: Arc::new(SwitchClock(clock_down)),
                 recorder: None,
             })

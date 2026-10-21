@@ -40,6 +40,13 @@ fn load_authority() -> Authority {
 }
 
 fn load_authority_with(recorder: Option<Arc<dyn oe_tsa_core::Recorder>>) -> Authority {
+    load_authority_scheme(recorder, oe_hsm::Scheme::Pkcs1v15)
+}
+
+fn load_authority_scheme(
+    recorder: Option<Arc<dyn oe_tsa_core::Recorder>>,
+    scheme: oe_hsm::Scheme,
+) -> Authority {
     let dir = fixtures_dir();
     let key_pem =
         std::fs::read_to_string(dir.join("tsu-key.pem")).expect("lecture de la clé de test");
@@ -59,6 +66,7 @@ fn load_authority_with(recorder: Option<Arc<dyn oe_tsa_core::Recorder>>) -> Auth
         policy: der::asn1::ObjectIdentifier::new("1.3.6.1.4.1.67027.9.1.1.1").unwrap(),
         accuracy: std::time::Duration::from_secs(1),
         signing_digest: DigestAlg::Sha256,
+        signature_scheme: scheme,
         clock: Arc::new(FixedClock),
         recorder,
     })
@@ -163,6 +171,59 @@ fn produces_tokens_accepted_by_openssl_for_every_granted_case_in_the_corpus() {
     );
 }
 
+/// Décision du 2026-10-21 (RSASSA-PSS partout) : un jeton signé en PSS est
+/// accepté par `openssl cms -verify`, et son `SignerInfo` annonce bien
+/// `id-RSASSA-PSS` (1.2.840.113549.1.1.10) ; le certificat de test est signé en
+/// PKCS#1 v1.5, l'OID ne peut donc venir que du `SignerInfo`.
+#[test]
+fn a_pss_token_is_accepted_by_openssl_and_announces_rsassa_pss() {
+    let authority = load_authority_scheme(None, oe_hsm::Scheme::Pss);
+    let req_der = any_granted_request();
+    let resp_der = authority.timestamp(&req_der).expect("horodatage PSS");
+
+    let pss_oid = [0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x0a];
+    let contains = |needle: &[u8]| resp_der.windows(needle.len()).any(|w| w == needle);
+    assert!(contains(&pss_oid), "id-RSASSA-PSS absent du jeton");
+
+    // `openssl ts -verify` passe par l'ancienne API PKCS7, qui ne sait pas
+    // vérifier un `SignerInfo` PSS (elle attend un bourrage PKCS#1 v1.5) :
+    // c'est `openssl cms` qui sert de vérificateur indépendant. Le jeton est
+    // extrait de la réponse, puis vérifié contre le certificat de test.
+    let dir = std::env::temp_dir();
+    let resp_path = dir.join(format!("oe-tsa-core-pss-{}.der", std::process::id()));
+    let token_path = dir.join(format!("oe-tsa-core-pss-{}.tst", std::process::id()));
+    std::fs::write(&resp_path, &resp_der).unwrap();
+    let cert_path = fixtures_dir().join("tsu-cert.pem");
+    let extract = Command::new("openssl")
+        .args(["ts", "-reply", "-in"])
+        .arg(&resp_path)
+        .arg("-token_out")
+        .arg("-out")
+        .arg(&token_path)
+        .output()
+        .expect("exécution d'openssl ts");
+    assert!(
+        extract.status.success(),
+        "extraction du jeton: {}",
+        String::from_utf8_lossy(&extract.stderr)
+    );
+    let verify = Command::new("openssl")
+        .args(["cms", "-verify", "-inform", "DER", "-in"])
+        .arg(&token_path)
+        .arg("-CAfile")
+        .arg(&cert_path)
+        .args(["-purpose", "any", "-out", "/dev/null"])
+        .output()
+        .expect("exécution d'openssl cms");
+    let _ = std::fs::remove_file(&resp_path);
+    let _ = std::fs::remove_file(&token_path);
+    assert!(
+        verify.status.success(),
+        "openssl cms -verify a rejeté le jeton PSS:\n{}",
+        String::from_utf8_lossy(&verify.stderr)
+    );
+}
+
 /// Un journal qui échoue systématiquement (docs/WEBUI.md §15 étape 2b) :
 /// preuve que le journal, écrit *avant* la signature, bloque bien
 /// l'horodatage — aucun jeton n'est signé quand il échoue.
@@ -221,6 +282,7 @@ fn load_authority_with_signer_and_clock(
         policy: der::asn1::ObjectIdentifier::new("1.3.6.1.4.1.67027.9.1.1.1").unwrap(),
         accuracy: std::time::Duration::from_secs(1),
         signing_digest: DigestAlg::Sha256,
+        signature_scheme: oe_hsm::Scheme::Pkcs1v15,
         clock,
         recorder,
     })

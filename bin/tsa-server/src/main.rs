@@ -246,6 +246,7 @@ async fn run_serve() {
             policy,
             accuracy: cfg.accuracy,
             signing_digest: digest_alg_from_config(cfg.signing_digest),
+            signature_scheme: oe_hsm::Scheme::Pkcs1v15,
             clock: Arc::new(MonitorClock(monitor.clone())),
             recorder: Some(tsa_recorder),
         })
