@@ -48,4 +48,21 @@ if [ "${1:-serve}" = "serve" ] && [ -n "${OPENEIDAS_ENROLL_ENDPOINT:-}" ]; then
     done
 fi
 
+# Constat H-3 : le certificat se renouvelle avant son expiration sans attendre un
+# redémarrage. `tsa-server enroll` est idempotent (il ne fait rien tant que le
+# certificat n'est pas dans sa fenêtre de renouvellement) ; le service adopte à
+# chaud le nouveau certificat (OPENEIDAS_RELOAD_INTERVAL). Un échec n'arrête
+# rien : l'ancien certificat reste en service, le prochain passage réessaie.
+# OPENEIDAS_RENEW_CHECK_SECONDS=0 désactive la boucle.
+if [ "${1:-serve}" = "serve" ] && [ -n "${OPENEIDAS_ENROLL_ENDPOINT:-}" ] \
+    && [ "${OPENEIDAS_RENEW_CHECK_SECONDS:-21600}" -gt 0 ]; then
+    # `exec` garde le PID : la boucle s'arrête avec le service.
+    service_pid=$$
+    (
+        while sleep "${OPENEIDAS_RENEW_CHECK_SECONDS:-21600}" && kill -0 "${service_pid}" 2>/dev/null; do
+            tsa-server enroll || echo "renouvellement impossible, nouvel essai plus tard" >&2
+        done
+    ) &
+fi
+
 exec tsa-server "$@"
