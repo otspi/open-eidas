@@ -101,6 +101,9 @@ pub struct Options {
     pub policy: ObjectIdentifier,
     pub accuracy: std::time::Duration,
     pub signing_digest: DigestAlg,
+    /// Schéma de la signature CMS du jeton (RSASSA-PSS, décision du
+    /// 2026-10-21 ; PKCS#1 v1.5 reste possible pendant la transition).
+    pub signature_scheme: oe_hsm::Scheme,
     pub clock: Arc<dyn Clock>,
     pub recorder: Option<Arc<dyn Recorder>>,
 }
@@ -299,6 +302,10 @@ impl Authority {
                 .clone(),
             certs_der: &certs_der,
             include_certs: req.cert_req,
+            signature_algorithm: match self.opts.signature_scheme {
+                oe_hsm::Scheme::Pkcs1v15 => token::rsa_encryption_algorithm_identifier()?,
+                scheme => oe_hsm::signature_algorithm(scheme, self.opts.signing_digest)?,
+            },
         };
 
         let signed_attrs = token::signed_attrs_der(&parts)?;
@@ -332,10 +339,11 @@ impl Authority {
             }),
         )?;
 
-        let signature = self
-            .opts
-            .signer
-            .sign_digest(self.opts.signing_digest, &digest_to_sign)?;
+        let signature = self.opts.signer.sign_digest_with(
+            self.opts.signature_scheme,
+            self.opts.signing_digest,
+            &digest_to_sign,
+        )?;
 
         let token_der = token::assemble(&parts, &signed_attrs, signature)?;
         let resp = token::granted_response(token_der)?;
@@ -661,6 +669,7 @@ mod tests {
             policy: ObjectIdentifier::new("1.3.6.1.4.1.67027.9.1.1.1").unwrap(),
             accuracy: std::time::Duration::from_secs(1),
             signing_digest: DigestAlg::Sha256,
+            signature_scheme: oe_hsm::Scheme::Pkcs1v15,
             clock,
             recorder,
         })

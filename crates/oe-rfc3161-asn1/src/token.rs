@@ -93,6 +93,19 @@ pub struct TokenParts<'a> {
     /// Certificat TSU et chaîne, déjà en DER, à embarquer si `include_certs`.
     pub certs_der: &'a [Vec<u8>],
     pub include_certs: bool,
+    /// `signatureAlgorithm` de `SignerInfo`, choisi par l'appelant selon le
+    /// schéma de la signature : [`rsa_encryption_algorithm_identifier`] pour
+    /// PKCS#1 v1.5, `id-RSASSA-PSS` avec ses paramètres (RFC 4056) pour PSS.
+    pub signature_algorithm: AlgorithmIdentifierOwned,
+}
+
+/// `rsaEncryption` avec paramètres `NULL` : le `signatureAlgorithm` d'un
+/// `SignerInfo` signé en PKCS#1 v1.5 (l'empreinte est portée par `digestAlgorithm`).
+pub fn rsa_encryption_algorithm_identifier() -> Result<AlgorithmIdentifierOwned, TokenError> {
+    Ok(AlgorithmIdentifierOwned {
+        oid: oid(OID_RSA_ENCRYPTION),
+        parameters: Some(Any::from_der(&der::asn1::Null.to_der()?)?),
+    })
 }
 
 /// Construit l'ensemble `SignedAttributes` (contentType, messageDigest,
@@ -138,7 +151,7 @@ pub fn signed_attrs_der(parts: &TokenParts) -> Result<Vec<u8>, TokenError> {
 
 /// Assemble le `TimeStampToken` final (un `ContentInfo` `SignedData` DER) à
 /// partir des `signedAttrs` déjà construits par [`signed_attrs_der`] et
-/// d'une signature déjà produite (PKCS#1 v1.5 sur l'empreinte de ces
+/// d'une signature déjà produite (selon `parts.signature_algorithm`, sur l'empreinte de ces
 /// `signedAttrs`, calculée par l'appelant via `oe-hsm`).
 pub fn assemble(
     parts: &TokenParts,
@@ -155,10 +168,7 @@ pub fn assemble(
         }),
         digest_alg: parts.digest_alg.clone(),
         signed_attrs: Some(signed_attrs),
-        signature_algorithm: AlgorithmIdentifierOwned {
-            oid: oid(OID_RSA_ENCRYPTION),
-            parameters: Some(Any::from_der(&der::asn1::Null.to_der()?)?),
-        },
+        signature_algorithm: parts.signature_algorithm.clone(),
         signature: OctetString::new(signature)?,
         unsigned_attrs: None,
     };
