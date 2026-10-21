@@ -1,6 +1,6 @@
 # R-3 — Identité mTLS des demandeurs d'enrôlement (note de conception)
 
-Statut : **décisions prises le 2026-10-21 (§7), tranche 1 en cours.** Elle
+Statut : **décisions prises le 2026-10-21 (§7) ; tranche 1 en PR #152.** Elle
 prolonge le constat R-3 de l'[audit du 2026-09-25](AUDIT_2026_09_25.md) :
 « un secret, ou mieux une identité (mTLS), par demandeur ».
 
@@ -50,7 +50,7 @@ Proposition, calquée sur `internal-cert` (CA.md) :
    propre certificat client avant l'expiration.
 
 Profil `enroll_client` : EKU `clientAuth` seul, CN imposé par demandeur, validité
-d'un an, non utilisable comme `internal_client` (le lien interne de ra-console
+de 90 jours (clé logicielle : même catégorie que le lien interne), non utilisable comme `internal_client` (le lien interne de ra-console
 reste distinct).
 
 ## 4. Découpage en tranches (une PR chacune)
