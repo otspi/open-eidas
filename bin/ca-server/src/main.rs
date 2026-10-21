@@ -440,6 +440,7 @@ async fn run_ceremony() {
     let recorder: Arc<dyn oe_ca_core::Recorder> = Arc::new(open_recorder(&cfg));
     let store: Arc<dyn oe_castore::Store> = Arc::new(store);
     let h = oe_ca_core::ceremony::run_ceremony(oe_ca_core::ceremony::CeremonyOptions {
+        scheme: oe_hsm::Scheme::Pkcs1v15,
         root_signer: root_signer.clone(),
         issuing_signer,
         root_cn: cfg.root_cn.clone(),
@@ -493,6 +494,7 @@ fn root_authority(
     recorder: Arc<dyn oe_ca_core::Recorder>,
 ) -> oe_ca_core::root::RootAuthority {
     oe_ca_core::root::RootAuthority::new(oe_ca_core::root::RootAuthorityOptions {
+        scheme: oe_hsm::Scheme::Pkcs1v15,
         signer,
         certificate,
         store,

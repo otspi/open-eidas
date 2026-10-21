@@ -33,6 +33,7 @@ async fn fixture() -> Fixture {
     let root_signer = Arc::new(SoftwareToken::generate(3072));
     let issuing_signer = Arc::new(SoftwareToken::generate(3072));
     let hierarchy = run_ceremony(CeremonyOptions {
+        scheme: oe_hsm::Scheme::Pkcs1v15,
         root_signer: root_signer.clone(),
         issuing_signer: issuing_signer.clone(),
         root_cn: "Test Root CA".to_string(),
@@ -78,6 +79,7 @@ async fn fixture() -> Fixture {
         .unwrap(),
     );
     let root_authority = RootAuthority::new(RootAuthorityOptions {
+        scheme: oe_hsm::Scheme::Pkcs1v15,
         signer: root_signer,
         certificate: hierarchy.root.clone(),
         store,

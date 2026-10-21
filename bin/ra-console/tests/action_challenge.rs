@@ -99,6 +99,7 @@ impl Env {
         // certificat réellement émis (étape 4).
         let issuing = Arc::new(oe_hsm::testing::SoftwareToken::generate(2048));
         let h = oe_ca_core::ceremony::run_ceremony(oe_ca_core::ceremony::CeremonyOptions {
+            scheme: oe_hsm::Scheme::Pkcs1v15,
             root_signer: Arc::new(oe_hsm::testing::SoftwareToken::generate(2048)),
             issuing_signer: issuing.clone(),
             root_cn: "Test Root CA".into(),

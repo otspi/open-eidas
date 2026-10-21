@@ -525,3 +525,21 @@ async fn the_response_signature_algorithm_carries_null_parameters() {
     );
     verify_with_openssl(&resp_der, "good");
 }
+
+/// Décision du 2026-10-21 (RSASSA-PSS partout) : une réponse signée en PSS est
+/// vérifiée par openssl, et annonce `rsassaPss` avec ses paramètres canoniques.
+#[tokio::test]
+async fn a_pss_responder_signs_responses_openssl_accepts() {
+    let responder = build_responder()
+        .await
+        .with_signature_scheme(oe_hsm::Scheme::Pss);
+    let req_der = std::fs::read(fixtures_dir().join("request-good.der")).unwrap();
+    let resp_der = responder.handle(&req_der).await;
+    verify_with_openssl(&resp_der, "good");
+
+    let basic = basic_response(&resp_der);
+    assert_eq!(
+        oe_hsm::scheme_of(&basic.signature_algorithm).unwrap(),
+        (oe_hsm::Scheme::Pss, oe_hsm::DigestAlg::Sha256)
+    );
+}

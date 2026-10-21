@@ -156,6 +156,8 @@ pub enum HsmError {
     SignatureVerification,
     #[error("hsm: signature logicielle de test: {0}")]
     SoftwareSign(#[from] rsa::Error),
+    #[error("hsm: encodage d'un identifiant d'algorithme: {0}")]
+    Encoding(der::Error),
     #[error("hsm: encodage SubjectPublicKeyInfo: {0}")]
     PublicKeyEncoding(rsa::pkcs8::spki::Error),
 }
@@ -194,6 +196,144 @@ fn key_id(key_label: &str) -> Vec<u8> {
     let mut hasher = Sha256::new();
     hasher.update(key_label.as_bytes());
     hasher.finalize()[..8].to_vec()
+}
+
+/// OID `id-RSASSA-PSS` (RFC 4055 §3.1).
+pub const OID_RSASSA_PSS: &str = "1.2.840.113549.1.1.10";
+const OID_MGF1: &str = "1.2.840.113549.1.1.8";
+
+impl DigestAlg {
+    fn oid(self) -> &'static str {
+        match self {
+            DigestAlg::Sha256 => "2.16.840.1.101.3.4.2.1",
+            DigestAlg::Sha384 => "2.16.840.1.101.3.4.2.2",
+            DigestAlg::Sha512 => "2.16.840.1.101.3.4.2.3",
+        }
+    }
+
+    /// OID `shaNWithRSAEncryption` (RFC 4055 §5).
+    fn pkcs1_oid(self) -> &'static str {
+        match self {
+            DigestAlg::Sha256 => "1.2.840.113549.1.1.11",
+            DigestAlg::Sha384 => "1.2.840.113549.1.1.12",
+            DigestAlg::Sha512 => "1.2.840.113549.1.1.13",
+        }
+    }
+}
+
+/// L'`AlgorithmIdentifier` X.509 d'une signature RSA du schéma et du condensé
+/// donnés, tel que RFC 4055 l'impose à l'émission :
+///
+/// - PKCS#1 v1.5 : `shaNWithRSAEncryption`, paramètres `NULL` ;
+/// - PSS : `id-RSASSA-PSS` avec `RSASSA-PSS-params` — condensé (paramètres
+///   `NULL`), MGF1 du même condensé, sel de la longueur du condensé,
+///   `trailerField` par défaut omis —, l'encodage que produit openssl.
+pub fn signature_algorithm(
+    scheme: Scheme,
+    alg: DigestAlg,
+) -> Result<spki::AlgorithmIdentifierOwned, HsmError> {
+    use der::{asn1::ObjectIdentifier, Any, Decode, Encode};
+    let oid = |s: &str| ObjectIdentifier::new(s).expect("OID constant invalide");
+    match scheme {
+        Scheme::Pkcs1v15 => Ok(spki::AlgorithmIdentifierOwned {
+            oid: oid(alg.pkcs1_oid()),
+            parameters: Some(Any::from(der::asn1::Null)),
+        }),
+        Scheme::Pss => {
+            let hash = spki::AlgorithmIdentifierOwned {
+                oid: oid(alg.oid()),
+                parameters: Some(Any::from(der::asn1::Null)),
+            };
+            let mgf = spki::AlgorithmIdentifierOwned {
+                oid: oid(OID_MGF1),
+                parameters: Some(
+                    Any::from_der(&hash.to_der().map_err(HsmError::Encoding)?)
+                        .map_err(HsmError::Encoding)?,
+                ),
+            };
+            // [0] hash, [1] mgf, [2] saltLength — étiquettes explicites.
+            let explicit = |tag: u8, inner: Vec<u8>| -> Vec<u8> {
+                let mut out = vec![0xa0 | tag];
+                out.extend(der_len(inner.len()));
+                out.extend(inner);
+                out
+            };
+            let mut body = Vec::new();
+            body.extend(explicit(0, hash.to_der().map_err(HsmError::Encoding)?));
+            body.extend(explicit(1, mgf.to_der().map_err(HsmError::Encoding)?));
+            let salt = (alg.expected_len() as u64).to_be_bytes();
+            let first = salt.iter().position(|&b| b != 0).unwrap_or(salt.len() - 1);
+            let mut int = vec![0x02];
+            let mut digits = salt[first..].to_vec();
+            if digits[0] & 0x80 != 0 {
+                digits.insert(0, 0);
+            }
+            int.extend(der_len(digits.len()));
+            int.extend(digits);
+            body.extend(explicit(2, int));
+            let mut seq = vec![0x30];
+            seq.extend(der_len(body.len()));
+            seq.extend(body);
+            Ok(spki::AlgorithmIdentifierOwned {
+                oid: oid(OID_RSASSA_PSS),
+                parameters: Some(Any::from_der(&seq).map_err(HsmError::Encoding)?),
+            })
+        }
+    }
+}
+
+/// Le schéma et le condensé que désigne un `AlgorithmIdentifier` de signature
+/// RSA — `shaNWithRSAEncryption` (paramètres NULL ou absents) ou `id-RSASSA-PSS`
+/// avec exactement les paramètres de [`signature_algorithm`] —, ou `None` pour
+/// tout autre (SHA-1, MD5, ECDSA, PSS à paramètres atypiques, …).
+pub fn scheme_of(algorithm: &spki::AlgorithmIdentifierOwned) -> Option<(Scheme, DigestAlg)> {
+    use der::Encode;
+    let digests = [DigestAlg::Sha256, DigestAlg::Sha384, DigestAlg::Sha512];
+    if algorithm.oid.to_string() == OID_RSASSA_PSS {
+        let given = algorithm.to_der().ok()?;
+        return digests
+            .into_iter()
+            .find(|d| {
+                signature_algorithm(Scheme::Pss, *d)
+                    .and_then(|a| a.to_der().map_err(HsmError::Encoding))
+                    .is_ok_and(|expected| expected == given)
+            })
+            .map(|d| (Scheme::Pss, d));
+    }
+    let null_or_absent = match &algorithm.parameters {
+        None => true,
+        Some(p) => *p == der::Any::from(der::asn1::Null),
+    };
+    if !null_or_absent {
+        return None;
+    }
+    digests
+        .into_iter()
+        .find(|d| d.pkcs1_oid() == algorithm.oid.to_string())
+        .map(|d| (Scheme::Pkcs1v15, d))
+}
+
+impl DigestAlg {
+    /// Condensé de `data`.
+    pub fn hash(self, data: &[u8]) -> Vec<u8> {
+        use sha2::Digest as _;
+        match self {
+            DigestAlg::Sha256 => sha2::Sha256::digest(data).to_vec(),
+            DigestAlg::Sha384 => sha2::Sha384::digest(data).to_vec(),
+            DigestAlg::Sha512 => sha2::Sha512::digest(data).to_vec(),
+        }
+    }
+}
+
+/// Longueur DER (courte ou longue).
+fn der_len(n: usize) -> Vec<u8> {
+    if n < 0x80 {
+        vec![n as u8]
+    } else if n < 0x100 {
+        vec![0x81, n as u8]
+    } else {
+        vec![0x82, (n >> 8) as u8, n as u8]
+    }
 }
 
 /// Vérifie une signature RSA PKCS#1 v1.5 de `digest` avec la clé publique
@@ -908,6 +1048,36 @@ mod tests {
             token.sign_digest_with(Scheme::Pss, DigestAlg::Sha256, &[0u8; 16]),
             Err(HsmError::DigestLength { .. })
         ));
+    }
+
+    /// L'`AlgorithmIdentifier` RSASSA-PSS est celui que produit openssl
+    /// (`req -sigopt rsa_padding_mode:pss`), octet pour octet ; PKCS#1 v1.5
+    /// porte des paramètres NULL.
+    #[test]
+    fn signature_algorithm_matches_the_openssl_encoding() {
+        use der::Encode;
+        let pss = signature_algorithm(Scheme::Pss, DigestAlg::Sha256).unwrap();
+        // Relevé d'un certificat émis par openssl 3 en RSASSA-PSS/SHA-256, sel 32.
+        let reference = hex::decode(
+            "304106092a864886f70d01010a3034a00f300d06096086480165030402010500\
+             a11c301a06092a864886f70d010108300d06096086480165030402010500a203020120",
+        )
+        .unwrap();
+        assert_eq!(pss.to_der().unwrap(), reference);
+        let v15 = signature_algorithm(Scheme::Pkcs1v15, DigestAlg::Sha256).unwrap();
+        assert_eq!(v15.oid.to_string(), "1.2.840.113549.1.1.11");
+        assert_eq!(v15.parameters, Some(der::Any::from(der::asn1::Null)));
+        // Les trois condensés ont chacun leur identifiant PSS, distinct.
+        let ids: Vec<_> = [DigestAlg::Sha256, DigestAlg::Sha384, DigestAlg::Sha512]
+            .iter()
+            .map(|a| {
+                signature_algorithm(Scheme::Pss, *a)
+                    .unwrap()
+                    .to_der()
+                    .unwrap()
+            })
+            .collect();
+        assert!(ids[0] != ids[1] && ids[1] != ids[2] && ids[0] != ids[2]);
     }
 
     #[test]

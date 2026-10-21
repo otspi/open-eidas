@@ -76,6 +76,7 @@ async fn test_flow_with(
     let root_signer = Arc::new(SoftwareToken::generate(2048));
     let issuing_signer = Arc::new(SoftwareToken::generate(2048));
     let hierarchy = run_ceremony(CeremonyOptions {
+        scheme: oe_hsm::Scheme::Pkcs1v15,
         root_signer,
         issuing_signer: issuing_signer.clone(),
         root_cn: "Test Root CA".to_string(),
@@ -585,4 +586,65 @@ async fn a_cli_decision_without_a_comment_is_refused_before_the_request_changes(
     assert!(err.to_string().contains("commentaire"), "{err}");
     let request = store.request_by_transaction_id(&tx).await.unwrap();
     assert_eq!(request.state, RequestState::Pending);
+}
+
+/// CSR PKCS#10 signée par un `SoftwareToken` selon le schéma demandé, avec
+/// l'identifiant d'algorithme que `oe_hsm` associe à ce schéma. Le schéma de la
+/// signature et celui de l'identifiant peuvent être dissociés pour fabriquer
+/// une CSR incohérente.
+fn build_csr_scheme(
+    cn: &str,
+    algid_scheme: oe_hsm::Scheme,
+    sign_scheme: oe_hsm::Scheme,
+) -> Vec<u8> {
+    use oe_hsm::SigningToken;
+    let token = SoftwareToken::generate(3072);
+    let spki = x509_cert::SubjectPublicKeyInfo::from_der(&token.public_key_der().unwrap()).unwrap();
+    let info = CertReqInfo {
+        version: x509_cert::request::Version::V1,
+        subject: Name::from_str(&format!("CN={cn}")).unwrap(),
+        public_key: spki,
+        attributes: Attributes::new(),
+    };
+    let digest = Sha256::digest(info.to_der().unwrap());
+    let sig = token
+        .sign_digest_with(sign_scheme, oe_hsm::DigestAlg::Sha256, &digest)
+        .unwrap();
+    CertReq {
+        info,
+        algorithm: oe_hsm::signature_algorithm(algid_scheme, oe_hsm::DigestAlg::Sha256).unwrap(),
+        signature: BitString::from_bytes(&sig).unwrap(),
+    }
+    .to_der()
+    .unwrap()
+}
+
+/// Décision du 2026-10-21 (RSASSA-PSS partout) : une CSR signée en PSS est
+/// acceptée, et une CSR dont l'identifiant d'algorithme annonce un schéma
+/// différent de celui de la signature est refusée.
+#[tokio::test]
+async fn submit_accepts_a_pss_csr_and_rejects_a_scheme_mismatch() {
+    use oe_hsm::Scheme;
+    let (flow, _store) = test_flow().await;
+
+    let pss = build_csr_scheme("tsu.example.test", Scheme::Pss, Scheme::Pss);
+    let sig = oe_raflow::signature(&pss, HMAC_SECRET);
+    let accepted = flow
+        .submit(&pss, profile::PROFILE_TSA_SIGNER, &sig)
+        .await
+        .unwrap();
+    assert_eq!(accepted.state, RequestState::Pending);
+
+    for (algid, signed) in [
+        (Scheme::Pss, Scheme::Pkcs1v15),
+        (Scheme::Pkcs1v15, Scheme::Pss),
+    ] {
+        let bad = build_csr_scheme("tsu2.example.test", algid, signed);
+        let sig = oe_raflow::signature(&bad, HMAC_SECRET);
+        let err = flow.submit(&bad, profile::PROFILE_TSA_SIGNER, &sig).await;
+        assert!(
+            err.is_err(),
+            "annonce {algid:?}, signature {signed:?} : doit être refusée"
+        );
+    }
 }

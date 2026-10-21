@@ -30,6 +30,9 @@ rsa = "0.9"
 rand = "0.8"
 # Effacement du PIN gardé pour rouvrir la session (constat H-3).
 zeroize = "1"
+# Identifiants d'algorithme de signature (AlgorithmIdentifier DER).
+der = { version = "0.8", features = ["alloc"] }
+spki = { version = "0.8", features = ["alloc"] }
 
 [dev-dependencies]
 hex = "0.4"

@@ -64,6 +64,7 @@ async fn pki() -> Pki {
     let root = Arc::new(SoftwareToken::generate(2048));
     let issuing = Arc::new(SoftwareToken::generate(2048));
     let h = run_ceremony(CeremonyOptions {
+        scheme: oe_hsm::Scheme::Pkcs1v15,
         root_signer: root,
         issuing_signer: issuing.clone(),
         root_cn: "Test Root CA".into(),

@@ -127,7 +127,6 @@ const MIN_RSA_KEY_BITS: usize = 3072;
 /// n'est jamais une option (ETSI TS 119 312).
 fn parse_and_verify_csr(csr_der: &[u8]) -> Result<(String, Vec<u8>), RaflowError> {
     use der::{Decode, Encode};
-    use rsa::pkcs1v15::Pkcs1v15Sign;
     use rsa::pkcs8::DecodePublicKey;
     use rsa::traits::PublicKeyParts;
     use rsa::RsaPublicKey;
@@ -145,18 +144,24 @@ fn parse_and_verify_csr(csr_der: &[u8]) -> Result<(String, Vec<u8>), RaflowError
     }
 
     let tbs_der = csr.info.to_der()?;
-    let digest = Sha256::digest(&tbs_der);
-    public_key
-        .verify(
-            Pkcs1v15Sign::new::<Sha256>(),
-            &digest,
-            csr.signature.raw_bytes(),
-        )
-        .map_err(|_| {
-            RaflowError::Other(
-                "la demande n'est pas signée par la clé qu'elle présente".to_string(),
-            )
-        })?;
+    // Schéma et condensé déclarés par la demande, s'ils sont admis (PKCS#1 v1.5
+    // ou RSASSA-PSS, SHA-2) ; SHA-1 n'est jamais une option (ETSI TS 119 312).
+    let (scheme, alg) = oe_hsm::scheme_of(&csr.algorithm).ok_or_else(|| {
+        RaflowError::Other(format!(
+            "algorithme de signature de la demande non admis : {}",
+            csr.algorithm.oid
+        ))
+    })?;
+    oe_hsm::verify_signature_with(
+        &public_key,
+        scheme,
+        alg,
+        &alg.hash(&tbs_der),
+        csr.signature.raw_bytes(),
+    )
+    .map_err(|_| {
+        RaflowError::Other("la demande n'est pas signée par la clé qu'elle présente".to_string())
+    })?;
 
     let cn = common_name(&csr.info.subject);
     if cn.is_empty() {

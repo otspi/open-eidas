@@ -241,6 +241,7 @@ async fn the_binary_applies_what_the_matrix_declares() {
     let store = Arc::new(oe_castore::Memory::new());
     let issuing_signer = Arc::new(SoftwareToken::generate(3072));
     let hierarchy = run_ceremony(CeremonyOptions {
+        scheme: oe_hsm::Scheme::Pkcs1v15,
         root_signer: Arc::new(SoftwareToken::generate(3072)),
         issuing_signer: issuing_signer.clone(),
         root_cn: "Test Root CA".to_string(),

@@ -19,11 +19,9 @@ use sha2::{Digest, Sha256};
 use spki::AlgorithmIdentifierOwned;
 use x509_cert::builder::Builder;
 
-use oe_hsm::{DigestAlg, SigningToken};
+use oe_hsm::{DigestAlg, Scheme, SigningToken};
 
 use crate::CaError;
-
-const OID_SHA256_WITH_RSA: &str = "1.2.840.113549.1.1.11";
 
 #[derive(Clone)]
 pub(crate) struct RawPublicKey(Vec<u8>);
@@ -36,12 +34,14 @@ impl spki::EncodePublicKey for RawPublicKey {
 
 pub(crate) struct HsmKeypair {
     public_key_der: Vec<u8>,
+    scheme: Scheme,
 }
 
 impl HsmKeypair {
-    pub(crate) fn from_public_key_der(der: &[u8]) -> Self {
+    pub(crate) fn from_public_key_der(der: &[u8], scheme: Scheme) -> Self {
         HsmKeypair {
             public_key_der: der.to_vec(),
+            scheme,
         }
     }
 }
@@ -55,13 +55,10 @@ impl signature::Keypair for HsmKeypair {
 
 impl spki::DynSignatureAlgorithmIdentifier for HsmKeypair {
     fn signature_algorithm_identifier(&self) -> spki::Result<AlgorithmIdentifierOwned> {
-        Ok(AlgorithmIdentifierOwned {
-            oid: der::asn1::ObjectIdentifier::new(OID_SHA256_WITH_RSA)
-                .expect("OID constant invalide"),
-            // RFC 4055 §5 : sha256WithRSAEncryption porte des paramètres NULL à
-            // l\'émission (constat C-5) ; l\'absence reste tolérée à la lecture.
-            parameters: Some(der::asn1::Null.into()),
-        })
+        // RFC 4055 : paramètres NULL pour sha256WithRSAEncryption (constat C-5),
+        // RSASSA-PSS-params pour PSS (décision du 2026-10-21).
+        oe_hsm::signature_algorithm(self.scheme, DigestAlg::Sha256)
+            .map_err(|_| spki::Error::from(der::Error::from(der::ErrorKind::Failed)))
     }
 }
 
@@ -73,13 +70,14 @@ pub(crate) fn sign_with_token<B: Builder>(
     mut builder: B,
     signer: &dyn SigningToken,
     public_key_der: &[u8],
+    scheme: Scheme,
 ) -> Result<B::Output, CaError> {
-    let keypair = HsmKeypair::from_public_key_der(public_key_der);
+    let keypair = HsmKeypair::from_public_key_der(public_key_der, scheme);
     let tbs_der = builder
         .finalize(&keypair)
         .map_err(|e| CaError::Other(e.to_string()))?;
     let digest = Sha256::digest(&tbs_der);
-    let signature = signer.sign_digest(DigestAlg::Sha256, &digest)?;
+    let signature = signer.sign_digest_with(scheme, DigestAlg::Sha256, &digest)?;
     let bit_string = BitString::from_bytes(&signature)?;
     builder
         .assemble(bit_string, &keypair)
@@ -97,14 +95,15 @@ pub(crate) fn sign_crl(
     mut tbs: x509_cert::crl::TbsCertList,
     signer: &dyn SigningToken,
     public_key_der: &[u8],
+    scheme: Scheme,
 ) -> Result<x509_cert::crl::CertificateList, CaError> {
-    let keypair = HsmKeypair::from_public_key_der(public_key_der);
+    let keypair = HsmKeypair::from_public_key_der(public_key_der, scheme);
     let algorithm = spki::DynSignatureAlgorithmIdentifier::signature_algorithm_identifier(&keypair)
         .map_err(|e| CaError::Other(e.to_string()))?;
     tbs.signature = algorithm.clone();
     let tbs_der = tbs.to_der().map_err(CaError::Der)?;
     let digest = Sha256::digest(&tbs_der);
-    let signature = signer.sign_digest(DigestAlg::Sha256, &digest)?;
+    let signature = signer.sign_digest_with(scheme, DigestAlg::Sha256, &digest)?;
     let bit_string = BitString::from_bytes(&signature)?;
     Ok(x509_cert::crl::CertificateList {
         tbs_cert_list: tbs,
