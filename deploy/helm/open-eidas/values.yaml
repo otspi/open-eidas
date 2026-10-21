@@ -34,6 +34,10 @@ rsaScheme: pkcs1v15
 imagePullPolicy: IfNotPresent
 
 tsa:
+  # Secret d'enrôlement propre à la TSA (constat R-3) ; vide = secret partagé.
+  enrollSecret:
+    name: ""
+    key: enroll-hmac-key
   image:
     repository: ghcr.io/otspi/open-eidas-tsa
     tag: "latest"
@@ -105,6 +109,10 @@ tsa:
     host: tsa.open-eidas.example
 
 ocsp:
+  # Secret d'enrôlement propre au répondeur (constat R-3) ; vide = secret partagé.
+  enrollSecret:
+    name: ""
+    key: enroll-hmac-key
   image:
     repository: ghcr.io/otspi/open-eidas-ocsp-responder
     tag: "latest"
@@ -143,6 +151,15 @@ ocsp:
 
 # Autorité de certification et d'enregistrement (cmd/ca-server). Elle
 # remplace OpenXPKI : voir INDEPENDANCE.md.
+# Demandeurs d'enrôlement (constat R-3). Vide, le secret généré `enroll-hmac-key`
+# reste partagé par tous les demandeurs (demandeur « legacy », tous profils).
+# `requestersSecret` : nom d'un Secret portant la clé `requesters.json`
+# (`[{name, secret, profiles, subject_cn?}]`, docs/CA.md) monté dans la CA ;
+# `tsa.enrollSecret` et `ocsp.enrollSecret` désignent alors le Secret du secret
+# PROPRE de chaque service (clé `key`), au lieu du secret partagé.
+enroll:
+  requestersSecret: ""
+
 ca:
   image:
     repository: ghcr.io/otspi/open-eidas-ca

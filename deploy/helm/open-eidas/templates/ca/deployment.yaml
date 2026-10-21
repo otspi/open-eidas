@@ -7,6 +7,9 @@
 {{- $postgresHost = .Values.postgres.external.host -}}
 {{- $postgresPort = (.Values.postgres.external.port | int) -}}
 {{- end -}}
+{{- if and .Values.production (not .Values.enroll.requestersSecret) -}}
+{{- fail "enroll.requestersSecret est obligatoire quand production: true : un secret d'enrôlement par demandeur, lié à ses profils (constat R-3, ETSI EN 319 411-1 REG-6.3.2-01)" -}}
+{{- end -}}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -51,7 +54,16 @@ spec:
             {{- if .Values.ca.internal.enabled }}
             {{- include "open-eidas.caInternalEnv" . | nindent 12 }}
             {{- end }}
+            {{- if .Values.enroll.requestersSecret }}
+            - name: OPENEIDAS_ENROLL_REQUESTERS_FILE
+              value: /etc/open-eidas/requesters/requesters.json
+            {{- end }}
           volumeMounts:
+            {{- if .Values.enroll.requestersSecret }}
+            - name: requesters
+              mountPath: /etc/open-eidas/requesters
+              readOnly: true
+            {{- end }}
             - name: softhsm
               mountPath: /var/lib/softhsm/tokens
             - name: state
@@ -130,6 +142,11 @@ spec:
             {{- toYaml .Values.ca.autoApprove.resources | nindent 12 }}
         {{- end }}
       volumes:
+        {{- if .Values.enroll.requestersSecret }}
+        - name: requesters
+          secret:
+            secretName: {{ .Values.enroll.requestersSecret }}
+        {{- end }}
         - name: softhsm
           persistentVolumeClaim:
             claimName: {{ $name }}-softhsm

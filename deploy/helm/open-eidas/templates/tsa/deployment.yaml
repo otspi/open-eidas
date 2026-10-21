@@ -113,8 +113,13 @@ spec:
             - name: OPENEIDAS_ENROLL_HMAC_KEY
               valueFrom:
                 secretKeyRef:
+                  {{- if .Values.tsa.enrollSecret.name }}
+                  name: {{ .Values.tsa.enrollSecret.name }}
+                  key: {{ .Values.tsa.enrollSecret.key }}
+                  {{- else }}
                   name: {{ $secretName }}
                   key: enroll-hmac-key
+                  {{- end }}
             # Seul le nom courant est demandé : unité, organisation et pays
             # sont imposés par le profil côté autorité.
             - name: OPENEIDAS_SUBJECT_CN

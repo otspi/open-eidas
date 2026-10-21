@@ -531,7 +531,16 @@ jobs:
             echo "le chart accepte ca.autoApprove.enabled avec production=true" >&2
             exit 1
           fi
-          helm template open-eidas deploy/helm/open-eidas --set production=true > /dev/null
+          helm template open-eidas deploy/helm/open-eidas \
+            --set production=true --set enroll.requestersSecret=demandeurs > /dev/null
+      - name: helm template refuse la production sans demandeurs d'enrôlement
+        # Constat R-3 : un secret partagé par tous les demandeurs n'est pas admis.
+        run: |
+          if helm template open-eidas deploy/helm/open-eidas \
+              --set production=true > /dev/null 2>&1; then
+            echo "le chart accepte production=true sans enroll.requestersSecret" >&2
+            exit 1
+          fi
       - name: helm template refuse une copie S3 du journal à moitié configurée
         # Constat J-1 : un point d'accès sans compartiment ni identifiants ne
         # doit pas rendre un service qui ne copie rien en silence.
