@@ -34,6 +34,10 @@ rsaScheme: pkcs1v15
 imagePullPolicy: IfNotPresent
 
 tsa:
+  # Certificat client d'enrôlement (Secret avec tls.crt, tls.key et ca.crt) : avec
+  # enroll.mtls.enabled, le service s'enrôle par TLS mutuel sur le port de la CA.
+  enrollClient:
+    secretName: ""
   # Secret d'enrôlement propre à la TSA (constat R-3) ; vide = secret partagé.
   enrollSecret:
     name: ""
@@ -118,6 +122,10 @@ tsa:
       unit: Minute
 
 ocsp:
+  # Certificat client d'enrôlement (Secret avec tls.crt, tls.key et ca.crt) : avec
+  # enroll.mtls.enabled, le service s'enrôle par TLS mutuel sur le port de la CA.
+  enrollClient:
+    secretName: ""
   # Secret d'enrôlement propre au répondeur (constat R-3) ; vide = secret partagé.
   enrollSecret:
     name: ""
@@ -168,6 +176,13 @@ ocsp:
 # PROPRE de chaque service (clé `key`), au lieu du secret partagé.
 enroll:
   requestersSecret: ""
+  # Port d'enrôlement en TLS mutuel de la CA (constat R-3,
+  # docs/R3-MTLS-DEMANDEURS.md) : les services s'y identifient par un certificat
+  # client `enroll_client` au lieu d'un secret partagé. Exige ca.internal.enabled
+  # (le port réutilise le certificat de serveur du lien interne).
+  mtls:
+    enabled: false
+    port: 8322
 
 ca:
   image:

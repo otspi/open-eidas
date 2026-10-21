@@ -64,8 +64,19 @@ spec:
               value: /var/lib/open-eidas/state/chain.pem
             - name: OPENEIDAS_SUBJECT_CN
               value: {{ .Values.ocsp.subject.commonName | quote }}
+            {{- if and .Values.enroll.mtls.enabled .Values.ocsp.enrollClient.secretName }}
+            - name: OPENEIDAS_ENROLL_ENDPOINT
+              value: {{ printf "https://%s:%d/api/v1/enroll" (include "open-eidas.caInternalDNS" .) (.Values.enroll.mtls.port | int) | quote }}
+            - name: OPENEIDAS_ENROLL_CLIENT_CERT_FILE
+              value: /etc/open-eidas/enroll-client/tls.crt
+            - name: OPENEIDAS_ENROLL_CLIENT_KEY_FILE
+              value: /etc/open-eidas/enroll-client/tls.key
+            - name: OPENEIDAS_ENROLL_CA_FILE
+              value: /etc/open-eidas/enroll-client/ca.crt
+            {{- else }}
             - name: OPENEIDAS_ENROLL_ENDPOINT
               value: {{ printf "%s/api/v1/enroll" (include "open-eidas.caInternalURL" .) | quote }}
+            {{- end }}
             - name: OPENEIDAS_ENROLL_PROFILE
               value: ocsp_responder
             - name: OPENEIDAS_ENROLL_HMAC_KEY
@@ -85,6 +96,11 @@ spec:
             - name: OPENEIDAS_PKI_INTERNAL_URL
               value: {{ include "open-eidas.caInternalURL" . | quote }}
           volumeMounts:
+            {{- if and .Values.enroll.mtls.enabled .Values.ocsp.enrollClient.secretName }}
+            - name: enroll-client
+              mountPath: /etc/open-eidas/enroll-client
+              readOnly: true
+            {{- end }}
             - name: softhsm
               mountPath: /var/lib/softhsm/tokens
             - name: state
@@ -116,6 +132,11 @@ spec:
           resources:
             {{- toYaml .Values.ocsp.resources | nindent 12 }}
       volumes:
+        {{- if and .Values.enroll.mtls.enabled .Values.ocsp.enrollClient.secretName }}
+        - name: enroll-client
+          secret:
+            secretName: {{ .Values.ocsp.enrollClient.secretName }}
+        {{- end }}
         - name: softhsm
           persistentVolumeClaim:
             claimName: {{ $name }}-softhsm

@@ -29,4 +29,17 @@ spec:
         - podSelector:
             matchLabels:
               {{- include "open-eidas.componentSelectorLabels" (dict "context" . "component" "ra-console") | nindent 14 }}
+{{- if .Values.enroll.mtls.enabled }}
+    # Port d'enrôlement mutuel : uniquement depuis les pods de la TSA et du
+    # répondeur OCSP de cette release (le certificat client reste exigé).
+    - ports:
+        - port: {{ .Values.enroll.mtls.port }}
+      from:
+        - podSelector:
+            matchLabels:
+              {{- include "open-eidas.componentSelectorLabels" (dict "context" . "component" "tsa") | nindent 14 }}
+        - podSelector:
+            matchLabels:
+              {{- include "open-eidas.componentSelectorLabels" (dict "context" . "component" "ocsp") | nindent 14 }}
+{{- end }}
 {{- end }}

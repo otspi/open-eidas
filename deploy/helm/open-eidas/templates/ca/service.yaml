@@ -18,3 +18,9 @@ spec:
       port: {{ .Values.ca.service.internalPort }}
       targetPort: internal
     {{- end }}
+{{- if .Values.enroll.mtls.enabled }}
+    # Joint par la TSA et le répondeur OCSP (NetworkPolicy). Jamais dans une HTTPRoute.
+    - name: enroll-mtls
+      port: {{ .Values.enroll.mtls.port }}
+      targetPort: enroll-mtls
+{{- end }}

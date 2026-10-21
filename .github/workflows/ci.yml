@@ -564,6 +564,28 @@ jobs:
           helm template open-eidas deploy/helm/open-eidas \
             --set tsa.gateway.enabled=true --set tsa.gateway.rateLimit.enabled=true \
             | grep -q BackendTrafficPolicy
+      - name: helm template câble le port d'enrôlement mTLS à la demande
+        # Constat R-3 : désactivé par défaut ; demandé, il exige le lien interne
+        # (même certificat de serveur) et change l'enrôlement des services.
+        run: |
+          if helm template open-eidas deploy/helm/open-eidas \
+              --set enroll.mtls.enabled=true > /dev/null 2>&1; then
+            echo "le chart accepte enroll.mtls.enabled sans ca.internal.enabled" >&2
+            exit 1
+          fi
+          helm template open-eidas deploy/helm/open-eidas \
+            -f deploy/helm/open-eidas/ci/ra-console-values.yaml \
+            --set enroll.mtls.enabled=true \
+            --set tsa.enrollClient.secretName=tsa-enroll \
+            --set ocsp.enrollClient.secretName=ocsp-enroll > mtls.yaml
+          grep -q OPENEIDAS_ENROLL_MTLS_LISTEN mtls.yaml
+          grep -q 'https://.*:8322/api/v1/enroll' mtls.yaml
+          grep -q OPENEIDAS_ENROLL_CLIENT_CERT_FILE mtls.yaml
+          if helm template open-eidas deploy/helm/open-eidas \
+              -f deploy/helm/open-eidas/ci/ra-console-values.yaml | grep -q OPENEIDAS_ENROLL_CLIENT_CERT_FILE; then
+            echo "le certificat client est câblé sans avoir été demandé" >&2
+            exit 1
+          fi
       - name: helm lint et rendu avec ra-console
         run: |
           helm lint deploy/helm/open-eidas -f deploy/helm/open-eidas/ci/ra-console-values.yaml
