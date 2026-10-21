@@ -407,9 +407,21 @@ pub struct Flow {
     /// Demandeurs reconnus : ceux d'`Options::requesters`, puis le demandeur
     /// historique si son secret est configuré.
     requesters: Vec<Requester>,
+    /// Fin de la double authentification (docs/R3-MTLS-DEMANDEURS.md) : un
+    /// demandeur qui a un certificat client (`client_cn`) ne peut plus utiliser son
+    /// secret que pour amorcer ce certificat (profil `enroll_client`).
+    hmac_bootstrap_only: bool,
 }
 
 impl Flow {
+    /// Active la fin de la double authentification pour les demandeurs qui ont un
+    /// certificat client. Ceux qui n'en ont pas gardent leur secret : on migre
+    /// demandeur par demandeur, en lui ajoutant `client_cn`.
+    pub fn with_hmac_bootstrap_only(mut self, on: bool) -> Flow {
+        self.hmac_bootstrap_only = on;
+        self
+    }
+
     pub fn new(opts: Options) -> Result<Flow, RaflowError> {
         let mut requesters = opts.requesters.clone();
         if !opts.hmac_secret.is_empty() {
@@ -463,6 +475,7 @@ impl Flow {
                 ..opts
             },
             requesters,
+            hmac_bootstrap_only: false,
         })
     }
 
@@ -510,6 +523,14 @@ impl Flow {
                     && verify_hmac(csr_der, &r.secret, signature_hex).is_ok()
             })
             .ok_or(RaflowError::Unauthenticated)?;
+        // Fin de la double authentification : le secret d'un demandeur qui a son
+        // certificat client ne sert plus qu'à l'amorcer.
+        if self.hmac_bootstrap_only
+            && requester.client_cn.is_some()
+            && profile_name != oe_ca_core::profile::PROFILE_ENROLL_CLIENT
+        {
+            return Err(RaflowError::Unauthenticated);
+        }
         // Amorçage (docs/R3-MTLS-DEMANDEURS.md §3) : le secret ne vaut qu'une fois
         // pour un certificat client ; ensuite, le demandeur s'identifie par lui.
         if profile_name == oe_ca_core::profile::PROFILE_ENROLL_CLIENT {
