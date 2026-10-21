@@ -895,5 +895,15 @@ async fn the_binary_applies_what_the_matrix_declares() {
         );
     }
 
+    // Pour `pkilint` en CI : les certificats d'entité finale émis au profil TSU
+    // et OCSP sont exportés si le dossier est demandé.
+    if let Some(export) = std::env::var_os("OE_PKI_EXPORT_DIR") {
+        let export = std::path::PathBuf::from(export);
+        std::fs::create_dir_all(&export).unwrap();
+        for file in ["tsu.pem", "ocsp.pem"] {
+            std::fs::copy(dir.join(file), export.join(format!("ee-{file}"))).unwrap();
+        }
+    }
+
     let _ = std::fs::remove_dir_all(&dir);
 }

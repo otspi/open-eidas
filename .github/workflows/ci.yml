@@ -83,7 +83,7 @@ jobs:
       # Pas de lint de chaîne : la version épinglée vérifie toute signature en
       # PKCS#1 v1.5 et rejette à tort une signature PSS, ce que openssl
       # (test pss_ceremony) contrôle déjà.
-      - name: pkilint (hiérarchie PSS)
+      - name: pkilint (hiérarchie PSS et certificats finaux)
         run: |
           set -euo pipefail
           pip install --user pkilint==0.13.3
@@ -100,6 +100,11 @@ jobs:
           clean lint_pkix_cert lint -s WARNING pki-export/pss-root.pem
           clean lint_pkix_cert lint -s WARNING pki-export/pss-issuing.pem
           clean lint_crl lint -t ARL -p PKIX -s WARNING pki-export/pss-arl.pem
+          # Certificats d'entité finale (profils TSU et répondeur OCSP), tels que
+          # le test du binaire tsa-server les fait émettre par la CA.
+          OE_PKI_EXPORT_DIR="$PWD/pki-export" cargo test -p tsa-server --test serve
+          clean lint_pkix_cert lint -s WARNING pki-export/ee-tsu.pem
+          clean lint_pkix_cert lint -s WARNING pki-export/ee-ocsp.pem
         env:
           OE_REQUIRE_SOFTHSM: "1"
           OE_CASTORE_TEST_DSN: postgres://postgres:test@localhost:5432/postgres
