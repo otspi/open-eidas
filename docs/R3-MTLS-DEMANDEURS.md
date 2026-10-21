@@ -1,6 +1,6 @@
 # R-3 — Identité mTLS des demandeurs d'enrôlement (note de conception)
 
-Statut : **décisions prises le 2026-10-21 (§7) ; tranche 1 en PR #152.** Elle
+Statut : **décisions prises le 2026-10-21 (§7) ; tranches 1 à 4 en PR (#152 à #155).** Elle
 prolonge le constat R-3 de l'[audit du 2026-09-25](AUDIT_2026_09_25.md) :
 « un secret, ou mieux une identité (mTLS), par demandeur ».
 
@@ -89,3 +89,7 @@ b. Ancre de confiance : **l'autorité émettrice existante**, profil `enroll_cli
 c. Amorçage : **secret à usage unique (24 h) + approbation par deux opérateurs**.
 d. HMAC : retiré en production **après une période de double authentification**
    (les deux contrôles coexistent le temps de la bascule).
+
+## 8. Tranche 4 (en PR #155)
+
+En production, un demandeur qui a un `client_cn` n'utilise plus son secret que pour le profil `enroll_client` (`Flow::with_hmac_bootstrap_only`). Les autres demandeurs gardent leur secret jusqu'à ce qu'on leur ajoute un `client_cn` : la bascule se fait demandeur par demandeur, ce qui est la « période de double authentification » décidée en §7.d.
