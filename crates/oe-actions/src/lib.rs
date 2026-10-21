@@ -16,9 +16,12 @@
 //!   3. [`Service::execute`] reçoit l'identifiant du challenge et l'assertion,
 //!      **et aucun corps** : il exécute le corps figé à l'étape 1.
 //!
-//! Le challenge est tiré par la bibliothèque WebAuthn, il ne dérive pas du
-//! corps (décision O7). Le lien challenge → corps est donc établi par le
-//! journal et par la table `actions`, pas par la signature seule.
+//! Le challenge est lié au corps figé : `SHA-256(domaine ‖ SHA-256(corps) ‖
+//! aléa)`, l'aléa étant tiré par la bibliothèque WebAuthn et conservé dans
+//! `action_challenges.nonce` (décision O7 révisée, constat A-1). La signature
+//! engage donc sur *cette* action, et l'audit recalcule le challenge. Les
+//! challenges émis avant la migration 0011 (sans aléa) restent tirés au hasard :
+//! pour eux, le lien passe par le journal et la table `actions`.
 
 mod assertion;
 mod audit;
@@ -500,14 +503,18 @@ impl Service {
         Ok(operator)
     }
 
-    /// Ouvre une cérémonie d'authentification sur les clés actives de l'opérateur.
+    /// Ouvre une cérémonie d'authentification sur les clés actives de l'opérateur,
+    /// avec un challenge lié au corps figé (`body_hash` = SHA-256 des octets du
+    /// corps). Rend aussi l'aléa, à conserver pour recalculer le challenge.
     async fn start_ceremony(
         &self,
         operator_hint: Uuid,
+        body_hash: &[u8],
     ) -> Result<
         (
             RequestChallengeResponse,
             oe_webauthn::AttestedPasskeyAuthentication,
+            Vec<u8>,
         ),
         Error,
     > {
@@ -516,7 +523,9 @@ impl Service {
             return Err(Error::Denied("aucune clé active".to_string()));
         }
         let passkeys: Vec<_> = keys.iter().map(|k| k.passkey.clone()).collect();
-        Ok(self.verifier.start_authentication(&passkeys)?)
+        Ok(self
+            .verifier
+            .start_bound_authentication(&passkeys, body_hash)?)
     }
 
     async fn count_signatures(&self, action_id: Uuid) -> Result<u32, Error> {
@@ -549,7 +558,6 @@ impl Service {
             self.ensure_enough_holders(&action, required).await?;
         }
         self.check_action(&action, &operator, required).await?;
-        let (options, state) = self.start_ceremony(operator_hint).await?;
 
         let now = self.now();
         let action_expires_at = now
@@ -568,9 +576,12 @@ impl Service {
         // chaîne, écrite au journal, qu'un auditeur re-hache.
         let canonical =
             serde_json::to_string(&body).map_err(|e| Error::BadRequest(e.to_string()))?;
-        let body_hash = hex::encode(Sha256::digest(canonical.as_bytes()));
+        let body_digest = Sha256::digest(canonical.as_bytes());
+        let body_hash = hex::encode(body_digest);
         let body_json: serde_json::Value =
             serde_json::from_str(&canonical).map_err(|e| Error::BadRequest(e.to_string()))?;
+        // Le challenge dérive du corps figé (décision O7 révisée).
+        let (options, state, nonce) = self.start_ceremony(operator_hint, &body_digest).await?;
 
         let action_id = Uuid::new_v4();
         let challenge_id = Uuid::new_v4();
@@ -611,8 +622,8 @@ impl Service {
         .await?;
         sqlx::query(
             "INSERT INTO action_challenges
-               (challenge_id, action_id, challenge, operator_hint, issued_at, expires_at)
-             VALUES ($1, $2, $3, $4, $5, $6)",
+               (challenge_id, action_id, challenge, nonce, operator_hint, issued_at, expires_at)
+             VALUES ($1, $2, $3, $7, $4, $5, $6)",
         )
         .bind(challenge_id)
         .bind(action_id)
@@ -620,6 +631,7 @@ impl Service {
         .bind(operator_hint)
         .bind(now)
         .bind(challenge_expires_at)
+        .bind(&nonce)
         .execute(&mut *tx)
         .await?;
         tx.commit().await?;
@@ -687,7 +699,10 @@ impl Service {
         }
         self.check_action(&stored.action, &operator, required)
             .await?;
-        let (options, state) = self.start_ceremony(operator_hint).await?;
+        // Même corps figé, donc même condensé : le challenge de chaque signataire
+        // en dérive, avec son propre aléa.
+        let body_digest: Vec<u8> = row.get("body_hash");
+        let (options, state, nonce) = self.start_ceremony(operator_hint, &body_digest).await?;
 
         let challenge_id = Uuid::new_v4();
         self.journal
@@ -706,8 +721,8 @@ impl Service {
             .map_err(Error::Journal)?;
         sqlx::query(
             "INSERT INTO action_challenges
-               (challenge_id, action_id, challenge, operator_hint, issued_at, expires_at)
-             VALUES ($1, $2, $3, $4, $5, $6)",
+               (challenge_id, action_id, challenge, nonce, operator_hint, issued_at, expires_at)
+             VALUES ($1, $2, $3, $7, $4, $5, $6)",
         )
         .bind(challenge_id)
         .bind(action_id)
@@ -715,6 +730,7 @@ impl Service {
         .bind(operator_hint)
         .bind(now)
         .bind((now + CHALLENGE_TTL).min(expires_at))
+        .bind(&nonce)
         .execute(self.registry.pool())
         .await?;
         self.pending

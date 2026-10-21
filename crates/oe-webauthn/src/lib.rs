@@ -11,8 +11,11 @@
 //!   * une régression du compteur de signatures est un clonage présumé ;
 //!   * le RP ID doit être exactement le nom d'hôte de l'origine.
 //!
-//! Le challenge est tiré par la bibliothèque, pas dérivé du corps de la
-//! requête : le lien challenge → corps est établi par `ca-server` (§4).
+//! Le challenge d'une action est lié à son corps : `SHA-256(domaine ‖
+//! SHA-256(corps) ‖ aléa)`, l'aléa étant celui que tire la bibliothèque
+//! ([`Verifier::start_bound_authentication`]). Une signature engage ainsi sur
+//! *cette* action, et un tiers qui a le corps et l'aléa la vérifie sans croire
+//! `ca-server` (décision O7 révisée, constat A-1).
 
 pub use webauthn_rs::prelude::{
     AttestationCaList, AttestedPasskey, AttestedPasskeyAuthentication, AttestedPasskeyRegistration,
@@ -108,6 +111,21 @@ pub fn summarize_attestation(key: &AttestedPasskey) -> Result<AttestationSummary
     Ok(AttestationSummary { aaguid, format })
 }
 
+/// Domaine du challenge lié au corps d'une action : sépare cette dérivation de
+/// tout autre usage de SHA-256 sur les mêmes octets.
+pub const BOUND_CHALLENGE_DOMAIN: &[u8] = b"open-eidas/action-challenge/v1";
+
+/// Le challenge d'une action : `SHA-256(domaine ‖ SHA-256(corps) ‖ aléa)`. Un
+/// auditeur qui a le corps figé et l'aléa le recalcule.
+pub fn bound_challenge(body_hash: &[u8], nonce: &[u8]) -> [u8; 32] {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    h.update(BOUND_CHALLENGE_DOMAIN);
+    h.update(body_hash);
+    h.update(nonce);
+    h.finalize().into()
+}
+
 pub struct Verifier {
     webauthn: Webauthn,
     models: AttestationCaList,
@@ -194,6 +212,47 @@ impl Verifier {
         Ok(self
             .webauthn
             .finish_attested_passkey_registration(reg, state)?)
+    }
+
+    /// Comme [`Verifier::start_authentication`], mais le challenge est lié au corps
+    /// d'une action : `SHA-256(BOUND_CHALLENGE_DOMAIN ‖ body_hash ‖ aléa)`. La
+    /// bibliothèque tire l'aléa ; on le garde (3e élément rendu) pour pouvoir
+    /// recalculer le challenge, et on le substitue dans les options **et** dans
+    /// l'état de la cérémonie, que `finish_authentication` compare à la
+    /// `clientDataJSON` de l'assertion.
+    ///
+    /// Passe par la sérialisation de l'état (feature `danger-allow-state-serialisation`)
+    /// : si la bibliothèque en change la forme, on échoue ici plutôt que d'émettre
+    /// un challenge que personne ne saurait vérifier.
+    pub fn start_bound_authentication(
+        &self,
+        keys: &[AttestedPasskey],
+        body_hash: &[u8],
+    ) -> Result<
+        (
+            RequestChallengeResponse,
+            AttestedPasskeyAuthentication,
+            Vec<u8>,
+        ),
+        Error,
+    > {
+        use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+        use base64::Engine;
+        let (mut options, state) = self.start_authentication(keys)?;
+        let nonce = options.public_key.challenge.as_ref().to_vec();
+        let bound = bound_challenge(body_hash, &nonce);
+
+        let mut json = serde_json::to_value(&state)
+            .map_err(|e| Error::Config(format!("état de cérémonie illisible : {e}")))?;
+        let slot = json
+            .pointer_mut("/ast/challenge")
+            .ok_or_else(|| Error::Config("état de cérémonie sans challenge".into()))?;
+        *slot = serde_json::Value::String(URL_SAFE_NO_PAD.encode(bound));
+        let state: AttestedPasskeyAuthentication = serde_json::from_value(json)
+            .map_err(|e| Error::Config(format!("état de cérémonie illisible : {e}")))?;
+
+        options.public_key.challenge = bound.to_vec().into();
+        Ok((options, state, nonce))
     }
 
     pub fn start_authentication(
