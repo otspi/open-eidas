@@ -520,7 +520,7 @@ async fn login_opens_a_session_that_me_reports() {
     let mut env = env!();
     env.operator_with_key("alice").await;
     let cookie = env.log_in("alice").await;
-    assert!(cookie.starts_with("session="), "{cookie}");
+    assert!(cookie.starts_with("__Host-session="), "{cookie}");
 
     let (status, me) = env.get_with_cookie(ME, Some(&cookie)).await;
     assert_eq!(status, StatusCode::OK, "{me}");
@@ -532,7 +532,7 @@ async fn login_opens_a_session_that_me_reports() {
     assert_eq!(status, StatusCode::UNAUTHORIZED, "{err}");
     assert_eq!(err["error"], "unauthenticated");
     let (status, err) = env
-        .get_with_cookie(ME, Some("session=n-importe-quoi"))
+        .get_with_cookie(ME, Some("__Host-session=n-importe-quoi"))
         .await;
     assert_eq!(status, StatusCode::UNAUTHORIZED, "{err}");
     assert_eq!(err["error"], "unauthenticated");

@@ -723,7 +723,7 @@ l'enregistrement.
 // Réponse en cas de succès
 {"session": "opaque-256-bits", "operator": {"id": "uuid", "name": "alice", "role": "ra_operateur"}}
 ```
-Le cookie de session est posé par le serveur (`Set-Cookie`, `HttpOnly`,
+Le cookie de session, nommé `__Host-session` (le navigateur le refuse sans `Secure`, `Path=/` et sans `Domain`), est posé par le serveur (`Set-Cookie`, `HttpOnly`,
 `Secure`, `SameSite=Strict`) ; le corps JSON ne renvoie `session` que pour
 les clients non-navigateur (scripts d'exploitation), un navigateur n'a pas
 besoin de le lire.
