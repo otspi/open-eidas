@@ -166,5 +166,15 @@ async fn a_pss_ceremony_yields_a_hierarchy_openssl_verifies() {
         text(&v)
     );
 
+    // Pour `pkilint` en CI (.github/workflows/ci.yml) : la hiérarchie PSS
+    // produite par la cérémonie est exportée si le dossier est demandé.
+    if let Some(export) = std::env::var_os("OE_PKI_EXPORT_DIR") {
+        let export = PathBuf::from(export);
+        std::fs::create_dir_all(&export).unwrap();
+        for file in ["root.pem", "issuing.pem", "arl.pem"] {
+            std::fs::copy(dir.join(file), export.join(format!("pss-{file}"))).unwrap();
+        }
+    }
+
     let _ = std::fs::remove_dir_all(&dir);
 }
