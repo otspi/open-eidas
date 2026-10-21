@@ -129,6 +129,9 @@ struct Cred {
 }
 
 struct Evidence {
+    /// Aléa du challenge lié au corps (décision O7 révisée) ; `None` pour une preuve
+    /// antérieure, dont le challenge était tiré au hasard.
+    nonce: Option<Vec<u8>>,
     credential_id: String,
     operator_id: Uuid,
     authenticator_data: Vec<u8>,
@@ -207,7 +210,7 @@ pub async fn audit_registry(
         };
         let evidence = sqlx::query(
             "SELECT e.credential_id, e.operator_id, e.authenticator_data, e.client_data_json,
-                    e.signature, c.challenge
+                    e.signature, c.challenge, c.nonce
              FROM decision_evidence e JOIN action_challenges c ON c.challenge_id = e.challenge_id
              WHERE e.action_id = $1 ORDER BY e.verified_at, e.id",
         )
@@ -222,6 +225,7 @@ pub async fn audit_registry(
             client_data_json: e.get("client_data_json"),
             signature: e.get("signature"),
             challenge: e.get("challenge"),
+            nonce: e.get("nonce"),
         })
         .collect();
         confirmations.entry(target).or_default().push(Confirmation {
@@ -355,6 +359,7 @@ impl Auditor<'_> {
         }
 
         let mut depth = 0;
+        let mut unbound: Option<String> = None;
         let mut signers = Vec::new();
         for ev in &c.evidence {
             let signer = self
@@ -375,6 +380,18 @@ impl Auditor<'_> {
                 &ev.challenge,
             )
             .map_err(|e| format!("signature de {} refusée: {e}", signer.operator))?;
+            // Le challenge signé dérive du corps figé : un tiers qui a le corps
+            // et l'aléa le recalcule, sans croire `ca-server`. Constaté ici, signalé
+            // après le contrôle du journal (qui dit mieux ce qui a été réécrit).
+            if let Some(nonce) = &ev.nonce {
+                let bound = oe_webauthn::bound_challenge(&c.body_hash, nonce);
+                if bound.as_slice() != ev.challenge.as_slice() && unbound.is_none() {
+                    unbound = Some(format!(
+                        "le challenge signé par {} ne dérive pas du corps de l'action",
+                        signer.operator
+                    ));
+                }
+            }
             let d = self.check(&ev.credential_id, visiting, memo).map_err(|e| {
                 format!(
                     "le signataire {} n'a pas de chaîne valide: {e}",
@@ -396,6 +413,9 @@ impl Auditor<'_> {
                 )
             }
             None => return Err("action absente du journal chaîné".to_string()),
+        }
+        if let Some(reason) = unbound {
+            return Err(reason);
         }
         match cred.confirmed_by.as_deref() {
             Some(by) if signers.contains(&by) => {}

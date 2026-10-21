@@ -747,3 +747,59 @@ async fn an_ocsp_responder_request_still_needs_one_operator() {
             .executed
     );
 }
+
+/// Décision O7 révisée (constat A-1) : le challenge présenté à l'opérateur est
+/// `SHA-256(domaine ‖ SHA-256(corps) ‖ aléa)`. Le corps figé et l'aléa conservé
+/// suffisent à le recalculer ; l'assertion signée porte ce challenge.
+#[tokio::test]
+async fn the_challenge_is_bound_to_the_frozen_body() {
+    use sqlx::Row;
+    let mut env = env!();
+    let alice = env.operator(Role::RaOperateur).await;
+    let r = env.pending_request().await;
+
+    let issued = env
+        .svc
+        .issue_challenge(Env::approve(&r), alice.id)
+        .await
+        .unwrap();
+    let row = sqlx::query(
+        "SELECT c.challenge, c.nonce, a.body_hash
+         FROM action_challenges c JOIN actions a ON a.id = c.action_id
+         WHERE c.challenge_id = $1",
+    )
+    .bind(issued.challenge_id)
+    .fetch_one(env.registry.pool())
+    .await
+    .unwrap();
+    let challenge: Vec<u8> = row.get("challenge");
+    let nonce: Vec<u8> = row.get("nonce");
+    let body_hash: Vec<u8> = row.get("body_hash");
+    assert!(!nonce.is_empty());
+    assert_eq!(
+        challenge,
+        oe_webauthn::bound_challenge(&body_hash, &nonce).to_vec(),
+        "le challenge dérive du corps figé"
+    );
+    // Ce que l'opérateur reçoit est ce même challenge.
+    assert_eq!(issued.options.public_key.challenge.as_ref(), &challenge[..]);
+
+    // Signé et exécuté : la preuve conservée porte ce challenge.
+    let assertion = env.sign(&issued);
+    env.svc
+        .execute(issued.challenge_id, &assertion)
+        .await
+        .unwrap();
+
+    // Deux actions de corps différents, deux challenges sans rapport.
+    let r2 = env.pending_request().await;
+    let issued2 = env
+        .svc
+        .issue_challenge(Env::approve(&r2), alice.id)
+        .await
+        .unwrap();
+    assert_ne!(
+        issued.options.public_key.challenge.as_ref(),
+        issued2.options.public_key.challenge.as_ref()
+    );
+}

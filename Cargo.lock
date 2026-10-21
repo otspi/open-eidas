@@ -2050,8 +2050,10 @@ dependencies = [
 name = "oe-webauthn"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "rand 0.8.8",
  "serde_json",
+ "sha2 0.10.9",
  "thiserror 2.0.20",
  "webauthn-authenticator-rs",
  "webauthn-rs",

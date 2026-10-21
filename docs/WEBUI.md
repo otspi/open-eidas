@@ -490,6 +490,19 @@ challenge ne peut donc pas être le hachage du corps, et la signature
 n'engage pas cryptographiquement sur le corps. Le schéma compense côté
 `ca-server`, et cette limite est assumée plus bas.
 
+**Révision de O7 (2026-10-21, constat A-1) : challenge lié au corps.** La
+bibliothèque tire toujours l'aléa du challenge, mais `ca-server` le remplace, dans
+les options et dans l'état de la cérémonie, par
+`SHA-256("open-eidas/action-challenge/v1" ‖ SHA-256(corps) ‖ aléa)`
+(`oe_webauthn::Verifier::start_bound_authentication`). L'aléa est conservé dans
+`action_challenges.nonce`. La signature engage donc cryptographiquement sur le
+corps figé : l'assertion ne vaut que pour cette action, et un tiers qui a le corps
+(journal chaîné) et l'aléa recalcule le challenge — `operators audit` le fait pour
+les confirmations de clés. Les challenges émis avant la migration 0011 n'ont pas
+d'aléa et restent tirés au hasard. Une clé FIDO sans écran ne montre toujours pas
+le corps à l'opérateur : ce que la signature prouve, c'est que la clé a signé le
+challenge de *ce* corps, pas que l'opérateur l'a lu.
+
 1. Le navigateur demande à `ra-console` de préparer l'action. `ra-console`
    transmet le corps demandé à `ca-server` (`POST /internal/v1/challenge`),
    par exemple `{"action":"revoke","serial":"...","reason":4,
@@ -2596,7 +2609,7 @@ preuve moins forte, assumée au §4. Elle a été propagée dans §2 (schéma),
 | T3 | Origine du certificat client mTLS de `ra-console` | Résolu : profils `internal_client`/`internal_server` émis par la CA émettrice via l'enrôlement existant, clés logicielles, 3 mois, approbation initiale au CLI (Jour 0), renouvellement périodique ; contrôle explicite de l'OID de politique et du sujet, pas seulement de la chaîne — voir §16 « Lien interne » |
 | T5 | Terminaison TLS du port interne | Résolu : dans `ca-server` lui-même, parce que le contrôle de révocation du certificat client lit sa propre table `certificates` — voir §16 « Lien interne » |
 | T2 | RP ID WebAuthn entre staging et production | Résolu : RP ID égal au nom d'hôte exact de chaque console, jamais le domaine racine (`demo.open-eidas.eu` existe sous le même domaine) ; un enregistrement par environnement, jamais recopié de staging vers prod ; `ra-console` refuse de démarrer si RP ID et origine ne concordent pas — voir §2 « Relying Party ID et environnements » |
-| O7 | Bibliothèque WebAuthn de `ca-server` | Décidé (2026-09-19) : `webauthn-rs` seul, avec le challenge tiré par la bibliothèque ; OpenSSL accepté dans le processus de la CA ; lien challenge → corps établi côté serveur et écrit au journal chaîné avant la signature — voir §4. Preuve moins forte qu'avec un challenge égal au hachage du corps, assumée |
+| O7 | Bibliothèque WebAuthn de `ca-server` | Décidé (2026-09-19), **révisé le 2026-10-21 (challenge lié au corps, voir §4)** : `webauthn-rs` seul, avec le challenge tiré par la bibliothèque ; OpenSSL accepté dans le processus de la CA ; lien challenge → corps établi côté serveur et écrit au journal chaîné avant la signature — voir §4. Preuve moins forte qu'avec un challenge égal au hachage du corps, assumée |
 | T1 | Choix et vérification de la bibliothèque | Instruit sur docs.rs et le code source (voir « Instruction de T1 ») ; reste à vérifier à l'implémentation la compatibilité de `fido_mds3_attestation_ca` (version candidate visant la 0.6 non publiée) avec la 0.5.x, et le format d'attestation produit par `SoftToken` |
 | T4 | Mise à jour des compteurs/badges ([UI-UX.md](UI-UX.md) §2.2) | Résolu : polling court sur `GET /api/v1/counters` (§5), pas de canal persistant SSE/WebSocket — voir §5 « Mise à jour des compteurs » pour la justification |
 | R1 | Exposition publique de l'enrôlement pour le flux d'identité (§11) | Résolu : pas d'exposition de `/api/v1/enroll` (reste interne), route publique séparée et étroite `/api/v1/identity/enroll` qui ne peut porter que le profil `identity_person` avec jeton obligatoire — voir §16 « Isolation réseau » |

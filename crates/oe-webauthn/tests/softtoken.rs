@@ -239,3 +239,65 @@ fn the_verifier_refuses_to_start_with_inconsistent_settings() {
     // Liste blanche vide : aucune clé ne pourrait être admise.
     assert!(matches!(trusted_models(&[]), Err(Error::NoTrustedModel)));
 }
+
+/// Décision O7 révisée (constat A-1) : le challenge d'une action est
+/// `SHA-256(domaine ‖ SHA-256(corps) ‖ aléa)`. L'authentificateur signe ce
+/// challenge-là, la vérification l'accepte, et l'aléa suffit à un tiers pour le
+/// recalculer ; un autre corps donne un autre challenge.
+#[test]
+fn a_bound_challenge_is_signed_verified_and_recomputable() {
+    let (mut authn, root) = token();
+    let v = verifier(&root, AAGUID);
+    let (options, state) = v.start_registration(Uuid::new_v4(), "alice", None).unwrap();
+    let reg = authn.do_registration(origin(), options).unwrap();
+    let key = v.finish_registration(&reg, &state).unwrap();
+
+    let body_hash = [7u8; 32];
+    let (challenge, auth_state, nonce) = v
+        .start_bound_authentication(std::slice::from_ref(&key), &body_hash)
+        .expect("challenge lié");
+    // Le challenge présenté à la clé est celui que l'on recalcule.
+    let expected = oe_webauthn::bound_challenge(&body_hash, &nonce);
+    assert_eq!(challenge.public_key.challenge.as_ref(), expected.as_slice());
+    assert_ne!(
+        oe_webauthn::bound_challenge(&[8u8; 32], &nonce),
+        expected,
+        "un autre corps, un autre challenge"
+    );
+
+    let response = authn
+        .do_authentication(origin(), challenge)
+        .expect("la clé signe");
+    // La clientDataJSON signée porte bien ce challenge.
+    let client_data: serde_json::Value =
+        serde_json::from_slice(response.response.client_data_json.as_ref()).unwrap();
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    use base64::Engine;
+    assert_eq!(
+        client_data["challenge"].as_str().unwrap(),
+        URL_SAFE_NO_PAD.encode(expected)
+    );
+    v.finish_authentication(&response, &auth_state, 0)
+        .expect("assertion valide sur le challenge lié");
+}
+
+/// Une assertion signée pour une autre action (même clé, autre corps) ne valide
+/// pas la cérémonie ouverte pour celle-ci.
+#[test]
+fn an_assertion_for_another_body_does_not_validate() {
+    let (mut authn, root) = token();
+    let v = verifier(&root, AAGUID);
+    let (options, state) = v.start_registration(Uuid::new_v4(), "alice", None).unwrap();
+    let reg = authn.do_registration(origin(), options).unwrap();
+    let key = v.finish_registration(&reg, &state).unwrap();
+
+    let (challenge_a, _state_a, _) = v
+        .start_bound_authentication(std::slice::from_ref(&key), &[1u8; 32])
+        .unwrap();
+    let (_challenge_b, state_b, _) = v
+        .start_bound_authentication(std::slice::from_ref(&key), &[2u8; 32])
+        .unwrap();
+    // L'opérateur signe l'action A ; on tente de la faire valoir pour la cérémonie B.
+    let response_a = authn.do_authentication(origin(), challenge_a).unwrap();
+    assert!(v.finish_authentication(&response_a, &state_b, 0).is_err());
+}
