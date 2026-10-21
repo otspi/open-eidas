@@ -12,7 +12,7 @@
 
 use std::process::Command;
 
-use oe_hsm::{DigestAlg, HsmError, Options, Pkcs11Token, SigningToken};
+use oe_hsm::{DigestAlg, HsmError, Options, Pkcs11Token, Scheme, SigningToken};
 use sha2::{Digest, Sha256};
 
 const MODULE_PATH: &str = "/usr/lib/softhsm/libsofthsm2.so";
@@ -142,6 +142,47 @@ fn only_a_key_born_in_the_module_is_used() {
     token
         .sign_digest(DigestAlg::Sha256, &digest)
         .expect("signature");
+
+    // RSASSA-PSS (décision du 2026-10-21) : signé par le module (CKM_RSA_PKCS_PSS),
+    // vérifié par openssl, tiers indépendant, avec sel de la longueur du condensé.
+    for alg in [DigestAlg::Sha256, DigestAlg::Sha384, DigestAlg::Sha512] {
+        let (name, hashed): (&str, Vec<u8>) = match alg {
+            DigestAlg::Sha256 => ("sha256", Sha256::digest(b"pss").to_vec()),
+            DigestAlg::Sha384 => ("sha384", sha2::Sha384::digest(b"pss").to_vec()),
+            DigestAlg::Sha512 => ("sha512", sha2::Sha512::digest(b"pss").to_vec()),
+        };
+        let signature = token.sign_digest_with(Scheme::Pss, alg, &hashed).unwrap();
+        std::fs::write(dir.join("pss.pub"), token.public_key_der().unwrap()).unwrap();
+        std::fs::write(dir.join("pss.hash"), &hashed).unwrap();
+        std::fs::write(dir.join("pss.sig"), &signature).unwrap();
+        let verify = |padding: &str| {
+            Command::new("openssl")
+                .args(["pkeyutl", "-verify", "-pubin", "-keyform", "DER", "-inkey"])
+                .arg(dir.join("pss.pub"))
+                .arg("-in")
+                .arg(dir.join("pss.hash"))
+                .arg("-sigfile")
+                .arg(dir.join("pss.sig"))
+                .args(["-pkeyopt", &format!("rsa_padding_mode:{padding}")])
+                .args(["-pkeyopt", &format!("digest:{name}")])
+                .args([
+                    "-pkeyopt",
+                    &format!("rsa_pss_saltlen:{}", alg.expected_len()),
+                ])
+                .output()
+                .unwrap()
+        };
+        let ok = verify("pss");
+        assert!(
+            ok.status.success(),
+            "{name}: {}",
+            String::from_utf8_lossy(&ok.stderr)
+        );
+        assert!(
+            !verify("pkcs1").status.success(),
+            "{name}: pas une signature PKCS#1"
+        );
+    }
 
     // Clé importée : CKA_LOCAL faux, refusée avant toute signature.
     let token = Pkcs11Token::open(&options("imported")).unwrap();
