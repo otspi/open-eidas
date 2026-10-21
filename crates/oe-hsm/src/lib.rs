@@ -91,8 +91,23 @@ impl DigestAlg {
     }
 }
 
+/// Schéma de signature RSA (PKCS#1 v2.2). Constat H-2 de l'audit du
+/// 2026-09-25 : RSASSA-PSS est l'orientation de l'ANSSI, PKCS#1 v1.5 reste
+/// admis par TS 119 312. Décision de l'association du 2026-10-21 : PSS partout.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Scheme {
+    /// RSASSA-PKCS1-v1_5 (RFC 8017 §8.2), `CKM_RSA_PKCS`.
+    #[default]
+    Pkcs1v15,
+    /// RSASSA-PSS (RFC 8017 §8.1), `CKM_RSA_PKCS_PSS`, MGF1 du même condensé,
+    /// sel de la longueur du condensé.
+    Pss,
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum HsmError {
+    #[error("hsm: schéma de signature {0:?} non pris en charge par ce signataire")]
+    UnsupportedScheme(Scheme),
     #[cfg(feature = "pkcs11")]
     #[error("hsm: ouverture du token {token_label:?} via {module_path}: {source}")]
     Open {
@@ -148,7 +163,22 @@ pub enum HsmError {
 /// Équivalent de `crypto.Signer` : signe un digest déjà calculé sans jamais
 /// exposer la clé privée.
 pub trait SigningToken {
+    /// Signe en RSASSA-PKCS1-v1_5.
     fn sign_digest(&self, alg: DigestAlg, digest: &[u8]) -> Result<Vec<u8>, HsmError>;
+
+    /// Signe selon le schéma demandé. Par défaut, seul PKCS#1 v1.5 est connu :
+    /// un signataire qui sait faire PSS redéfinit cette méthode.
+    fn sign_digest_with(
+        &self,
+        scheme: Scheme,
+        alg: DigestAlg,
+        digest: &[u8],
+    ) -> Result<Vec<u8>, HsmError> {
+        match scheme {
+            Scheme::Pkcs1v15 => self.sign_digest(alg, digest),
+            Scheme::Pss => Err(HsmError::UnsupportedScheme(scheme)),
+        }
+    }
 
     /// Clé publique correspondante, encodée SubjectPublicKeyInfo (DER).
     /// Sert à vérifier, avant de signer, que la clé du token correspond bien
@@ -178,15 +208,46 @@ pub fn verify_signature(
     digest: &[u8],
     signature: &[u8],
 ) -> Result<(), HsmError> {
+    verify_signature_with(public_key, Scheme::Pkcs1v15, alg, digest, signature)
+}
+
+/// Comme [`verify_signature`], pour le schéma donné (PKCS#1 v1.5 ou PSS).
+pub fn verify_signature_with(
+    public_key: &rsa::RsaPublicKey,
+    scheme: Scheme,
+    alg: DigestAlg,
+    digest: &[u8],
+    signature: &[u8],
+) -> Result<(), HsmError> {
     use rsa::pkcs1v15::Pkcs1v15Sign;
-    let scheme = match alg {
-        DigestAlg::Sha256 => Pkcs1v15Sign::new::<sha2::Sha256>(),
-        DigestAlg::Sha384 => Pkcs1v15Sign::new::<sha2::Sha384>(),
-        DigestAlg::Sha512 => Pkcs1v15Sign::new::<sha2::Sha512>(),
+    use rsa::pss::Pss;
+    let result = match (scheme, alg) {
+        (Scheme::Pkcs1v15, DigestAlg::Sha256) => {
+            public_key.verify(Pkcs1v15Sign::new::<sha2::Sha256>(), digest, signature)
+        }
+        (Scheme::Pkcs1v15, DigestAlg::Sha384) => {
+            public_key.verify(Pkcs1v15Sign::new::<sha2::Sha384>(), digest, signature)
+        }
+        (Scheme::Pkcs1v15, DigestAlg::Sha512) => {
+            public_key.verify(Pkcs1v15Sign::new::<sha2::Sha512>(), digest, signature)
+        }
+        (Scheme::Pss, DigestAlg::Sha256) => public_key.verify(
+            Pss::new_with_salt::<sha2::Sha256>(alg.expected_len()),
+            digest,
+            signature,
+        ),
+        (Scheme::Pss, DigestAlg::Sha384) => public_key.verify(
+            Pss::new_with_salt::<sha2::Sha384>(alg.expected_len()),
+            digest,
+            signature,
+        ),
+        (Scheme::Pss, DigestAlg::Sha512) => public_key.verify(
+            Pss::new_with_salt::<sha2::Sha512>(alg.expected_len()),
+            digest,
+            signature,
+        ),
     };
-    public_key
-        .verify(scheme, digest, signature)
-        .map_err(|_| HsmError::SignatureVerification)
+    result.map_err(|_| HsmError::SignatureVerification)
 }
 
 /// Le module signale-t-il une session perdue ou un appareil réinitialisé ?
@@ -544,12 +605,45 @@ impl Pkcs11Token {
 #[cfg(feature = "pkcs11")]
 impl Pkcs11Token {
     /// Une tentative de signature, sur la session courante.
-    fn sign_once(&self, alg: DigestAlg, digest: &[u8]) -> Result<Vec<u8>, HsmError> {
+    fn sign_once(
+        &self,
+        scheme: Scheme,
+        alg: DigestAlg,
+        digest: &[u8],
+    ) -> Result<Vec<u8>, HsmError> {
         let key = self.find_private_key()?;
-        let digest_info = alg.wrap(digest)?;
-        let signature = self
-            .session()
-            .sign(&Mechanism::RsaPkcs, key, &digest_info)?;
+        let signature = match scheme {
+            Scheme::Pkcs1v15 => {
+                let digest_info = alg.wrap(digest)?;
+                self.session()
+                    .sign(&Mechanism::RsaPkcs, key, &digest_info)?
+            }
+            Scheme::Pss => {
+                if digest.len() != alg.expected_len() {
+                    return Err(HsmError::DigestLength {
+                        alg,
+                        expected: alg.expected_len(),
+                        actual: digest.len(),
+                    });
+                }
+                // CKM_RSA_PKCS_PSS signe un condensé déjà calculé : même
+                // condensé pour le calcul, pour MGF1, sel de sa longueur.
+                use cryptoki::mechanism::rsa::{PkcsMgfType, PkcsPssParams};
+                use cryptoki::mechanism::MechanismType;
+                let (hash_alg, mgf) = match alg {
+                    DigestAlg::Sha256 => (MechanismType::SHA256, PkcsMgfType::MGF1_SHA256),
+                    DigestAlg::Sha384 => (MechanismType::SHA384, PkcsMgfType::MGF1_SHA384),
+                    DigestAlg::Sha512 => (MechanismType::SHA512, PkcsMgfType::MGF1_SHA512),
+                };
+                let params = PkcsPssParams {
+                    hash_alg,
+                    mgf,
+                    s_len: (alg.expected_len() as u64).into(),
+                };
+                self.session()
+                    .sign(&Mechanism::RsaPkcsPss(params), key, digest)?
+            }
+        };
         // Constat H-2 : jamais de signature qui ne se vérifie pas avec la clé
         // publique du token.
         if self.public_key.get().is_none() {
@@ -565,7 +659,7 @@ impl Pkcs11Token {
             .public_key
             .get()
             .expect("clé publique tout juste posée");
-        verify_signature(public_key, alg, digest, &signature)?;
+        verify_signature_with(public_key, scheme, alg, digest, &signature)?;
         Ok(signature)
     }
 }
@@ -575,7 +669,16 @@ impl SigningToken for Pkcs11Token {
     /// Signe, et se reconnecte une fois si le module a perdu la session
     /// (constat H-2).
     fn sign_digest(&self, alg: DigestAlg, digest: &[u8]) -> Result<Vec<u8>, HsmError> {
-        self.retrying(|| self.sign_once(alg, digest))
+        self.sign_digest_with(Scheme::Pkcs1v15, alg, digest)
+    }
+
+    fn sign_digest_with(
+        &self,
+        scheme: Scheme,
+        alg: DigestAlg,
+        digest: &[u8],
+    ) -> Result<Vec<u8>, HsmError> {
+        self.retrying(|| self.sign_once(scheme, alg, digest))
     }
 
     fn public_key_der(&self) -> Result<Vec<u8>, HsmError> {
@@ -615,6 +718,18 @@ impl<T: SigningToken> SigningToken for SyncToken<T> {
             .sign_digest(alg, digest)
     }
 
+    fn sign_digest_with(
+        &self,
+        scheme: Scheme,
+        alg: DigestAlg,
+        digest: &[u8],
+    ) -> Result<Vec<u8>, HsmError> {
+        self.0
+            .lock()
+            .expect("verrou de token empoisonné")
+            .sign_digest_with(scheme, alg, digest)
+    }
+
     fn public_key_der(&self) -> Result<Vec<u8>, HsmError> {
         self.0
             .lock()
@@ -629,7 +744,7 @@ impl<T: SigningToken> SigningToken for SyncToken<T> {
 /// utilisée en production : la clé privée vit en mémoire du processus.
 #[cfg(any(test, feature = "testing"))]
 pub mod testing {
-    use super::{DigestAlg, HsmError, SigningToken};
+    use super::{DigestAlg, HsmError, Scheme, SigningToken};
     use rsa::pkcs1v15::Pkcs1v15Sign;
     use rsa::{RsaPrivateKey, RsaPublicKey};
     use sha2::{Sha256, Sha384, Sha512};
@@ -661,6 +776,44 @@ pub mod testing {
     }
 
     impl SigningToken for SoftwareToken {
+        fn sign_digest_with(
+            &self,
+            scheme: Scheme,
+            alg: DigestAlg,
+            digest: &[u8],
+        ) -> Result<Vec<u8>, HsmError> {
+            if scheme == Scheme::Pkcs1v15 {
+                return self.sign_digest(alg, digest);
+            }
+            if digest.len() != alg.expected_len() {
+                return Err(HsmError::DigestLength {
+                    alg,
+                    expected: alg.expected_len(),
+                    actual: digest.len(),
+                });
+            }
+            let mut rng = rand::thread_rng();
+            let salt = alg.expected_len();
+            let signature = match alg {
+                DigestAlg::Sha256 => self.key.sign_with_rng(
+                    &mut rng,
+                    rsa::pss::Pss::new_with_salt::<Sha256>(salt),
+                    digest,
+                ),
+                DigestAlg::Sha384 => self.key.sign_with_rng(
+                    &mut rng,
+                    rsa::pss::Pss::new_with_salt::<Sha384>(salt),
+                    digest,
+                ),
+                DigestAlg::Sha512 => self.key.sign_with_rng(
+                    &mut rng,
+                    rsa::pss::Pss::new_with_salt::<Sha512>(salt),
+                    digest,
+                ),
+            };
+            signature.map_err(HsmError::SoftwareSign)
+        }
+
         fn sign_digest(&self, alg: DigestAlg, digest: &[u8]) -> Result<Vec<u8>, HsmError> {
             if digest.len() != alg.expected_len() {
                 return Err(HsmError::DigestLength {
@@ -723,6 +876,38 @@ mod tests {
     #[allow(dead_code)]
     fn the_stored_pin_is_zeroizing(t: &Pkcs11Token) -> &zeroize::Zeroizing<String> {
         &t.pin
+    }
+
+    /// RSASSA-PSS : signature logicielle et vérification d'accord, pour les
+    /// trois condensés ; une signature PSS n'est pas une signature PKCS#1 v1.5
+    /// et inversement.
+    #[test]
+    fn pss_signatures_verify_as_pss_only() {
+        use crate::testing::SoftwareToken;
+        let token = SoftwareToken::generate(2048);
+        let public = token.public_key();
+        for (alg, digest) in [
+            (DigestAlg::Sha256, Sha256::digest(b"m").to_vec()),
+            (DigestAlg::Sha384, sha2::Sha384::digest(b"m").to_vec()),
+            (DigestAlg::Sha512, sha2::Sha512::digest(b"m").to_vec()),
+        ] {
+            let pss = token.sign_digest_with(Scheme::Pss, alg, &digest).unwrap();
+            let v15 = token
+                .sign_digest_with(Scheme::Pkcs1v15, alg, &digest)
+                .unwrap();
+            verify_signature_with(&public, Scheme::Pss, alg, &digest, &pss).unwrap();
+            verify_signature_with(&public, Scheme::Pkcs1v15, alg, &digest, &v15).unwrap();
+            assert!(verify_signature_with(&public, Scheme::Pkcs1v15, alg, &digest, &pss).is_err());
+            assert!(verify_signature_with(&public, Scheme::Pss, alg, &digest, &v15).is_err());
+            // PSS est probabiliste : deux signatures du même condensé diffèrent.
+            let again = token.sign_digest_with(Scheme::Pss, alg, &digest).unwrap();
+            assert_ne!(pss, again);
+        }
+        // Un condensé de la mauvaise longueur est refusé avant toute signature.
+        assert!(matches!(
+            token.sign_digest_with(Scheme::Pss, DigestAlg::Sha256, &[0u8; 16]),
+            Err(HsmError::DigestLength { .. })
+        ));
     }
 
     #[test]
