@@ -29,13 +29,14 @@ jobs:
           --health-timeout 5s
           --health-retries 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
+          toolchain: stable
           components: clippy, rustfmt
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
 
       - name: cargo fmt --check
         run: cargo fmt --check
@@ -90,7 +91,7 @@ jobs:
       #
       # Binaire précompilé : `cargo install cargo-audit` le recompilait à
       # chaque exécution (près de 3 minutes).
-      - uses: taiki-e/install-action@v2
+      - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2
         with:
           tool: cargo-audit
 
@@ -115,13 +116,13 @@ jobs:
     name: Licences des dépendances (EUPL-1.2 / AGPL-3.0)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       # Politique dans deny.toml : licences permissives et MPL-2.0 admises,
       # tout copyleft qui ferait changer la licence du binaire refusé sauf
       # exception humaine consignée. Lancé sur toutes les fonctionnalités.
       - name: cargo deny check licenses
-        uses: EmbarkStudios/cargo-deny-action@v2
+        uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2
         with:
           command: check licenses
 
@@ -130,9 +131,11 @@ jobs:
     runs-on: ubuntu-latest
     needs: test
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
 
       # La sous-commande sort en échec si la matrice est incohérente : une
       # exigence déclarée couverte sans mécanisme ni test nommé, ou un écart
@@ -191,9 +194,9 @@ jobs:
             scope: ra-console
             version_arg: --version
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
 
       # Un cache par image (scope) : sans lui, les quatre constructions
       # écrivent dans le même cache et chacune écrase celui des autres.
@@ -209,7 +212,7 @@ jobs:
         run: echo "value=$(date -u +%Y-%m-%d)" >> "$GITHUB_OUTPUT"
 
       - name: Construit l'image (sans publication)
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: .
           file: ${{ matrix.dockerfile }}
@@ -226,7 +229,7 @@ jobs:
         run: docker run --rm ${{ matrix.pin_env && format('-e {0}=1234', matrix.pin_env) || '' }} ${{ matrix.tag }} ${{ matrix.version_arg || 'version' }}
 
       - name: Scan de vulnérabilités (Trivy)
-        uses: aquasecurity/trivy-action@v0.36.0
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           image-ref: ${{ matrix.tag }}
           format: table
@@ -270,11 +273,11 @@ jobs:
             dockerfile: deploy/ra-console/Dockerfile
             scope: ra-console
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
 
-      - uses: docker/login-action@v3
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -288,7 +291,7 @@ jobs:
         run: echo "value=$(date -u +%Y-%m-%d)" >> "$GITHUB_OUTPUT"
 
       - name: Construit et publie l'image
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: .
           file: ${{ matrix.dockerfile }}
@@ -328,7 +331,7 @@ jobs:
             echo "::warning::OPENEIDAS_DEPLOY_APP_ID absent — pin de staging ignoré. Voir README pour créer la GitHub App dédiée."
           fi
 
-      - uses: actions/create-github-app-token@v1
+      - uses: actions/create-github-app-token@d72941d797fd3113feb6b93fd0dec494b13a2547 # v1
         id: app-token
         if: steps.has-app.outputs.configured == 'true'
         with:
@@ -337,7 +340,7 @@ jobs:
           owner: otspi
           repositories: deploy
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         if: steps.has-app.outputs.configured == 'true'
         with:
           repository: otspi/deploy
@@ -414,17 +417,19 @@ jobs:
       run:
         working-directory: bin/ra-console/web
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 24
           cache: npm
           cache-dependency-path: bin/ra-console/web/package-lock.json
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
 
       - name: Dépendances de développement (jamais dans l'image)
         run: npm ci
@@ -452,7 +457,7 @@ jobs:
 
       - name: Rapport Playwright (en cas d'échec)
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: playwright-report
           path: bin/ra-console/web/playwright-report
@@ -462,7 +467,7 @@ jobs:
     name: Lint du chart Helm
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: helm lint
         run: helm lint deploy/helm/open-eidas
       - name: helm template (rendu complet)
@@ -518,9 +523,9 @@ jobs:
     needs: [build, helm-lint]
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
 
       - name: Calcule le cache-bust journalier
         id: cachebust
@@ -529,7 +534,7 @@ jobs:
       # Mêmes arguments et même cache que le job build, dont ce job dépend :
       # les trois images en sortent sans recompilation.
       - name: Construit l'image de la CA
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: .
           file: deploy/ca-server/Dockerfile
@@ -542,7 +547,7 @@ jobs:
             CACHEBUST=${{ steps.cachebust.outputs.value }}
 
       - name: Construit l'image TSA
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: .
           file: deploy/tsa/Dockerfile
@@ -555,7 +560,7 @@ jobs:
             CACHEBUST=${{ steps.cachebust.outputs.value }}
 
       - name: Construit l'image du répondeur OCSP
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: .
           file: deploy/ocsp-responder/Dockerfile
@@ -568,7 +573,7 @@ jobs:
             CACHEBUST=${{ steps.cachebust.outputs.value }}
 
       - name: Crée un cluster kind
-        uses: helm/kind-action@v1
+        uses: helm/kind-action@ef37e7f390d99f746eb8b610417061a60e82a6cc # v1
         with:
           cluster_name: open-eidas
 
@@ -710,7 +715,7 @@ jobs:
     needs: build
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Amorce la pile (CA + TSA + répondeur OCSP)
         # Les runners GitHub-hébergés ne garantissent pas de sortie UDP/123 vers

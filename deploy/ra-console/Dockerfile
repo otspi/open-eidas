@@ -1,4 +1,4 @@
-FROM rust:1-bookworm AS build
+FROM rust:1-bookworm@sha256:665b6e0a9290a7298236c08c6e4f1e754e3f0d9b70421c434daa3dfba888d63e AS build
 
 WORKDIR /src
 COPY Cargo.toml Cargo.lock ./
@@ -16,7 +16,7 @@ RUN cargo build --locked --release -p ra-console --bin ra-console \
  && rm -rf target
 
 
-FROM debian:bookworm-slim
+FROM debian:bookworm-slim@sha256:7ff6ba31527b9e336162fa061746c366c4b2032f4d2cff2078bea43f78efe3f8
 
 # Même invalidation quotidienne du cache que les autres images (CACHEBUST, voir
 # .github/workflows/ci.yml) : sans elle, `apt-get upgrade` resterait gelé.

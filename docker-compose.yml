@@ -8,7 +8,7 @@
 services:
   db:
     container_name: openeidas_db
-    image: postgres:17-alpine
+    image: postgres:17-alpine@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24
     # Dimensionné par mesure directe (voir docs/SIZING.md) : échec net
     # (OOM pendant initdb) en dessous de 32 Mio, marche fiable dès 40 Mio.
     # 64/256 laisse une marge confortable sans sur-provisionner.
