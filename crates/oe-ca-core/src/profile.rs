@@ -9,12 +9,14 @@ pub const PROFILE_TSA_SIGNER: &str = "tsa_signer";
 pub const PROFILE_OCSP_RESPONDER: &str = "ocsp_responder";
 pub const PROFILE_INTERNAL_CLIENT: &str = "internal_client";
 pub const PROFILE_INTERNAL_SERVER: &str = "internal_server";
+/// Certificat client d'enrôlement d'un demandeur (constat R-3, docs/R3-MTLS-DEMANDEURS.md).
+pub const PROFILE_ENROLL_CLIENT: &str = "enroll_client";
 
 /// Le seul nom courant que `internal_client` accepte (docs/WEBUI.md §16).
 pub use oe_conformance::INTERNAL_CLIENT_CN;
 
 pub use oe_conformance::{
-    OID_EKU_CLIENT_AUTH, OID_EKU_SERVER_AUTH, OID_POLICY_INTERNAL_CLIENT,
+    OID_EKU_CLIENT_AUTH, OID_EKU_SERVER_AUTH, OID_POLICY_ENROLL_CLIENT, OID_POLICY_INTERNAL_CLIENT,
     OID_POLICY_INTERNAL_SERVER,
 };
 
@@ -162,6 +164,34 @@ pub fn internal_client() -> Profile {
     }
 }
 
+/// Certificat client d'enrôlement : un service (TSA, répondeur OCSP) s'identifie
+/// par lui auprès du port d'enrôlement en TLS mutuel. EKU `clientAuth` seul,
+/// politique dédiée, clé logicielle donc vie courte. Le nom courant est celui du
+/// demandeur ; la CA vérifie qu'il est bien le sien (`client_cn` du fichier des
+/// demandeurs), le profil ne le fige pas.
+pub fn enroll_client() -> Profile {
+    Profile {
+        name: PROFILE_ENROLL_CLIENT,
+        label: "Open eIDAS enrollment client",
+        organizational_unit: "Enrollment Client",
+        organization: "Open eIDAS",
+        country: "FR",
+        validity: time::Duration::days(90),
+        key_usages: KeyUsages::DigitalSignature.into(),
+        eku: &[OID_EKU_CLIENT_AUTH],
+        eku_critical: true,
+        ocsp_no_check: false,
+        include_crl_distribution_point: true,
+        include_ca_issuers: true,
+        include_ocsp_responder: false,
+        required_cn: None,
+        san_dns_from_cn: false,
+        policy_oid: Some(OID_POLICY_ENROLL_CLIENT),
+        private_key_validity: None,
+        check: oe_conformance::check_enroll_client_certificate,
+    }
+}
+
 /// Certificat de `ca-server` sur le lien interne : EKU `serverAuth` seul,
 /// politique dédiée, SAN = le CN, qui doit être un nom DNS.
 pub fn internal_server() -> Profile {
@@ -232,6 +262,7 @@ pub fn profile_by_name(name: &str) -> Result<Profile, String> {
         PROFILE_OCSP_RESPONDER => Ok(ocsp_responder()),
         PROFILE_INTERNAL_CLIENT => Ok(internal_client()),
         PROFILE_INTERNAL_SERVER => Ok(internal_server()),
+        PROFILE_ENROLL_CLIENT => Ok(enroll_client()),
         other => Err(format!("ca: profil de certificat inconnu: {other:?}")),
     }
 }

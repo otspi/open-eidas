@@ -341,6 +341,15 @@ fn pem_block(label: &str, der: &[u8]) -> String {
     out
 }
 
+/// Routeur du port d'enrôlement en TLS mutuel : cette seule route, rien de ce que
+/// la CA publie par ailleurs.
+pub fn enroll_mtls_router(server: Arc<Server>, max_request_bytes: usize) -> Router {
+    Router::new()
+        .route("/api/v1/enroll", axum::routing::post(handle_enroll_mtls))
+        .layer(DefaultBodyLimit::max(max_request_bytes))
+        .with_state(server)
+}
+
 pub fn router(server: Arc<Server>, max_request_bytes: usize) -> Router {
     let ca_path = server.ca_path.clone();
     let crl_path = server.crl_path.clone();
@@ -373,6 +382,9 @@ pub fn router(server: Arc<Server>, max_request_bytes: usize) -> Router {
 struct EnrollRequest {
     profile: String,
     pkcs10: String,
+    /// HMAC de la CSR. Absent sur le port d'enrôlement en TLS mutuel, où le
+    /// certificat client identifie le demandeur.
+    #[serde(default)]
     signature: String,
 }
 
@@ -424,12 +436,35 @@ async fn handle_enroll(
         Ok(der) => der,
         Err(e) => return error_response(StatusCode::BAD_REQUEST, e),
     };
+    enroll_response(
+        server
+            .flow
+            .submit(&csr_der, &req.profile, &req.signature)
+            .await,
+    )
+}
 
-    let result = match server
-        .flow
-        .submit(&csr_der, &req.profile, &req.signature)
-        .await
-    {
+/// Enrôlement sur le port en TLS mutuel (docs/R3-MTLS-DEMANDEURS.md) : le demandeur
+/// est celui que désigne le certificat client, déjà vérifié par la couche TLS.
+async fn handle_enroll_mtls(
+    State(server): State<Arc<Server>>,
+    axum::extract::ConnectInfo(peer): axum::extract::ConnectInfo<crate::enroll_tls::EnrollPeer>,
+    Json(req): Json<EnrollRequest>,
+) -> Response {
+    let csr_der = match decode_csr(&req.pkcs10) {
+        Ok(der) => der,
+        Err(e) => return error_response(StatusCode::BAD_REQUEST, e),
+    };
+    enroll_response(
+        server
+            .flow
+            .submit_mtls(&csr_der, &req.profile, &peer.client_cn)
+            .await,
+    )
+}
+
+fn enroll_response(result: Result<oe_raflow::SubmitResult, oe_raflow::RaflowError>) -> Response {
+    let result = match result {
         Ok(r) => r,
         // Volontairement laconique : distinguer « secret faux » de « CSR
         // invalide » renseignerait un attaquant sur ce qu'il doit corriger.

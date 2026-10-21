@@ -14,7 +14,8 @@
 use std::sync::Arc;
 
 use ca_server::{
-    cli_review, config, http, internal, internal_tls, registry_check, revoker, webauthn_models,
+    cli_review, config, enroll_tls, http, internal, internal_tls, registry_check, revoker,
+    webauthn_models,
 };
 use clap::{Parser, Subcommand};
 use config::Config;
@@ -695,12 +696,30 @@ fn build_flow(
 /// TLS du lien interne : les deux fichiers ou aucun. Sans TLS, le lien reste
 /// réservé à la boucle locale ; avec, il exige le certificat client de
 /// `ra-console` (docs/WEBUI.md §16).
+/// TLS du port d'enrôlement mutuel : même certificat de serveur que le lien interne.
+fn enroll_mtls_tls(cfg: &Config, issuer: &x509_cert::Certificate) -> rustls::ServerConfig {
+    if cfg.internal_tls_cert_file.is_empty() || cfg.internal_tls_key_file.is_empty() {
+        die(
+            "port d'enrôlement mTLS",
+            "OPENEIDAS_ENROLL_MTLS_LISTEN exige OPENEIDAS_INTERNAL_TLS_CERT_FILE et OPENEIDAS_INTERNAL_TLS_KEY_FILE (certificat de serveur internal_server)",
+        );
+    }
+    let cert = std::fs::read(&cfg.internal_tls_cert_file)
+        .unwrap_or_else(|e| die("certificat du serveur TLS", e));
+    let key =
+        std::fs::read(&cfg.internal_tls_key_file).unwrap_or_else(|e| die("clé du serveur TLS", e));
+    internal_tls::server_config(issuer, &cert, &key, time::OffsetDateTime::now_utc())
+        .unwrap_or_else(|e| die("TLS du port d'enrôlement", e))
+}
+
 fn internal_link_tls(
     cfg: &Config,
     issuer: &x509_cert::Certificate,
 ) -> Option<rustls::ServerConfig> {
     if cfg.internal_listen.is_empty() {
-        if !cfg.internal_tls_cert_file.is_empty() || !cfg.internal_tls_key_file.is_empty() {
+        if cfg.enroll_mtls_listen.is_empty()
+            && (!cfg.internal_tls_cert_file.is_empty() || !cfg.internal_tls_key_file.is_empty())
+        {
             die(
                 "lien interne",
                 "OPENEIDAS_INTERNAL_TLS_* sans OPENEIDAS_INTERNAL_LISTEN : rien à protéger",
@@ -763,6 +782,7 @@ async fn run_serve() {
     };
     let internal_tls = internal_link_tls(&cfg, issuer.certificate());
     let internal_store = store.clone();
+    let enroll_store = store.clone();
     let flow = build_flow(&cfg, store.clone(), issuer.clone(), flow_recorder);
 
     let _ = audit
@@ -861,6 +881,31 @@ async fn run_serve() {
                 });
             }
         }
+    }
+
+    // Port d'enrôlement en TLS mutuel (constat R-3) : la TSA et le répondeur s'y
+    // identifient par leur certificat client `enroll_client`.
+    if !cfg.enroll_mtls_listen.is_empty() {
+        let tls = enroll_mtls_tls(&cfg, server.issuer().certificate());
+        let tcp = tokio::net::TcpListener::bind(bind_addr(&cfg.enroll_mtls_listen))
+            .await
+            .unwrap_or_else(|e| die(&format!("écoute sur {}", cfg.enroll_mtls_listen), e));
+        tracing::info!(adresse = %cfg.enroll_mtls_listen, "port d'enrôlement mTLS en écoute");
+        let listener = enroll_tls::EnrollListener::new(tcp, tls, enroll_store);
+        let app = http::enroll_mtls_router(server.clone(), cfg.max_request_bytes)
+            .into_make_service_with_connect_info::<enroll_tls::EnrollPeer>();
+        let mut stop = shutdown_rx.clone();
+        let done = async move {
+            let _ = stop.changed().await;
+        };
+        tokio::spawn(async move {
+            if let Err(e) = axum::serve(listener, app)
+                .with_graceful_shutdown(done)
+                .await
+            {
+                die("serveur d'enrôlement mTLS", e);
+            }
+        });
     }
 
     let shutdown_timeout = cfg.shutdown_timeout;

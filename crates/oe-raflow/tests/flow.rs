@@ -670,6 +670,7 @@ fn requester(
         secret: secret.to_string(),
         profiles: profiles.iter().map(|p| p.to_string()).collect(),
         subject_cn: cn.map(str::to_string),
+        ..Default::default()
     }
 }
 
@@ -795,4 +796,128 @@ async fn a_renewal_never_revokes_the_certificate_of_another_requester() {
         store.certificate(&renewed).await.unwrap().status,
         oe_castore::CertificateStatus::Issued
     );
+}
+
+/// Docs/R3-MTLS-DEMANDEURS.md : un demandeur identifié par son certificat client
+/// (nom courant déjà vérifié par la couche TLS) n'a pas besoin de secret, mais
+/// garde ses profils et son CN.
+#[tokio::test]
+async fn a_client_certificate_identifies_a_requester_without_a_secret() {
+    let (flow, _store) = test_flow_full(
+        None,
+        None,
+        "",
+        vec![oe_raflow::Requester {
+            name: "tsa".to_string(),
+            client_cn: Some("tsa-1".to_string()),
+            profiles: vec![profile::PROFILE_TSA_SIGNER.to_string()],
+            subject_cn: Some("tsu.example.test".to_string()),
+            ..Default::default()
+        }],
+    )
+    .await;
+
+    let (csr, _k) = build_csr("tsu.example.test");
+    let ok = flow
+        .submit_mtls(&csr, profile::PROFILE_TSA_SIGNER, "tsa-1")
+        .await
+        .unwrap();
+    assert_eq!(ok.state, RequestState::Pending);
+
+    // Un certificat client inconnu n'est personne.
+    let (csr2, _k) = build_csr("tsu.example.test");
+    assert!(matches!(
+        flow.submit_mtls(&csr2, profile::PROFILE_TSA_SIGNER, "inconnu")
+            .await,
+        Err(RaflowError::Unauthenticated)
+    ));
+    // Ses profils et son CN le lient encore.
+    let (csr3, _k) = build_csr("ocsp.example.test");
+    assert!(flow
+        .submit_mtls(&csr3, profile::PROFILE_OCSP_RESPONDER, "tsa-1")
+        .await
+        .is_err());
+    let (csr4, _k) = build_csr("autre.example.test");
+    assert!(flow
+        .submit_mtls(&csr4, profile::PROFILE_TSA_SIGNER, "tsa-1")
+        .await
+        .is_err());
+    // Et il n'a aucun secret : un HMAC, même vide, ne l'authentifie pas.
+    let sig = oe_raflow::signature(&csr2, "");
+    assert!(matches!(
+        flow.submit(&csr2, profile::PROFILE_TSA_SIGNER, &sig).await,
+        Err(RaflowError::Unauthenticated)
+    ));
+}
+
+/// Amorçage : le secret ne vaut qu'une fois pour un certificat client, à son
+/// nom, tant qu'il n'a pas expiré.
+#[tokio::test]
+async fn a_bootstrap_secret_opens_one_client_certificate_request() {
+    let secret = "b".repeat(40);
+    let requester = |expires: time::OffsetDateTime| oe_raflow::Requester {
+        name: "tsa".to_string(),
+        secret: secret.clone(),
+        secret_expires_at: Some(expires),
+        client_cn: Some("tsa-1".to_string()),
+        profiles: vec![profile::PROFILE_ENROLL_CLIENT.to_string()],
+        ..Default::default()
+    };
+    let (flow, _store) = test_flow_full(
+        None,
+        None,
+        "",
+        vec![requester(
+            time::OffsetDateTime::now_utc() + time::Duration::hours(24),
+        )],
+    )
+    .await;
+
+    // Le certificat client porte le nom du demandeur, et pas un autre.
+    let (wrong, _k) = build_csr("autre-nom");
+    let sig = oe_raflow::signature(&wrong, &secret);
+    assert!(flow
+        .submit(&wrong, profile::PROFILE_ENROLL_CLIENT, &sig)
+        .await
+        .is_err());
+
+    let (csr, _k) = build_csr("tsa-1");
+    let sig = oe_raflow::signature(&csr, &secret);
+    let opened = flow
+        .submit(&csr, profile::PROFILE_ENROLL_CLIENT, &sig)
+        .await
+        .unwrap();
+    assert_eq!(opened.state, RequestState::Pending);
+    // La même CSR se reprend (le demandeur attend la décision) ...
+    let again = flow
+        .submit(&csr, profile::PROFILE_ENROLL_CLIENT, &sig)
+        .await
+        .unwrap();
+    assert_eq!(again.transaction_id, opened.transaction_id);
+    // ... une autre, avec le même secret, non.
+    let (second, _k) = build_csr("tsa-1");
+    let sig2 = oe_raflow::signature(&second, &secret);
+    let err = flow
+        .submit(&second, profile::PROFILE_ENROLL_CLIENT, &sig2)
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("a déjà servi"), "{err}");
+
+    // Un secret expiré n'authentifie plus.
+    let (flow, _store) = test_flow_full(
+        None,
+        None,
+        "",
+        vec![requester(
+            time::OffsetDateTime::now_utc() - time::Duration::hours(1),
+        )],
+    )
+    .await;
+    let (csr, _k) = build_csr("tsa-1");
+    let sig = oe_raflow::signature(&csr, &secret);
+    assert!(matches!(
+        flow.submit(&csr, profile::PROFILE_ENROLL_CLIENT, &sig)
+            .await,
+        Err(RaflowError::Unauthenticated)
+    ));
 }

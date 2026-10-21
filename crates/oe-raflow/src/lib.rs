@@ -336,10 +336,18 @@ pub const LEGACY_REQUESTER: &str = "legacy";
 /// Un demandeur d'enrôlement : son secret HMAC, les profils qu'il peut demander
 /// et, optionnellement, le CN unique qu'il peut porter (constat R-3, EN 319
 /// 411-1 `REG-6.3.2-01`).
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct Requester {
     pub name: String,
+    /// Secret HMAC. Vide pour un demandeur qui ne s'authentifie que par son
+    /// certificat client (`client_cn`).
     pub secret: String,
+    /// Fin de validité du secret (amorçage à durée limitée) ; passé ce terme, il
+    /// n'authentifie plus.
+    pub secret_expires_at: Option<time::OffsetDateTime>,
+    /// Nom courant du certificat client (profil `enroll_client`) qui identifie ce
+    /// demandeur sur le port d'enrôlement en TLS mutuel (docs/R3-MTLS-DEMANDEURS.md).
+    pub client_cn: Option<String>,
     /// Noms de profils autorisés ; `*` pour tous.
     pub profiles: Vec<String>,
     /// CN imposé, `None` pour laisser la validation du profil seule juge.
@@ -410,14 +418,28 @@ impl Flow {
                 secret: opts.hmac_secret.clone(),
                 profiles: vec!["*".to_string()],
                 subject_cn: None,
+                ..Default::default()
             });
         }
         // Une PKI qui délivre à quiconque le demande n'a pas de valeur : un
         // secret partagé n'est pas une identité, mais il est le minimum.
-        if requesters.is_empty() || requesters.iter().any(|r| r.secret.is_empty()) {
+        // Un demandeur s'authentifie par un secret, un certificat client, ou les deux.
+        if requesters.is_empty()
+            || requesters
+                .iter()
+                .any(|r| r.secret.is_empty() && r.client_cn.as_deref().unwrap_or("").is_empty())
+        {
             return Err(RaflowError::Other(
                 "secret HMAC d'enrôlement non configuré (enrôlement anonyme refusé)".to_string(),
             ));
+        }
+        let mut cns = std::collections::HashSet::new();
+        for cn in requesters.iter().filter_map(|r| r.client_cn.as_deref()) {
+            if !cns.insert(cn) {
+                return Err(RaflowError::Other(format!(
+                    "le certificat client {cn:?} identifie deux demandeurs"
+                )));
+            }
         }
         if requesters.iter().any(|r| r.name.is_empty()) {
             return Err(RaflowError::Other(
@@ -478,11 +500,70 @@ impl Flow {
         profile_name: &str,
         signature_hex: &str,
     ) -> Result<SubmitResult, RaflowError> {
+        let now = self.now();
         let requester = self
             .requesters
             .iter()
-            .find(|r| verify_hmac(csr_der, &r.secret, signature_hex).is_ok())
+            .find(|r| {
+                !r.secret.is_empty()
+                    && r.secret_expires_at.is_none_or(|end| now <= end)
+                    && verify_hmac(csr_der, &r.secret, signature_hex).is_ok()
+            })
             .ok_or(RaflowError::Unauthenticated)?;
+        // Amorçage (docs/R3-MTLS-DEMANDEURS.md §3) : le secret ne vaut qu'une fois
+        // pour un certificat client ; ensuite, le demandeur s'identifie par lui.
+        if profile_name == oe_ca_core::profile::PROFILE_ENROLL_CLIENT {
+            self.ensure_bootstrap_unused(requester, csr_der).await?;
+        }
+        self.submit_as(requester, csr_der, profile_name).await
+    }
+
+    /// Soumission d'un demandeur authentifié par son **certificat client** (port
+    /// d'enrôlement en TLS mutuel) : `client_cn` est le nom courant d'un certificat
+    /// que la couche TLS a déjà vérifié (chaîne, validité, statut). Aucun HMAC.
+    pub async fn submit_mtls(
+        &self,
+        csr_der: &[u8],
+        profile_name: &str,
+        client_cn: &str,
+    ) -> Result<SubmitResult, RaflowError> {
+        let requester = self
+            .requesters
+            .iter()
+            .find(|r| r.client_cn.as_deref() == Some(client_cn))
+            .ok_or(RaflowError::Unauthenticated)?;
+        self.submit_as(requester, csr_der, profile_name).await
+    }
+
+    /// Un secret d'amorçage n'ouvre qu'une demande de certificat client : une
+    /// autre CSR `enroll_client` du même demandeur est refusée (la même CSR, elle,
+    /// se reprend, pour que le demandeur puisse attendre la décision).
+    async fn ensure_bootstrap_unused(
+        &self,
+        requester: &Requester,
+        csr_der: &[u8],
+    ) -> Result<(), RaflowError> {
+        let fp = fingerprint(csr_der);
+        let others = self.opts.store.requests(None).await?.into_iter().any(|r| {
+            r.profile == oe_ca_core::profile::PROFILE_ENROLL_CLIENT
+                && requester_key(&r.requester) == requester.name
+                && r.csr_fingerprint != fp
+                && r.state != RequestState::Rejected
+        });
+        if others {
+            return Err(RaflowError::Other(
+                "le secret d'amorçage a déjà servi à une demande de certificat client".to_string(),
+            ));
+        }
+        Ok(())
+    }
+
+    async fn submit_as(
+        &self,
+        requester: &Requester,
+        csr_der: &[u8],
+        profile_name: &str,
+    ) -> Result<SubmitResult, RaflowError> {
         let profile = oe_ca_core::profile_by_name(profile_name).map_err(RaflowError::Other)?;
         // Constat R-3 : un demandeur n'obtient que les profils qui lui sont liés.
         if !requester.allows(profile_name) {
@@ -492,7 +573,19 @@ impl Flow {
             )));
         }
         let (cn, spki_der) = parse_and_verify_csr(csr_der)?;
-        if let Some(expected) = &requester.subject_cn {
+        // Son certificat client porte son nom ; les autres profils, le CN fixé
+        // pour lui, s'il y en a un.
+        let expected_cn = if profile_name == oe_ca_core::profile::PROFILE_ENROLL_CLIENT {
+            Some(requester.client_cn.as_ref().ok_or_else(|| {
+                RaflowError::Other(format!(
+                    "le demandeur {:?} n'a pas de nom de certificat client",
+                    requester.name
+                ))
+            })?)
+        } else {
+            requester.subject_cn.as_ref()
+        };
+        if let Some(expected) = expected_cn {
             if *expected != cn {
                 return Err(RaflowError::Other(format!(
                     "le demandeur {:?} ne peut demander que le CN {expected:?}",
