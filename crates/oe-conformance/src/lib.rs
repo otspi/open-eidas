@@ -1058,8 +1058,8 @@ pub fn system_matrix() -> Matrix {
         Entry {
             requirement: Requirement { standard: "ETSI TS 119 312", version: "V2.1.1 (2026-06)", clause: "§7.3", ids: &[], title: "Algorithme de signature et fonction de hachage admis" },
             status: Status::Covered,
-            mechanism: "oe_conformance::check_signature_algorithm vérifie explicitement l'OID de signature d'un certificat contre la liste des suites admises (SHA-256/384/512 avec RSA), appelée via Profile::check à l'émission et à la re-vérification.",
-            test: "crates/oe-conformance/src/lib.rs (check_signature_algorithm_accepts_sha256_with_rsa, check_signature_algorithm_rejects_sha1)",
+            mechanism: "oe_conformance::check_signature_algorithm vérifie explicitement l'OID de signature d'un certificat contre la liste des suites admises (SHA-256/384/512 avec RSA, PKCS#1 v1.5 ou RSASSA-PSS aux seuls paramètres canoniques de la RFC 4055), appelée via Profile::check à l'émission et à la re-vérification. OPENEIDAS_RSA_SCHEME choisit le schéma des certificats, CRL, réponses OCSP et jetons ; le défaut reste PKCS#1 v1.5 (risque d'interopérabilité PSS : docs/CPS.md A.6).",
+            test: "crates/oe-conformance/src/lib.rs (check_signature_algorithm_accepts_sha256_with_rsa, check_signature_algorithm_rejects_sha1, check_signature_algorithm_id_admits_only_canonical_pss), crates/oe-ca-core/tests/issuance.rs (a_pss_hierarchy_is_verified_by_openssl), crates/oe-ocsp-core/tests/against_real_crl.rs (a_pss_responder_signs_responses_openssl_accepts), crates/oe-tsa-core/tests/end_to_end.rs (a_pss_token_is_accepted_by_openssl_and_announces_rsassa_pss)",
             in_service: ".github/workflows/ci.yml (Vérifie le certificat TSU et la CRL avec openssl)",
             target: "",
         },

@@ -25,6 +25,11 @@ fullnameOverride: ""
 # R-2 de l'audit du 2026-09-25, ETSI EN 319 411-1 GEN-6.5.5-04).
 production: false
 
+# Schéma des signatures RSA de la CA, de l'OCSP et de la TSA : `pkcs1v15` (défaut)
+# ou `pss` (RSASSA-PSS, RFC 4055, décision du 2026-10-21). Ne passer à `pss`
+# qu'après avoir validé les vérificateurs des relying parties (docs/CPS.md A.6).
+rsaScheme: pkcs1v15
+
 # Politique de tirage d'image commune à tous les composants du chart.
 imagePullPolicy: IfNotPresent
 

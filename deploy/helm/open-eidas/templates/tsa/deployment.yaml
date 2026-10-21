@@ -49,6 +49,8 @@ spec:
                   name: {{ $secretName }}
                   key: tsa-so-pin
                   optional: true
+            - name: OPENEIDAS_RSA_SCHEME
+              value: {{ .Values.rsaScheme | quote }}
             {{- if .Values.production }}
             - name: OPENEIDAS_PRODUCTION
               value: "true"

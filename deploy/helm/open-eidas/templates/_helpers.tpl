@@ -146,6 +146,8 @@ une fois pour que les deux ne puissent pas diverger sur le DSN ou les secrets.
       name: {{ .secret }}
       key: ca-issuing-so-pin
       optional: true
+- name: OPENEIDAS_RSA_SCHEME
+  value: {{ $ctx.Values.rsaScheme | quote }}
 {{- if $ctx.Values.production }}
 - name: OPENEIDAS_PRODUCTION
   value: "true"
