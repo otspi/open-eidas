@@ -428,11 +428,11 @@ pub fn check_certificate_lifetime(
     Ok(())
 }
 
-/// OID des algorithmes de signature admis par ce système. RSA/SHA-256 est le
-/// seul algorithme que `oe-hsm` sait produire à ce stade — cette liste est
-/// donc plus étroite que `internal/conformance.admittedSignatureAlgorithms`
-/// (Go), qui admet aussi ECDSA et RSA-PSS : rien ici n'a encore de moyen de
-/// les produire, les admettre serait prématuré.
+/// OID des algorithmes de signature PKCS#1 v1.5 admis par ce système. La liste
+/// est plus étroite que `internal/conformance.admittedSignatureAlgorithms`
+/// (Go), qui admet aussi ECDSA : `oe-hsm` ne sait produire que du RSA. RSA-PSS
+/// (décision du 2026-10-21) est admis à part, par ses paramètres
+/// ([`check_signature_algorithm_id`]).
 const ADMITTED_SIGNATURE_ALGORITHM_OIDS: &[&str] = &[
     "1.2.840.113549.1.1.11", // sha256WithRSAEncryption
     "1.2.840.113549.1.1.12", // sha384WithRSAEncryption
@@ -447,6 +447,35 @@ pub fn check_signature_algorithm(subject: &str, algorithm_oid: &str) -> Result<(
         return Err(format!("{subject}: algorithme de signature {algorithm_oid} refusé (SHA-1 et MD5 sont proscrits par ETSI TS 119 312)"));
     }
     Ok(())
+}
+
+/// Comme [`check_signature_algorithm`], sur l'`AlgorithmIdentifier` entier :
+/// `id-RSASSA-PSS` n'est admis qu'avec exactement les paramètres que ce système
+/// produit (SHA-256, SHA-384 ou SHA-512, MGF1 du même condensé, sel de la
+/// longueur du condensé) — pas de sel court ni de condensé faible déguisés.
+pub fn check_signature_algorithm_id(
+    subject: &str,
+    algorithm: &spki::AlgorithmIdentifierOwned,
+) -> Result<(), String> {
+    use der::Encode;
+    if algorithm.oid.to_string() != oe_hsm::OID_RSASSA_PSS {
+        return check_signature_algorithm(subject, &algorithm.oid.to_string());
+    }
+    let given = algorithm.to_der().map_err(|e| e.to_string())?;
+    for digest in [
+        oe_hsm::DigestAlg::Sha256,
+        oe_hsm::DigestAlg::Sha384,
+        oe_hsm::DigestAlg::Sha512,
+    ] {
+        let expected =
+            oe_hsm::signature_algorithm(oe_hsm::Scheme::Pss, digest).map_err(|e| e.to_string())?;
+        if expected.to_der().map_err(|e| e.to_string())? == given {
+            return Ok(());
+        }
+    }
+    Err(format!(
+        "{subject}: paramètres RSASSA-PSS non admis (condensé SHA-2, MGF1 du même condensé et sel de la longueur du condensé exigés)"
+    ))
 }
 
 fn der_date_time_to_offset_date_time(dt: der::DateTime) -> time::OffsetDateTime {
@@ -487,7 +516,7 @@ pub fn check_tsu_certificate(subject: &str, cert: &x509_cert::Certificate) -> Re
 
     const OID_TIME_STAMPING: &str = "1.3.6.1.5.5.7.3.8";
 
-    check_signature_algorithm(subject, &cert.signature_algorithm().oid.to_string())?;
+    check_signature_algorithm_id(subject, cert.signature_algorithm())?;
 
     let not_before = x509_time_to_offset_date_time(&cert.tbs_certificate().validity().not_before);
     let not_after = x509_time_to_offset_date_time(&cert.tbs_certificate().validity().not_after);
@@ -586,7 +615,7 @@ pub fn check_ocsp_responder_certificate(
     const OID_OCSP_SIGNING: &str = "1.3.6.1.5.5.7.3.9";
     const OID_OCSP_NO_CHECK: &str = "1.3.6.1.5.5.7.48.1.5";
 
-    check_signature_algorithm(subject, &cert.signature_algorithm().oid.to_string())?;
+    check_signature_algorithm_id(subject, cert.signature_algorithm())?;
 
     let not_before = x509_time_to_offset_date_time(&cert.tbs_certificate().validity().not_before);
     let not_after = x509_time_to_offset_date_time(&cert.tbs_certificate().validity().not_after);
@@ -695,7 +724,7 @@ fn check_internal_certificate(
     use der::Decode;
     use x509_cert::ext::pkix::{BasicConstraints, ExtendedKeyUsage, KeyUsage, KeyUsages};
 
-    check_signature_algorithm(subject, &cert.signature_algorithm().oid.to_string())?;
+    check_signature_algorithm_id(subject, cert.signature_algorithm())?;
 
     let not_before = x509_time_to_offset_date_time(&cert.tbs_certificate().validity().not_before);
     let not_after = x509_time_to_offset_date_time(&cert.tbs_certificate().validity().not_after);
@@ -1127,6 +1156,37 @@ mod tests {
     #[test]
     fn check_signature_algorithm_accepts_sha256_with_rsa() {
         assert!(check_signature_algorithm("t", "1.2.840.113549.1.1.11").is_ok());
+    }
+
+    /// RSA-PSS n'est admis qu'avec les paramètres que ce système produit.
+    #[test]
+    fn check_signature_algorithm_id_admits_only_canonical_pss() {
+        use der::Decode;
+        for digest in [
+            oe_hsm::DigestAlg::Sha256,
+            oe_hsm::DigestAlg::Sha384,
+            oe_hsm::DigestAlg::Sha512,
+        ] {
+            let pss = oe_hsm::signature_algorithm(oe_hsm::Scheme::Pss, digest).unwrap();
+            assert!(check_signature_algorithm_id("t", &pss).is_ok());
+        }
+        // Sel de 20 octets au lieu de 32 : refusé.
+        let mut shortsalt =
+            oe_hsm::signature_algorithm(oe_hsm::Scheme::Pss, oe_hsm::DigestAlg::Sha256).unwrap();
+        let mut bytes = der::Encode::to_der(&shortsalt.parameters.clone().unwrap()).unwrap();
+        let last = bytes.len() - 1;
+        bytes[last] = 20;
+        shortsalt.parameters = Some(der::Any::from_der(&bytes).unwrap());
+        assert!(check_signature_algorithm_id("t", &shortsalt).is_err());
+        // PKCS#1 v1.5 SHA-256 reste admis, SHA-1 non.
+        let v15 = oe_hsm::signature_algorithm(oe_hsm::Scheme::Pkcs1v15, oe_hsm::DigestAlg::Sha256)
+            .unwrap();
+        assert!(check_signature_algorithm_id("t", &v15).is_ok());
+        let sha1 = spki::AlgorithmIdentifierOwned {
+            oid: der::asn1::ObjectIdentifier::new("1.2.840.113549.1.1.5").unwrap(),
+            parameters: None,
+        };
+        assert!(check_signature_algorithm_id("t", &sha1).is_err());
     }
 
     #[test]

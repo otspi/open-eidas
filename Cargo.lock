@@ -1809,6 +1809,7 @@ dependencies = [
  "oe-ca-core",
  "oe-castore",
  "oe-hsm",
+ "spki 0.8.0",
  "time",
  "tokio",
  "x509-cert",
@@ -1869,11 +1870,13 @@ name = "oe-hsm"
 version = "0.1.0"
 dependencies = [
  "cryptoki",
+ "der 0.8.2",
  "hex",
  "oe-hsm",
  "rand 0.8.8",
  "rsa",
  "sha2 0.10.9",
+ "spki 0.8.0",
  "thiserror 2.0.20",
  "zeroize",
 ]

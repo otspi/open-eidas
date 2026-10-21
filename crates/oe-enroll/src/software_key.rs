@@ -9,7 +9,7 @@
 use std::io::Write;
 use std::path::Path;
 
-use oe_hsm::{DigestAlg, HsmError, SigningToken};
+use oe_hsm::{DigestAlg, HsmError, Scheme, SigningToken};
 use rsa::pkcs1v15::Pkcs1v15Sign;
 use rsa::pkcs8::{DecodePrivateKey, EncodePrivateKey, EncodePublicKey};
 use rsa::RsaPrivateKey;
@@ -33,6 +33,43 @@ impl SigningToken for SoftSigner {
             DigestAlg::Sha256 => self.0.sign(Pkcs1v15Sign::new::<Sha256>(), digest),
             DigestAlg::Sha384 => self.0.sign(Pkcs1v15Sign::new::<Sha384>(), digest),
             DigestAlg::Sha512 => self.0.sign(Pkcs1v15Sign::new::<Sha512>(), digest),
+        }
+        .map_err(HsmError::SoftwareSign)
+    }
+
+    fn sign_digest_with(
+        &self,
+        scheme: Scheme,
+        alg: DigestAlg,
+        digest: &[u8],
+    ) -> Result<Vec<u8>, HsmError> {
+        if scheme == Scheme::Pkcs1v15 {
+            return self.sign_digest(alg, digest);
+        }
+        if digest.len() != alg.expected_len() {
+            return Err(HsmError::DigestLength {
+                alg,
+                expected: alg.expected_len(),
+                actual: digest.len(),
+            });
+        }
+        let salt = alg.expected_len();
+        match alg {
+            DigestAlg::Sha256 => self.0.sign_with_rng(
+                &mut rand::thread_rng(),
+                rsa::pss::Pss::new_with_salt::<Sha256>(salt),
+                digest,
+            ),
+            DigestAlg::Sha384 => self.0.sign_with_rng(
+                &mut rand::thread_rng(),
+                rsa::pss::Pss::new_with_salt::<Sha384>(salt),
+                digest,
+            ),
+            DigestAlg::Sha512 => self.0.sign_with_rng(
+                &mut rand::thread_rng(),
+                rsa::pss::Pss::new_with_salt::<Sha512>(salt),
+                digest,
+            ),
         }
         .map_err(HsmError::SoftwareSign)
     }

@@ -55,6 +55,7 @@ pub async fn pki() -> Pki {
     let store = Arc::new(Memory::new());
     let issuing = Arc::new(SoftwareToken::generate(2048));
     let h = run_ceremony(CeremonyOptions {
+        scheme: oe_hsm::Scheme::Pkcs1v15,
         root_signer: Arc::new(SoftwareToken::generate(2048)),
         issuing_signer: issuing.clone(),
         root_cn: "Test Root CA".into(),

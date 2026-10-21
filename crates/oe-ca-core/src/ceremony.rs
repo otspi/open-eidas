@@ -40,6 +40,9 @@ pub struct CeremonyOptions {
     /// sans quoi rien ne permet à un tiers d'apprendre que l'émettrice a été
     /// révoquée. Même adresse publique que [`crate::Options::public_url`].
     pub public_url: String,
+    /// Schéma de signature des certificats de la hiérarchie (racine auto-
+    /// signée, émettrice) : PKCS#1 v1.5 par défaut.
+    pub scheme: oe_hsm::Scheme,
 }
 
 pub struct Hierarchy {
@@ -200,7 +203,7 @@ async fn sign_root(o: &CeremonyOptions, now: time::OffsetDateTime) -> Result<Cer
         spki,
     )
     .map_err(|e| CaError::Other(e.to_string()))?;
-    crate::signing::sign_with_token(builder, o.root_signer.as_ref(), &spki_der)
+    crate::signing::sign_with_token(builder, o.root_signer.as_ref(), &spki_der, o.scheme)
 }
 
 async fn sign_issuing(
@@ -283,7 +286,7 @@ async fn sign_issuing(
     .map_err(|e| CaError::Other(e.to_string()))?;
     // Signée par la clé de la RACINE, pas par celle de l'émettrice
     // elle-même : c'est ce qui fait d'elle une autorité subordonnée.
-    crate::signing::sign_with_token(builder, o.root_signer.as_ref(), &root_spki_der)
+    crate::signing::sign_with_token(builder, o.root_signer.as_ref(), &root_spki_der, o.scheme)
 }
 
 fn random_serial() -> Vec<u8> {

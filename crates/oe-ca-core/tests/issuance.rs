@@ -33,6 +33,7 @@ async fn run_test_ceremony(
     let issuing_signer = Arc::new(SoftwareToken::generate(2048));
 
     let hierarchy = run_ceremony(CeremonyOptions {
+        scheme: oe_hsm::Scheme::Pkcs1v15,
         root_signer: root_signer.clone(),
         issuing_signer: issuing_signer.clone(),
         root_cn: "Test Root CA".to_string(),
@@ -97,6 +98,7 @@ async fn root_revokes_the_issuing_authority_and_publishes_the_arl() {
 
     let root_authority =
         oe_ca_core::root::RootAuthority::new(oe_ca_core::root::RootAuthorityOptions {
+            scheme: oe_hsm::Scheme::Pkcs1v15,
             signer: root_signer,
             certificate: root,
             store: store.clone(),
@@ -150,6 +152,7 @@ async fn root_cannot_revoke_itself() {
     let (root_signer, _issuing_signer, root, _issuing) = run_test_ceremony(store.clone()).await;
     let root_authority =
         oe_ca_core::root::RootAuthority::new(oe_ca_core::root::RootAuthorityOptions {
+            scheme: oe_hsm::Scheme::Pkcs1v15,
             signer: root_signer,
             certificate: root,
             store: store.clone(),
@@ -169,6 +172,7 @@ async fn a_journal_failure_blocks_authority_revocation_before_the_store_is_touch
     let (root_signer, _issuing_signer, root, _issuing) = run_test_ceremony(store.clone()).await;
     let root_authority =
         oe_ca_core::root::RootAuthority::new(oe_ca_core::root::RootAuthorityOptions {
+            scheme: oe_hsm::Scheme::Pkcs1v15,
             signer: root_signer,
             certificate: root,
             store: store.clone(),
@@ -195,6 +199,7 @@ async fn ceremony_is_idempotent() {
     let (root_signer, issuing_signer, root1, issuing1) = run_test_ceremony(store.clone()).await;
 
     let hierarchy2 = run_ceremony(CeremonyOptions {
+        scheme: oe_hsm::Scheme::Pkcs1v15,
         root_signer,
         issuing_signer,
         root_cn: String::new(),
@@ -241,6 +246,7 @@ async fn ceremony_rejects_mismatched_signer_on_replay() {
 
     let other_root_signer = Arc::new(SoftwareToken::generate(2048));
     let err = run_ceremony(CeremonyOptions {
+        scheme: oe_hsm::Scheme::Pkcs1v15,
         root_signer: other_root_signer,
         issuing_signer,
         root_cn: String::new(),
@@ -646,6 +652,7 @@ async fn every_authority_decision_is_recorded() {
     let root_signer = Arc::new(SoftwareToken::generate(2048));
     let issuing_signer = Arc::new(SoftwareToken::generate(2048));
     let hierarchy = run_ceremony(CeremonyOptions {
+        scheme: oe_hsm::Scheme::Pkcs1v15,
         root_signer: root_signer.clone(),
         issuing_signer: issuing_signer.clone(),
         root_cn: "Test Root CA".to_string(),
@@ -841,6 +848,7 @@ impl oe_ca_core::Recorder for FailingRecorder {
 async fn a_journal_failure_blocks_the_ceremony_before_any_authority_is_saved() {
     let store = store();
     let err = run_ceremony(CeremonyOptions {
+        scheme: oe_hsm::Scheme::Pkcs1v15,
         root_signer: Arc::new(SoftwareToken::generate(2048)),
         issuing_signer: Arc::new(SoftwareToken::generate(2048)),
         root_cn: "Test Root CA".to_string(),
@@ -1025,6 +1033,7 @@ async fn issuer_and_root_from_ceremony(
     .unwrap();
     let root_authority =
         oe_ca_core::root::RootAuthority::new(oe_ca_core::root::RootAuthorityOptions {
+            scheme: oe_hsm::Scheme::Pkcs1v15,
             signer: root_signer,
             certificate: root.clone(),
             store: store.clone(),
@@ -1414,4 +1423,131 @@ async fn signature_algorithms_carry_explicit_null_parameters() {
         Some(&null)
     );
     assert_eq!(parsed.signature_algorithm.parameters.as_ref(), Some(&null));
+}
+
+/// RSASSA-PSS partout (décision du 2026-10-21) : racine, émettrice, certificat
+/// d'entité finale, CRL et ARL signés en PSS ; openssl, tiers indépendant,
+/// vérifie la chaîne et la révocation. Les identifiants d'algorithme portent
+/// les paramètres RSASSA-PSS canoniques.
+#[tokio::test]
+async fn a_pss_hierarchy_is_verified_by_openssl() {
+    if std::process::Command::new("openssl")
+        .arg("version")
+        .output()
+        .is_err()
+    {
+        eprintln!("openssl indisponible : test ignoré");
+        return;
+    }
+    let store = store();
+    let root_signer = Arc::new(SoftwareToken::generate(2048));
+    let issuing_signer = Arc::new(SoftwareToken::generate(2048));
+    let hierarchy = run_ceremony(CeremonyOptions {
+        scheme: oe_hsm::Scheme::Pss,
+        root_signer: root_signer.clone(),
+        issuing_signer: issuing_signer.clone(),
+        root_cn: "PSS Root CA".to_string(),
+        issuing_cn: "PSS Issuing CA".to_string(),
+        organization: "Open eIDAS Test".to_string(),
+        country: "FR".to_string(),
+        root_validity: time::Duration::days(20 * 365),
+        issuing_validity: time::Duration::days(10 * 365),
+        root_token_label: "root".to_string(),
+        root_key_label: "root-key".to_string(),
+        issuing_token_label: "issuing".to_string(),
+        issuing_key_label: "issuing-key".to_string(),
+        store: store.clone(),
+        operator: "test-operator".to_string(),
+        public_url: "https://ca.example.test".to_string(),
+        recorder: None,
+    })
+    .await
+    .unwrap();
+    let issuer = Issuer::new(Options {
+        signer: issuing_signer,
+        certificate: hierarchy.issuing.clone(),
+        chain: vec![hierarchy.root.clone()],
+        store: store.clone(),
+        public_url: "https://ca.example.test".to_string(),
+        ocsp_url: None,
+        crl_validity: time::Duration::hours(24),
+        recorder: None,
+    })
+    .unwrap()
+    .with_signature_scheme(oe_hsm::Scheme::Pss);
+
+    let key = SoftwareToken::generate(2048).public_key_der().unwrap();
+    let leaf = issuer
+        .issue(&key, "leaf.example.test", &profile::tsa_signer(), "txn-pss")
+        .await
+        .unwrap();
+    let serial = oe_ca_core::canonical_serial(leaf.tbs_certificate().serial_number());
+
+    // Les identifiants d'algorithme sont les identifiants PSS canoniques, dans
+    // le TBS comme à l'extérieur, pour chaque certificat.
+    let pss = oe_hsm::signature_algorithm(oe_hsm::Scheme::Pss, oe_hsm::DigestAlg::Sha256).unwrap();
+    for (name, cert) in [
+        ("racine", &hierarchy.root),
+        ("émettrice", &hierarchy.issuing),
+        ("entité finale", &leaf),
+    ] {
+        assert_eq!(cert.signature_algorithm(), &pss, "{name} (extérieur)");
+        assert_eq!(cert.tbs_certificate().signature(), &pss, "{name} (TBS)");
+    }
+
+    let dir = std::env::temp_dir().join(format!("oe-ca-pss-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let (root_pem, issuing_pem, leaf_pem) =
+        (dir.join("r.pem"), dir.join("i.pem"), dir.join("l.pem"));
+    write_pem(&root_pem, &hierarchy.root.to_der().unwrap());
+    write_pem(&issuing_pem, &hierarchy.issuing.to_der().unwrap());
+    write_pem(&leaf_pem, &leaf.to_der().unwrap());
+    let verify = |extra: &[&std::ffi::OsStr]| {
+        std::process::Command::new("openssl")
+            .arg("verify")
+            .args(extra)
+            .arg("-CAfile")
+            .arg(&root_pem)
+            .arg("-untrusted")
+            .arg(&issuing_pem)
+            .arg(&leaf_pem)
+            .output()
+            .unwrap()
+    };
+    let ok = verify(&[]);
+    assert!(
+        ok.status.success(),
+        "{}",
+        String::from_utf8_lossy(&ok.stderr)
+    );
+
+    // La CRL est signée en PSS et openssl l'exploite pour rejeter le révoqué.
+    issuer
+        .revoke(&serial, 1, "test-operator", "", &Via::WebAuthn)
+        .await
+        .unwrap();
+    let crl = issuer.publish_crl().await.unwrap();
+    let parsed: x509_cert::crl::CertificateList =
+        x509_cert::crl::CertificateList::from_der(&crl.der).unwrap();
+    assert_eq!(&parsed.signature_algorithm, &pss);
+    assert_eq!(&parsed.tbs_cert_list.signature, &pss);
+    let crl_pem = dir.join("c.pem");
+    write_crl_pem(&crl_pem, &crl.der);
+    let crl_flags: Vec<std::ffi::OsString> = vec![
+        "-crl_check".into(),
+        "-CRLfile".into(),
+        crl_pem.clone().into(),
+    ];
+    let refs: Vec<&std::ffi::OsStr> = crl_flags.iter().map(|s| s.as_os_str()).collect();
+    let revoked = verify(&refs);
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&revoked.stdout),
+        String::from_utf8_lossy(&revoked.stderr)
+    );
+    assert!(
+        !revoked.status.success() && text.to_lowercase().contains("revoked"),
+        "{text}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
 }

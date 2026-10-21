@@ -11,12 +11,14 @@ description = "Portage en cours (voir /home/philippe/.claude/plans/witty-hopping
 workspace = true
 
 [dependencies]
+oe-hsm = { path = "../oe-hsm", default-features = false }
 time = { version = "0.3", features = ["std"] }
 der = "0.8"
+spki = "0.8"
 x509-cert = "0.3"
 
 [dev-dependencies]
 oe-ca-core = { path = "../oe-ca-core" }
 oe-castore = { path = "../oe-castore" }
-oe-hsm = { path = "../oe-hsm", features = ["testing"] }
+oe-hsm = { path = "../oe-hsm", default-features = false, features = ["testing"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }

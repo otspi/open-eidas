@@ -182,6 +182,9 @@ pub const ALLOWED_REVOCATION_REASONS: [i32; 5] = [1, 3, 4, 5, 9];
 
 pub struct Issuer {
     opts: Options,
+    /// Schéma de signature des certificats et des CRL (PKCS#1 v1.5 par défaut,
+    /// PSS par décision du 2026-10-21) ; voir [`Issuer::with_signature_scheme`].
+    scheme: oe_hsm::Scheme,
 }
 
 impl Issuer {
@@ -192,7 +195,18 @@ impl Issuer {
             .subject_public_key_info()
             .to_der()?;
         matches_signer(&cert_spki_der, opts.signer.as_ref())?;
-        Ok(Issuer { opts })
+        Ok(Issuer {
+            opts,
+            scheme: oe_hsm::Scheme::Pkcs1v15,
+        })
+    }
+
+    /// Schéma de signature des certificats et des CRL émis ensuite. Les
+    /// certificats déjà émis, et ceux de la hiérarchie (racine, émettrice),
+    /// gardent le leur.
+    pub fn with_signature_scheme(mut self, scheme: oe_hsm::Scheme) -> Issuer {
+        self.scheme = scheme;
+        self
     }
 
     /// Bloquant : un journal qui n'a pas pu être écrit (par ex. le stockage
@@ -335,7 +349,12 @@ impl Issuer {
             subject_spki,
         )
         .map_err(|e| CaError::Other(e.to_string()))?;
-        let cert = signing::sign_with_token(builder, self.opts.signer.as_ref(), &issuer_spki_der)?;
+        let cert = signing::sign_with_token(
+            builder,
+            self.opts.signer.as_ref(),
+            &issuer_spki_der,
+            self.scheme,
+        )?;
 
         // Relit et re-contrôle le certificat réellement signé selon les
         // règles ETSI propres à son profil, avant tout enregistrement —
@@ -548,7 +567,12 @@ impl Issuer {
             revoked_certificates,
             crl_extensions: Some(crl_extensions),
         };
-        let crl = signing::sign_crl(tbs, self.opts.signer.as_ref(), &issuer_spki_der)?;
+        let crl = signing::sign_crl(
+            tbs,
+            self.opts.signer.as_ref(),
+            &issuer_spki_der,
+            self.scheme,
+        )?;
         let der = crl.to_der()?;
 
         let record = oe_castore::Crl {

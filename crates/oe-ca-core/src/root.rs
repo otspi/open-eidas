@@ -22,6 +22,8 @@ pub struct RootAuthorityOptions {
     pub store: Arc<dyn Store>,
     pub arl_validity: time::Duration,
     pub recorder: Option<Arc<dyn Recorder>>,
+    /// Schéma de signature de l'ARL (constat C-1) ; PKCS#1 v1.5 par défaut.
+    pub scheme: oe_hsm::Scheme,
 }
 
 /// Porte les deux seuls actes que la racine effectue après la cérémonie :
@@ -159,7 +161,12 @@ impl RootAuthority {
             revoked_certificates,
             crl_extensions: Some(arl_extensions),
         };
-        let arl = signing::sign_crl(tbs, self.opts.signer.as_ref(), &issuer_spki_der)?;
+        let arl = signing::sign_crl(
+            tbs,
+            self.opts.signer.as_ref(),
+            &issuer_spki_der,
+            self.opts.scheme,
+        )?;
         let der = arl.to_der()?;
 
         let record = Arl {

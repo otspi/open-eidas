@@ -15,17 +15,11 @@ use std::time::Duration;
 use der::asn1::{BitString, SetOfVec};
 use der::{Decode, Encode};
 use hmac::{Hmac, Mac};
-use oe_hsm::{DigestAlg, SigningToken};
+use oe_hsm::{DigestAlg, Scheme, SigningToken};
 use sha2::{Digest, Sha256};
-use spki::AlgorithmIdentifierOwned;
 use x509_cert::name::Name;
 use x509_cert::request::{CertReq, CertReqInfo};
 use x509_cert::{Certificate, SubjectPublicKeyInfo};
-
-/// OID `sha256WithRSAEncryption` (1.2.840.113549.1.1.11) — signature X.509
-/// combinant hachage et padding en un seul identifiant, à la différence de
-/// la convention CMS (`oe_rfc3161_asn1::token`, qui sépare les deux).
-const OID_SHA256_WITH_RSA: &str = "1.2.840.113549.1.1.11";
 
 pub struct Options {
     /// URL complète de l'API d'enrôlement de la CA, par ex.
@@ -298,6 +292,16 @@ pub fn build_csr(
     signer: &dyn SigningToken,
     subject: &Subject,
 ) -> Result<(Vec<u8>, String), EnrollError> {
+    build_csr_with(signer, subject, Scheme::Pkcs1v15)
+}
+
+/// Comme [`build_csr`], avec le schéma de signature choisi : RSASSA-PSS
+/// (RFC 4055, paramètres canoniques) ou PKCS#1 v1.5.
+pub fn build_csr_with(
+    signer: &dyn SigningToken,
+    subject: &Subject,
+    scheme: Scheme,
+) -> Result<(Vec<u8>, String), EnrollError> {
     let name: Name = escape_common_name(&subject.common_name)
         .parse()
         .map_err(EnrollError::Csr)?;
@@ -312,17 +316,11 @@ pub fn build_csr(
     };
     let info_der = info.to_der()?;
     let digest = Sha256::digest(&info_der);
-    let signature = signer.sign_digest(DigestAlg::Sha256, &digest)?;
+    let signature = signer.sign_digest_with(scheme, DigestAlg::Sha256, &digest)?;
 
     let req = CertReq {
         info,
-        algorithm: AlgorithmIdentifierOwned {
-            oid: der::asn1::ObjectIdentifier::new(OID_SHA256_WITH_RSA)
-                .expect("OID constant invalide"),
-            // RFC 4055 §5 : sha256WithRSAEncryption porte des paramètres NULL à
-            // l\'émission (constat C-5) ; l\'absence reste tolérée à la lecture.
-            parameters: Some(der::asn1::Null.into()),
-        },
+        algorithm: oe_hsm::signature_algorithm(scheme, DigestAlg::Sha256)?,
         signature: BitString::from_bytes(&signature)?,
     };
     let der = req.to_der()?;

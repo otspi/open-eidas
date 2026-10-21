@@ -21,7 +21,6 @@ use std::sync::RwLock;
 use std::time::Duration;
 
 use der::{Decode, Encode};
-use rsa::pkcs1v15::Pkcs1v15Sign;
 use rsa::pkcs8::DecodePublicKey;
 use rsa::RsaPublicKey;
 use sha2::{Digest as _, Sha256};
@@ -36,8 +35,6 @@ use crate::asn1::{
     BasicOcspResponse, CertStatus, OcspRequest, OcspResponse, OcspResponseStatus, ResponderId,
     ResponseBytes, ResponseData, RevokedInfo, SingleResponse,
 };
-
-const OID_SHA256_WITH_RSA: &str = "1.2.840.113549.1.1.11";
 
 #[derive(Debug, thiserror::Error)]
 pub enum OcspError {
@@ -143,6 +140,9 @@ pub struct Responder {
     /// au hasard déclencherait un fetch HTTP et une vérification de
     /// signature à chaque requête (déni de service).
     last_on_demand_refresh: std::sync::Mutex<Option<std::time::Instant>>,
+    /// Schéma de signature des réponses (PKCS#1 v1.5 par défaut, PSS par
+    /// décision du 2026-10-21) ; voir [`Responder::with_signature_scheme`].
+    scheme: oe_hsm::Scheme,
 }
 
 /// Délai minimal entre deux rafraîchissements à la volée, quel que soit le
@@ -188,7 +188,14 @@ impl Responder {
             http,
             snapshot: RwLock::new(CrlSnapshot::default()),
             last_on_demand_refresh: std::sync::Mutex::new(None),
+            scheme: oe_hsm::Scheme::Pkcs1v15,
         })
+    }
+
+    /// Schéma de signature des réponses émises ensuite.
+    pub fn with_signature_scheme(mut self, scheme: oe_hsm::Scheme) -> Responder {
+        self.scheme = scheme;
+        self
     }
 
     /// Tente un rafraîchissement à la volée, borné par
@@ -451,17 +458,17 @@ impl Responder {
         };
         let tbs_der = tbs.to_der()?;
         let digest = Sha256::digest(&tbs_der);
-        let signature = self.opts.signer.sign_digest(DigestAlg::Sha256, &digest)?;
+        let signature =
+            self.opts
+                .signer
+                .sign_digest_with(self.scheme, DigestAlg::Sha256, &digest)?;
 
         let basic = BasicOcspResponse {
             tbs_response_data: tbs,
-            signature_algorithm: AlgorithmIdentifierOwned {
-                oid: der::asn1::ObjectIdentifier::new(OID_SHA256_WITH_RSA)
-                    .expect("OID constant invalide"),
-                // RFC 4055 §5 : sha256WithRSAEncryption porte des paramètres NULL à
-                // l\'émission (constat C-5) ; l\'absence reste tolérée à la lecture.
-                parameters: Some(der::asn1::Null.into()),
-            },
+            // RFC 4055 : NULL pour PKCS#1 v1.5 (constat C-5), RSASSA-PSS-params pour
+            // PSS (décision du 2026-10-21).
+            signature_algorithm: oe_hsm::signature_algorithm(self.scheme, DigestAlg::Sha256)
+                .map_err(OcspError::Signing)?,
             signature: der::asn1::BitString::from_bytes(&signature)?,
             certs: Some(vec![self.opts.certificate.clone()]),
         };
@@ -607,14 +614,22 @@ fn verify_crl_signature(
         .map_err(|e| e.to_string())?;
     let public_key = RsaPublicKey::from_public_key_der(&spki_der).map_err(|e| e.to_string())?;
     let tbs_der = crl.tbs_cert_list.to_der().map_err(|e| e.to_string())?;
-    let digest = Sha256::digest(&tbs_der);
-    public_key
-        .verify(
-            Pkcs1v15Sign::new::<Sha256>(),
-            &digest,
-            crl.signature.raw_bytes(),
+    // Le schéma et le condensé sont ceux que la CRL déclare, s'ils sont admis
+    // (PKCS#1 v1.5 ou RSASSA-PSS, SHA-2) : SHA-1 et le reste sont refusés.
+    let (scheme, alg) = oe_hsm::scheme_of(&crl.signature_algorithm).ok_or_else(|| {
+        format!(
+            "algorithme de signature de la CRL non admis : {}",
+            crl.signature_algorithm.oid
         )
-        .map_err(|e| e.to_string())
+    })?;
+    oe_hsm::verify_signature_with(
+        &public_key,
+        scheme,
+        alg,
+        &alg.hash(&tbs_der),
+        crl.signature.raw_bytes(),
+    )
+    .map_err(|e| e.to_string())
 }
 
 /// Empreintes du nom et de la clé publique de l'émetteur, avec l'algorithme
