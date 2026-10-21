@@ -120,6 +120,21 @@ async fn shed_load(
     }
 }
 
+/// La signature (journal, jeton, PKCS#11) bloque : elle passe par le pool des
+/// tâches bloquantes, pas par un thread du runtime asynchrone qui servirait les
+/// autres connexions (`/healthz`, délestage) pendant ce temps.
+async fn sign_blocking(authority: &Arc<Authority>, req_der: Vec<u8>) -> Result<Vec<u8>, TsaError> {
+    let authority = authority.clone();
+    tokio::task::spawn_blocking(move || authority.timestamp(&req_der))
+        .await
+        .unwrap_or_else(|e| {
+            tracing::error!(erreur = %e, "tâche de signature interrompue");
+            Err(TsaError::Other(
+                "tâche de signature interrompue".to_string(),
+            ))
+        })
+}
+
 async fn handle_rfc3161(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -134,7 +149,7 @@ async fn handle_rfc3161(
         return timestamp_rejection_response(FailureInfo::BadDataFormat, StatusCode::OK);
     }
 
-    match state.authority.timestamp(&body) {
+    match sign_blocking(&state.authority, body.to_vec()).await {
         Ok(resp_der) => (
             StatusCode::OK,
             [(header::CONTENT_TYPE, MIME_REPLY)],
@@ -251,7 +266,7 @@ async fn handle_json(State(state): State<AppState>, body: Bytes) -> Response {
         }
     };
 
-    match state.authority.timestamp(&req_der) {
+    match sign_blocking(&state.authority, req_der).await {
         Ok(resp_der) => {
             use base64::Engine;
             let token = base64::engine::general_purpose::STANDARD.encode(&resp_der);

@@ -394,13 +394,22 @@ async fn the_json_facade_reports_the_gen_time_of_the_token() {
 
 /// Un journal lent : chaque jeton occupe sa place de signature assez longtemps
 /// pour qu'une seconde requête arrive pendant ce temps.
-struct SlowRecorder(Arc<std::sync::atomic::AtomicBool>);
+struct SlowRecorder {
+    entered: Arc<std::sync::atomic::AtomicBool>,
+    /// Le journal ne rend la main qu'à réception d'un feu vert du test : la place de
+    /// signature est tenue exactement aussi longtemps qu'il le faut, sans parier sur
+    /// un délai.
+    release: std::sync::Mutex<std::sync::mpsc::Receiver<()>>,
+}
 impl oe_tsa_core::Recorder for SlowRecorder {
     fn append(&self, _event: &str, _data: serde_json::Value) -> Result<(), String> {
-        // Signale que la place est prise, puis la garde assez longtemps.
-        self.0.store(true, std::sync::atomic::Ordering::SeqCst);
-        std::thread::sleep(std::time::Duration::from_millis(1500));
-        Ok(())
+        self.entered
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        self.release
+            .lock()
+            .unwrap()
+            .recv_timeout(std::time::Duration::from_secs(30))
+            .map_err(|e| format!("feu vert du test jamais donné : {e}"))
     }
 }
 
@@ -410,6 +419,7 @@ impl oe_tsa_core::Recorder for SlowRecorder {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_saturated_service_sheds_signing_requests_but_not_health() {
     let entered = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let (release, gate) = std::sync::mpsc::channel::<()>();
     let time_source = oe_timesource::Monitor::new(oe_timesource::Options {
         policy: oe_timesource::Policy::Disabled,
         ..Default::default()
@@ -418,7 +428,10 @@ async fn a_saturated_service_sheds_signing_requests_but_not_health() {
     let app = oe_httpapi::router(oe_httpapi::Options {
         authority: load_authority_full(
             Arc::new(FixedClock),
-            Some(Arc::new(SlowRecorder(entered.clone()))),
+            Some(Arc::new(SlowRecorder {
+                entered: entered.clone(),
+                release: std::sync::Mutex::new(gate),
+            })),
         ),
         time_source,
         max_request_bytes: 64 * 1024,
@@ -461,7 +474,9 @@ async fn a_saturated_service_sheds_signing_requests_but_not_health() {
         .unwrap();
     assert_eq!(health.status(), 200, "healthz ne doit jamais être délesté");
 
+    // On libère la première requête : elle aboutit, et la place se libère.
+    release.send(()).unwrap();
     assert_eq!(first.await.unwrap().status(), 200);
-    // La place s'est libérée.
+    release.send(()).unwrap();
     assert_eq!(post(client).await.status(), 200);
 }
