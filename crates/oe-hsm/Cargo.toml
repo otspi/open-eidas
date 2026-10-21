@@ -28,6 +28,8 @@ sha2 = { version = "0.10", features = ["oid"] }
 thiserror = "2"
 rsa = "0.9"
 rand = "0.8"
+# Effacement du PIN gardé pour rouvrir la session (constat H-3).
+zeroize = "1"
 
 [dev-dependencies]
 hex = "0.4"
