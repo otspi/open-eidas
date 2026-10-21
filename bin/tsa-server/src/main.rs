@@ -246,7 +246,8 @@ async fn run_serve() {
             policy,
             accuracy: cfg.accuracy,
             signing_digest: digest_alg_from_config(cfg.signing_digest),
-            signature_scheme: oe_hsm::Scheme::Pkcs1v15,
+            signature_scheme: oe_hsm::Scheme::from_env()
+                .unwrap_or_else(|e| die("schéma de signature", e)),
             clock: Arc::new(MonitorClock(monitor.clone())),
             recorder: Some(tsa_recorder),
         })

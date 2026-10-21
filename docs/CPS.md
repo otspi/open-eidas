@@ -217,6 +217,15 @@ décider par l'association.]`
 
 ### A.6 Contrôles techniques de sécurité
 
+> **Risque d'interopérabilité de RSASSA-PSS.** Des vérificateurs anciens ne
+> savent pas valider un `SignerInfo` ou un certificat PSS : l'ancienne API
+> PKCS7 d'OpenSSL (`openssl ts -verify`) échoue, et seul `openssl cms -verify`
+> convient. Le schéma par défaut reste donc PKCS#1 v1.5 tant que les
+> vérificateurs des parties utilisatrices n'ont pas été validés ; le passage à
+> PSS se décide par `OPENEIDAS_RSA_SCHEME=pss` (décision de l'association du
+> 2026-10-21 : PSS partout). Les certificats déjà émis conservent leur schéma
+> jusqu'à réémission.
+
 Section presque entièrement factuelle — reprise directement de ce que le
 code applique et vérifie automatiquement (`oe_conformance`) :
 
@@ -226,6 +235,7 @@ code applique et vérifie automatiquement (`oe_conformance`) :
 | Taille de clé — autorités | RSA ≥ 3072 bits (4096 par défaut) | `OPENEIDAS_CA_KEY_BITS`, validé à la configuration (`bin/ca-server/src/config.rs`) |
 | Taille de clé — TSU / OCSP | RSA ≥ 3072 bits | `oe_raflow::parse_and_verify_csr`, appliqué à la CSR soumise à l'enrôlement |
 | Algorithmes de signature admis | SHA-256/384/512 avec RSA ; SHA-1, MD5 et ECDSA explicitement refusés (implémentation actuelle : RSA uniquement, côté génération de clé comme côté vérification) | `oe_conformance::check_signature_algorithm` |
+| Schéma de signature RSA | RSASSA-PSS (RFC 4055, SHA-256, MGF1-SHA-256, sel de 32 octets) ou PKCS#1 v1.5, selon `OPENEIDAS_RSA_SCHEME` ; l'identifiant d'algorithme est refusé s'il n'est pas canonique | `oe_hsm::signature_algorithm`, `oe_conformance::check_signature_algorithm_id` |
 | Protection de l'activation de la clé | PIN du token PKCS#11 | `oe_hsm` |
 | Durée de vie — racine | ~20 ans | `OPENEIDAS_ROOT_VALIDITY` |
 | Durée de vie — CA émettrice | ~10 ans, jamais au-delà de l'expiration de la racine | `OPENEIDAS_ISSUING_VALIDITY` |

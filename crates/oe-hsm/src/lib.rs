@@ -104,6 +104,35 @@ pub enum Scheme {
     Pss,
 }
 
+/// Variable d'environnement qui choisit le schéma de signature RSA de tous les
+/// services (CA, OCSP, TSA) : `pss` ou `pkcs1v15` (défaut).
+pub const ENV_RSA_SCHEME: &str = "OPENEIDAS_RSA_SCHEME";
+
+impl std::str::FromStr for Scheme {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Scheme, String> {
+        match s.trim().to_lowercase().as_str() {
+            "pkcs1v15" | "pkcs1" | "pkcs1-v1_5" => Ok(Scheme::Pkcs1v15),
+            "pss" | "rsassa-pss" => Ok(Scheme::Pss),
+            other => Err(format!(
+                "{ENV_RSA_SCHEME}={other:?} : « pss » ou « pkcs1v15 » attendu"
+            )),
+        }
+    }
+}
+
+impl Scheme {
+    /// Lit [`ENV_RSA_SCHEME`] ; `pkcs1v15` quand elle est absente ou vide, le
+    /// temps que PSS soit validé face aux vérificateurs de la production.
+    pub fn from_env() -> Result<Scheme, String> {
+        match std::env::var(ENV_RSA_SCHEME) {
+            Ok(v) if !v.trim().is_empty() => v.parse(),
+            _ => Ok(Scheme::Pkcs1v15),
+        }
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum HsmError {
     #[error("hsm: schéma de signature {0:?} non pris en charge par ce signataire")]
@@ -1016,6 +1045,15 @@ mod tests {
     #[allow(dead_code)]
     fn the_stored_pin_is_zeroizing(t: &Pkcs11Token) -> &zeroize::Zeroizing<String> {
         &t.pin
+    }
+
+    #[test]
+    fn the_scheme_names_are_parsed_and_unknown_ones_refused() {
+        assert_eq!("pss".parse::<Scheme>().unwrap(), Scheme::Pss);
+        assert_eq!(" PSS ".parse::<Scheme>().unwrap(), Scheme::Pss);
+        assert_eq!("pkcs1v15".parse::<Scheme>().unwrap(), Scheme::Pkcs1v15);
+        assert!("sha1".parse::<Scheme>().is_err());
+        assert!("".parse::<Scheme>().is_err());
     }
 
     /// RSASSA-PSS : signature logicielle et vérification d'accord, pour les

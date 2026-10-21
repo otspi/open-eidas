@@ -239,7 +239,10 @@ async fn run_serve() {
             max_request_bytes: cfg.max_request_bytes,
             http_client: Some(http_client),
         })
-        .unwrap_or_else(|e| die("construction du répondeur", e)),
+        .unwrap_or_else(|e| die("construction du répondeur", e))
+        .with_signature_scheme(
+            oe_hsm::Scheme::from_env().unwrap_or_else(|e| die("schéma de signature", e)),
+        ),
     );
     responder
         .refresh()
