@@ -4,6 +4,7 @@
 
 pub mod cli_review;
 pub mod config;
+pub mod enroll_tls;
 pub mod http;
 pub mod internal;
 pub mod internal_tls;

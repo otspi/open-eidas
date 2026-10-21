@@ -77,6 +77,9 @@ pub struct Config {
     /// Adresse du lien interne (`/internal/v1/*`, docs/WEBUI.md §17). Vide :
     /// pas de lien interne, `ca-server` ne sert que le port public.
     pub internal_listen: String,
+    /// Port d'enrôlement en TLS mutuel (constat R-3) ; vide = désactivé. Réutilise le
+    /// certificat et la clé TLS du lien interne (`OPENEIDAS_INTERNAL_TLS_*`).
+    pub enroll_mtls_listen: String,
     /// Paramètres WebAuthn, obligatoires dès que le lien interne est ouvert.
     pub webauthn_rp_id: String,
     pub webauthn_origin: String,
@@ -369,6 +372,7 @@ impl Config {
                 Duration::from_secs(15),
             )?,
             internal_listen: env_str("OPENEIDAS_INTERNAL_LISTEN", ""),
+            enroll_mtls_listen: env_str("OPENEIDAS_ENROLL_MTLS_LISTEN", ""),
             webauthn_rp_id: env_str("OPENEIDAS_WEBAUTHN_RP_ID", ""),
             webauthn_origin: env_str("OPENEIDAS_WEBAUTHN_ORIGIN", ""),
             webauthn_rp_name: env_str("OPENEIDAS_WEBAUTHN_RP_NAME", "Open eIDAS Console"),
@@ -387,7 +391,15 @@ impl Config {
 #[derive(serde::Deserialize)]
 struct RequesterEntry {
     name: String,
+    /// Absent pour un demandeur qui ne s'authentifie que par son certificat client.
+    #[serde(default)]
     secret: String,
+    /// RFC 3339 : fin de validité du secret (amorçage à durée limitée).
+    #[serde(default)]
+    secret_expires_at: Option<String>,
+    /// Nom courant du certificat client `enroll_client` de ce demandeur.
+    #[serde(default)]
+    client_cn: Option<String>,
     profiles: Vec<String>,
     #[serde(default)]
     subject_cn: Option<String>,
@@ -420,12 +432,27 @@ pub fn load_requesters(path: &str) -> Result<Vec<oe_raflow::Requester>, String> 
         if !seen.insert(e.name.clone()) {
             return Err(format!("demandeur {:?} déclaré deux fois", e.name));
         }
-        if e.secret.len() < MIN_REQUESTER_SECRET {
+        let client_cn = e.client_cn.filter(|c| !c.is_empty());
+        if e.secret.is_empty() && client_cn.is_none() {
+            return Err(format!(
+                "demandeur {:?} : ni secret ni client_cn, rien ne l'authentifie",
+                e.name
+            ));
+        }
+        if !e.secret.is_empty() && e.secret.len() < MIN_REQUESTER_SECRET {
             return Err(format!(
                 "demandeur {:?} : secret de moins de {MIN_REQUESTER_SECRET} caractères",
                 e.name
             ));
         }
+        let secret_expires_at = e
+            .secret_expires_at
+            .as_deref()
+            .map(|t| {
+                time::OffsetDateTime::parse(t, &time::format_description::well_known::Rfc3339)
+                    .map_err(|err| format!("demandeur {:?} : secret_expires_at : {err}", e.name))
+            })
+            .transpose()?;
         if e.profiles.is_empty() {
             return Err(format!("demandeur {:?} : aucun profil autorisé", e.name));
         }
@@ -438,6 +465,8 @@ pub fn load_requesters(path: &str) -> Result<Vec<oe_raflow::Requester>, String> 
         out.push(oe_raflow::Requester {
             name: e.name,
             secret: e.secret,
+            secret_expires_at,
+            client_cn,
             profiles: e.profiles,
             subject_cn: e.subject_cn,
         });
@@ -468,6 +497,28 @@ mod requesters_tests {
         let r = load_requesters(&ok).unwrap();
         assert_eq!(r.len(), 1);
         assert_eq!(r[0].subject_cn.as_deref(), Some("tsu.example"));
+    }
+
+    #[test]
+    fn a_client_certificate_only_requester_and_a_bootstrap_expiry_are_read() {
+        let ok = file(
+            r#"[
+              {"name":"tsa","client_cn":"tsa-1","profiles":["tsa_signer","enroll_client"]},
+              {"name":"ocsp","client_cn":"ocsp-1","secret":"0123456789abcdef0123456789abcdef",
+               "secret_expires_at":"2030-01-01T00:00:00Z","profiles":["enroll_client"]}
+            ]"#,
+        );
+        let r = load_requesters(&ok).unwrap();
+        assert_eq!(r[0].client_cn.as_deref(), Some("tsa-1"));
+        assert!(r[0].secret.is_empty());
+        assert_eq!(r[1].secret_expires_at.unwrap().year(), 2030);
+        // Ni secret ni certificat client : rien n'authentifie, refusé.
+        assert!(load_requesters(&file(r#"[{"name":"a","profiles":["tsa_signer"]}]"#)).is_err());
+        // Date d'expiration illisible.
+        assert!(load_requesters(&file(&format!(
+            r#"[{{"name":"a","secret":"{SECRET}","secret_expires_at":"demain","profiles":["*"]}}]"#
+        )))
+        .is_err());
     }
 
     #[test]

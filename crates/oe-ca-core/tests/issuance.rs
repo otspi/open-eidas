@@ -770,6 +770,41 @@ async fn internal_client_only_accepts_its_fixed_common_name() {
     assert!(oe_conformance::dns_names(&cert).is_empty());
 }
 
+/// Constat R-3 : le certificat client d'enrôlement porte sa politique dédiée,
+/// `clientAuth` seul, et n'est ni un certificat du lien interne ni de TSU.
+#[tokio::test]
+async fn enroll_client_carries_its_own_policy_and_client_auth_only() {
+    let store = store();
+    let (issuer, _) = issuer_from_ceremony(store.clone()).await;
+    let p = profile::enroll_client();
+
+    let cert = issuer
+        .issue(&public_key(), "tsa-1", &p, "txn-e")
+        .await
+        .expect("le CN du demandeur est admis");
+    oe_conformance::check_enroll_client_certificate("client", &cert).unwrap();
+    assert!(oe_conformance::has_certificate_policy(
+        &cert,
+        oe_conformance::OID_POLICY_ENROLL_CLIENT
+    ));
+    // Il ne passe ni pour un certificat du lien interne, ni l'inverse.
+    assert!(oe_conformance::check_internal_client_certificate("client", &cert).is_err());
+    let internal = issuer
+        .issue(
+            &public_key(),
+            "ra-console",
+            &profile::internal_client(),
+            "txn-i",
+        )
+        .await
+        .unwrap();
+    assert!(oe_conformance::check_enroll_client_certificate("client", &internal).is_err());
+    assert_eq!(
+        profile::profile_by_name("enroll_client").unwrap().name,
+        "enroll_client"
+    );
+}
+
 #[tokio::test]
 async fn internal_server_takes_its_san_from_a_dns_common_name() {
     let store = store();

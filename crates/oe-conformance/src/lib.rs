@@ -669,6 +669,10 @@ pub fn check_ocsp_responder_certificate(
 /// et à faire approuver par le CPC.
 pub const OID_POLICY_INTERNAL_CLIENT: &str = "1.3.6.1.4.1.67027.2.9.1";
 pub const OID_POLICY_INTERNAL_SERVER: &str = "1.3.6.1.4.1.67027.2.9.2";
+/// Politique des certificats clients d'enrôlement (constat R-3, docs/R3-MTLS-DEMANDEURS.md) :
+/// un service s'identifie auprès de la CA par ce certificat, jamais par un secret
+/// partagé. Même branche `2.9` que les certificats internes.
+pub const OID_POLICY_ENROLL_CLIENT: &str = "1.3.6.1.4.1.67027.2.9.3";
 /// Extension privée de la CRL portant la liste des numéros de série émis
 /// (constat O-1 de l'audit du 2026-09-25) — voir
 /// `oe_ca_core::extensions::issued_serials`, produite par `ca-server` et lue
@@ -774,6 +778,15 @@ pub fn check_internal_client_certificate(
         OID_EKU_CLIENT_AUTH,
         OID_POLICY_INTERNAL_CLIENT,
     )
+}
+
+/// Certificat client d'enrôlement d'un demandeur (EKU `clientAuth` seul,
+/// politique dédiée, vie courte comme tout certificat à clé logicielle).
+pub fn check_enroll_client_certificate(
+    subject: &str,
+    cert: &x509_cert::Certificate,
+) -> Result<(), String> {
+    check_internal_certificate(subject, cert, OID_EKU_CLIENT_AUTH, OID_POLICY_ENROLL_CLIENT)
 }
 
 /// Certificat que `ca-server` présente sur le lien interne : en plus, un SAN

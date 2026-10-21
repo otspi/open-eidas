@@ -85,7 +85,7 @@ pub async fn check_client_certificate(
     }
 }
 
-fn common_name(cert: &Certificate) -> String {
+pub(crate) fn common_name(cert: &Certificate) -> String {
     let cn = der::asn1::ObjectIdentifier::new("2.5.4.3").expect("OID constant invalide");
     cert.tbs_certificate()
         .subject()
