@@ -71,8 +71,13 @@ spec:
             - name: OPENEIDAS_ENROLL_HMAC_KEY
               valueFrom:
                 secretKeyRef:
+                  {{- if .Values.ocsp.enrollSecret.name }}
+                  name: {{ .Values.ocsp.enrollSecret.name }}
+                  key: {{ .Values.ocsp.enrollSecret.key }}
+                  {{- else }}
                   name: {{ $secretName }}
                   key: enroll-hmac-key
+                  {{- end }}
             # Adresse à laquelle CE SERVICE joint la CA pour interroger sa
             # CRL — interne au cluster, à ne pas confondre avec
             # open-eidas.pkiPublicURL (adresse externe gravée dans les

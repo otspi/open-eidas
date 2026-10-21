@@ -874,10 +874,10 @@ pub fn system_matrix() -> Matrix {
         Entry {
             requirement: Requirement { standard: "ETSI EN 319 411-1", version: "V1.5.1 (2025-04)", clause: "§6.3.2", ids: &["REG-6.3.2-01"], title: "Authentification de la demande de certificat" },
             status: Status::Gap,
-            mechanism: "HMAC-SHA256 sur la CSR DER, vérifié en temps constant, et vérification de l'auto-signature de la CSR (preuve de possession) : oe_raflow::Flow::submit. Un secret par demandeur (OPENEIDAS_ENROLL_REQUESTERS_FILE, ca-server), lié aux profils autorisés et, au choix, à un CN unique ; le renouvellement ne révoque que les certificats du même demandeur (colonne enrollment_requests.requester). Le secret historique unique reste admis tant qu'il est configuré.",
+            mechanism: "HMAC-SHA256 sur la CSR DER, vérifié en temps constant, et vérification de l'auto-signature de la CSR (preuve de possession) : oe_raflow::Flow::submit. Un secret par demandeur (OPENEIDAS_ENROLL_REQUESTERS_FILE, ca-server), lié aux profils autorisés et, au choix, à un CN unique ; le renouvellement ne révoque que les certificats du même demandeur (colonne enrollment_requests.requester). Le secret historique unique reste admis hors production ; en production, la CA exige le fichier des demandeurs et n'accepte plus ce secret, et le chart Helm refuse production sans enroll.requestersSecret.",
             test: "crates/oe-raflow/tests/flow.rs (submit_without_valid_hmac_is_unauthenticated, submit_opens_a_pending_request_idempotently, a_requester_obtains_only_its_profiles_and_its_cn, a_renewal_never_revokes_the_certificate_of_another_requester), bin/ca-server/src/config.rs (every_doubtful_entry_is_a_configuration_error)",
             in_service: "",
-            target: "Constat R-3 : retirer le secret historique unique (refus en production), câbler le fichier des demandeurs dans le chart Helm, et passer à une identité mTLS par demandeur ; double contrôle à l'émission d'un certificat TSU.",
+            target: "Constat R-3 : identité mTLS par demandeur plutôt qu'un secret partagé ; double contrôle à l'émission d'un certificat TSU.",
         },
         Entry {
             requirement: Requirement { standard: "ETSI EN 319 411-1", version: "V1.5.1 (2025-04)", clause: "§6.3.3", ids: &["GEN-6.3.3-02A"], title: "Numéro de série aléatoire" },

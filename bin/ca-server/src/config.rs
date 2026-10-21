@@ -46,6 +46,8 @@ pub struct Config {
     /// Demandeurs d'enrôlement (constat R-3), lus dans
     /// `OPENEIDAS_ENROLL_REQUESTERS_FILE` ; vide si la variable est absente.
     pub enroll_requesters: Vec<oe_raflow::Requester>,
+    /// `OPENEIDAS_PRODUCTION` : le secret historique n'authentifie plus personne.
+    pub production: bool,
 
     pub crl_validity: time::Duration,
     pub crl_refresh: Duration,
@@ -342,6 +344,7 @@ impl Config {
             public_url,
             ocsp_url: env_str("OPENEIDAS_OCSP_PUBLIC_URL", ""),
             enroll_hmac_key: std::env::var("OPENEIDAS_ENROLL_HMAC_KEY").unwrap_or_default(),
+            production,
             enroll_requesters: load_requesters(&env_str("OPENEIDAS_ENROLL_REQUESTERS_FILE", ""))?,
             crl_validity,
             crl_refresh,

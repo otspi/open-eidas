@@ -646,17 +646,43 @@ async fn build_actions_service(
     (service, guard, registry)
 }
 
+/// Le secret historique que la machine à états accepte. En production, aucun :
+/// et sans demandeur déclaré, l'enrôlement n'ouvre pas.
+fn legacy_enroll_secret(
+    production: bool,
+    requesters_declared: bool,
+    legacy: &str,
+) -> Result<String, String> {
+    if !production {
+        return Ok(legacy.to_string());
+    }
+    if !requesters_declared {
+        return Err("OPENEIDAS_ENROLL_REQUESTERS_FILE est obligatoire quand OPENEIDAS_PRODUCTION est activé (un secret par demandeur, constat R-3)".to_string());
+    }
+    Ok(String::new())
+}
+
 fn build_flow(
     cfg: &Config,
     store: Arc<dyn oe_castore::Store>,
     issuer: Arc<oe_ca_core::Issuer>,
     recorder: Arc<dyn oe_raflow::Recorder>,
 ) -> Arc<oe_raflow::Flow> {
+    // Constat R-3 : en production, l'identité d'un demandeur est son propre
+    // secret. Le secret historique, partagé, n'authentifie plus personne ici
+    // (la CA le garde pour ses propres demandes, `internal-cert`), et sans
+    // demandeur déclaré l'enrôlement n'ouvre pas.
+    let hmac_secret = legacy_enroll_secret(
+        cfg.production,
+        !cfg.enroll_requesters.is_empty(),
+        &cfg.enroll_hmac_key,
+    )
+    .unwrap_or_else(|e| die("configuration invalide", e));
     Arc::new(
         oe_raflow::Flow::new(oe_raflow::Options {
             store,
             issuer,
-            hmac_secret: cfg.enroll_hmac_key.clone(),
+            hmac_secret,
             requesters: cfg.enroll_requesters.clone(),
             recorder: Some(recorder),
             retry_after: time::Duration::seconds(5),
@@ -1498,5 +1524,20 @@ async fn main() {
             action: InternalCertAction::Server { dns },
         } => run_internal_cert_server(dns).await,
         Command::VerifyAudit { path } => run_verify_audit(path).await,
+    }
+}
+
+#[cfg(test)]
+mod enroll_secret_tests {
+    use super::legacy_enroll_secret;
+
+    #[test]
+    fn production_drops_the_shared_secret_and_demands_requesters() {
+        assert_eq!(
+            legacy_enroll_secret(false, false, "partage").unwrap(),
+            "partage"
+        );
+        assert!(legacy_enroll_secret(true, false, "partage").is_err());
+        assert_eq!(legacy_enroll_secret(true, true, "partage").unwrap(), "");
     }
 }
