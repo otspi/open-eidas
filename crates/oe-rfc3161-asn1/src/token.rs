@@ -204,6 +204,23 @@ pub fn assemble(
     Ok(content_info.to_der()?)
 }
 
+/// Le `TSTInfo` encapsulé dans une `TimeStampResp` accordée : ce qui fait foi
+/// (heure, série, empreinte), lu dans le jeton lui-même.
+pub fn tst_info_of_response(resp_der: &[u8]) -> Result<crate::TstInfo, TokenError> {
+    let resp = TimeStampResp::from_der(resp_der)?;
+    let token = resp
+        .time_stamp_token
+        .ok_or_else(|| der::Error::from(der::ErrorKind::Failed))?;
+    let content_info = ContentInfo::from_der(&token.to_der()?)?;
+    let signed_data = SignedData::from_der(&content_info.content.to_der()?)?;
+    let econtent = signed_data
+        .encap_content_info
+        .econtent
+        .ok_or_else(|| der::Error::from(der::ErrorKind::Failed))?;
+    let octets = OctetString::from_der(&econtent.to_der()?)?;
+    Ok(crate::TstInfo::from_der(octets.as_bytes())?)
+}
+
 /// Encode la réponse RFC 3161 complète (statut « granted » + jeton).
 pub fn granted_response(token_der: Vec<u8>) -> Result<TimeStampResp, TokenError> {
     Ok(TimeStampResp {
