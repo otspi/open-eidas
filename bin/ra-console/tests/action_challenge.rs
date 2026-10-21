@@ -398,7 +398,7 @@ async fn the_console_prepares_nothing_without_a_session_or_outside_step_3() {
     env.pending_request("tx-1").await;
 
     // Sans session, ou avec une session inventée.
-    for c in [None, Some("session=n-importe-quoi")] {
+    for c in [None, Some("__Host-session=n-importe-quoi")] {
         let (status, err) = env.challenge(c, approve("tx-1")).await;
         assert_eq!(status, StatusCode::UNAUTHORIZED, "{err}");
     }
@@ -967,7 +967,7 @@ async fn the_console_lists_issued_certificates() {
         .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     let (status, _) = env
-        .get("/api/v1/certificates", "session=n-importe-quoi")
+        .get("/api/v1/certificates", "__Host-session=n-importe-quoi")
         .await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
 }
@@ -1118,7 +1118,7 @@ async fn an_admin_invites_and_confirms_an_operator_through_the_console() {
     assert_eq!(done["status"], "EXECUTED", "{done}");
     // La clé est active : l'invitée peut se connecter.
     let eve = env.log_in("eve").await;
-    assert!(eve.starts_with("session="));
+    assert!(eve.starts_with("__Host-session="));
     let (_, registry) = env.get("/api/v1/operators", &admin).await;
     assert_eq!(registry["pending"], serde_json::json!([]), "{registry}");
     let eve_entry = registry["operators"]
@@ -1128,7 +1128,9 @@ async fn an_admin_invites_and_confirms_an_operator_through_the_console() {
         .find(|o| o["name"] == "eve")
         .unwrap();
     assert_eq!(eve_entry["credentials"].as_array().unwrap().len(), 1);
-    let (status, _) = env.get("/api/v1/operators", "session=n-importe-quoi").await;
+    let (status, _) = env
+        .get("/api/v1/operators", "__Host-session=n-importe-quoi")
+        .await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
 }
 

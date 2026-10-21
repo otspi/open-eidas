@@ -389,6 +389,9 @@ fn invalid_credential() -> Response {
 /// `Set-Cookie` d'une session ouverte : `HttpOnly` (jamais lu par un script),
 /// `Secure` (jamais en clair), `SameSite=Strict` (jamais envoyé par un site
 /// tiers, y compris une navigation entrante) — docs/WEBUI.md §15 étape 1c-2.
+/// Le préfixe `__Host-` du nom fait refuser le cookie par le navigateur s'il
+/// n'est pas `Secure`, sans `Domain` et à `Path=/` (constat A-2) : un sous-domaine
+/// ne peut pas poser un cookie de session qui masquerait le nôtre.
 fn set_session_cookie(id: &str) -> String {
     format!(
         "{COOKIE_NAME}={id}; Path=/; Max-Age={}; HttpOnly; Secure; SameSite=Strict",
@@ -1028,4 +1031,23 @@ fn unauthenticated() -> Response {
         "unauthenticated",
         "connexion requise",
     )
+}
+
+#[cfg(test)]
+mod cookie_tests {
+    use super::*;
+
+    /// Les conditions du préfixe `__Host-` (RFC 6265bis §4.1.3) : `Secure`,
+    /// `Path=/`, aucun `Domain` — sinon le navigateur ignore le cookie, et la
+    /// console ne s'ouvrirait plus.
+    #[test]
+    fn session_cookies_satisfy_the_host_prefix_rules() {
+        for cookie in [set_session_cookie("abc"), clear_session_cookie()] {
+            assert!(cookie.starts_with("__Host-session="), "{cookie}");
+            let attrs: Vec<_> = cookie.split(';').map(|a| a.trim().to_lowercase()).collect();
+            assert!(attrs.contains(&"secure".to_string()), "{cookie}");
+            assert!(attrs.contains(&"path=/".to_string()), "{cookie}");
+            assert!(!attrs.iter().any(|a| a.starts_with("domain")), "{cookie}");
+        }
+    }
 }

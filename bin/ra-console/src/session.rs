@@ -44,7 +44,7 @@ pub fn stored_id(cookie_id: &str) -> String {
 
 /// Nom du cookie et du champ qu'il porte : rien d'autre que cet identifiant
 /// opaque n'y est jamais placé.
-pub const COOKIE_NAME: &str = "session";
+pub const COOKIE_NAME: &str = "__Host-session";
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum SessionError {
