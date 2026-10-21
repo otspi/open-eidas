@@ -689,7 +689,10 @@ fn build_flow(
             retry_after: time::Duration::seconds(5),
             clock: None,
         })
-        .unwrap_or_else(|e| die("construction de la machine à états RA", e.to_string())),
+        .unwrap_or_else(|e| die("construction de la machine à états RA", e.to_string()))
+        // En production, un demandeur qui a son certificat client n'utilise plus
+        // son secret que pour l'amorcer (fin de la double authentification).
+        .with_hmac_bootstrap_only(cfg.production),
     )
 }
 

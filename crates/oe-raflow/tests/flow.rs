@@ -921,3 +921,57 @@ async fn a_bootstrap_secret_opens_one_client_certificate_request() {
         Err(RaflowError::Unauthenticated)
     ));
 }
+
+/// Fin de la double authentification : avec `hmac_bootstrap_only`, le secret d'un
+/// demandeur qui a son certificat client n'amorce plus que ce certificat ; un
+/// demandeur sans certificat client garde son secret.
+#[tokio::test]
+async fn once_bootstrap_only_a_secret_no_longer_enrolls_a_requester_with_a_client_certificate() {
+    let secret = "c".repeat(40);
+    let other = "d".repeat(40);
+    let requesters = vec![
+        oe_raflow::Requester {
+            name: "tsa".to_string(),
+            secret: secret.clone(),
+            client_cn: Some("tsa-1".to_string()),
+            profiles: vec!["enroll_client".into(), "tsa_signer".into()],
+            ..Default::default()
+        },
+        oe_raflow::Requester {
+            name: "ancien".to_string(),
+            secret: other.clone(),
+            profiles: vec!["ocsp_responder".into()],
+            ..Default::default()
+        },
+    ];
+    let (flow, _store) = test_flow_full(None, None, "", requesters).await;
+    let flow = flow.with_hmac_bootstrap_only(true);
+
+    // Son secret ne l'enrôle plus pour un certificat de TSU ...
+    let (csr, _k) = build_csr("tsu.example.test");
+    let sig = oe_raflow::signature(&csr, &secret);
+    assert!(matches!(
+        flow.submit(&csr, profile::PROFILE_TSA_SIGNER, &sig).await,
+        Err(RaflowError::Unauthenticated)
+    ));
+    // ... mais l'amorce encore (une fois) ...
+    let (csr, _k) = build_csr("tsa-1");
+    let sig = oe_raflow::signature(&csr, &secret);
+    assert!(flow
+        .submit(&csr, profile::PROFILE_ENROLL_CLIENT, &sig)
+        .await
+        .is_ok());
+    // ... et son certificat client, lui, enrôle.
+    let (csr, _k) = build_csr("tsu.example.test");
+    assert!(flow
+        .submit_mtls(&csr, profile::PROFILE_TSA_SIGNER, "tsa-1")
+        .await
+        .is_ok());
+    // Un demandeur sans certificat client n'est pas encore migré : il garde son secret.
+    let (csr, _k) = build_csr("ocsp.example.test");
+    let sig = oe_raflow::signature(&csr, &other);
+    assert!(flow
+        .submit(&csr, profile::PROFILE_OCSP_RESPONDER, &sig)
+        .await
+        .is_ok());
+}

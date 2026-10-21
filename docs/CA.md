@@ -180,6 +180,8 @@ s'enrôle et se renouvelle par TLS mutuel seul sur `OPENEIDAS_ENROLL_MTLS_LISTEN
    `ocsp.enrollClient.secretName`) avec `enroll.mtls.enabled: true` dans le chart.
    Le secret d'amorçage peut alors être retiré du fichier des demandeurs.
 
+**Fin de la double authentification.** Tant que `OPENEIDAS_PRODUCTION` n'est pas posée, le secret d'un demandeur continue d'enrôler même s'il a un `client_cn`. En production, un demandeur qui a un `client_cn` ne peut plus utiliser son secret que pour le profil `enroll_client` (amorçage ou ré-amorçage) ; tout le reste passe par son certificat client. Un demandeur sans `client_cn` garde son secret : on migre demandeur par demandeur, en lui ajoutant `client_cn`.
+
 ### Actions à double contrôle
 
 Certaines actions signées par les opérateurs (console d'exploitation,
