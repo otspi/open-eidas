@@ -223,6 +223,7 @@ Toutes les options sont pilotées par variables d'environnement.
 | `OPENEIDAS_ENROLL_CA_FILE` | — | Ancre de confiance TLS de la PKI |
 | `OPENEIDAS_ENROLL_INSECURE` | `false` | Désactive la vérification TLS (démonstration seulement) ; **refusé au démarrage quand `OPENEIDAS_PRODUCTION` est activé**, comme `OPENEIDAS_TIME_POLICY` autre que `enforce` (constat S-2) |
 | `OPENEIDAS_ENROLL_TIMEOUT` | `5m` | Délai maximal d'attente d'un certificat |
+| `OPENEIDAS_RELOAD_INTERVAL` | `60s` | Période à laquelle `serve` relit `OPENEIDAS_CERT_FILE` et adopte sans redémarrer un nouveau certificat dont la clé est dans le token (`0s` désactive). Un candidat qui échoue aux contrôles du démarrage est refusé et journalisé (`tsu.reload_refused`) ; l'ancien reste en service |
 | `OPENEIDAS_RENEW_BEFORE` | `720h` | Fenêtre de renouvellement anticipé |
 | `OPENEIDAS_SUBJECT_CN` | `Open eIDAS Time-Stamping Unit 1` | `CN` demandé dans la CSR |
 

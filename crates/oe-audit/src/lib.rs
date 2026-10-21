@@ -44,6 +44,10 @@ pub const EVENT_TSU_KEY_GENERATED: &str = "tsu.key_generated";
 /// Destruction d'une ancienne génération de la clé de TSU, à la demande d'un
 /// opérateur (constat H-3, EN 319 421 `TIS-7.6.7-08`).
 pub const EVENT_TSU_KEY_DESTROYED: &str = "tsu.key_destroyed";
+/// Adoption à chaud d'un nouveau certificat de TSU (constat H-3), ou refus du
+/// candidat qui a échoué aux contrôles du démarrage.
+pub const EVENT_TSU_RELOADED: &str = "tsu.reloaded";
+pub const EVENT_TSU_RELOAD_REFUSED: &str = "tsu.reload_refused";
 pub const EVENT_SEALED: &str = "log.sealed";
 pub const EVENT_CROSS_SEALED: &str = "log.cross_sealed";
 pub const EVENT_REPLICATED: &str = "log.replicated";

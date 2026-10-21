@@ -211,6 +211,97 @@ fn key_spki(cfg: &oe_config::Config, key_label: &str) -> Result<Option<Vec<u8>>,
     }
 }
 
+/// Relit périodiquement le certificat de la TSU et, s'il a changé (renouvellement
+/// par `enroll`), adopte le nouveau matériel sans redémarrer (constat H-3). Le
+/// candidat passe les contrôles du démarrage ; sinon l'ancien reste en service,
+/// et l'échec est consigné une fois par certificat refusé.
+fn spawn_reload(
+    authority: Arc<oe_tsa_core::Authority>,
+    cfg: oe_config::Config,
+    log: Arc<oe_audit::Log>,
+) {
+    if cfg.reload_interval.is_zero() {
+        return;
+    }
+    tokio::spawn(async move {
+        let mut refused: Option<Vec<u8>> = None;
+        loop {
+            tokio::time::sleep(cfg.reload_interval).await;
+            let (authority, cfg, log, last_refused) =
+                (authority.clone(), cfg.clone(), log.clone(), refused.clone());
+            let outcome = tokio::task::spawn_blocking(move || {
+                reload_once(&authority, &cfg, &log, last_refused)
+            })
+            .await;
+            match outcome {
+                Ok(next) => refused = next,
+                Err(e) => tracing::warn!(erreur = %e, "rechargement du certificat TSU interrompu"),
+            }
+        }
+    });
+}
+
+/// Une passe de rechargement. Rend le certificat refusé (pour ne pas le
+/// consigner à chaque passe), ou `None`.
+fn reload_once(
+    authority: &oe_tsa_core::Authority,
+    cfg: &oe_config::Config,
+    log: &oe_audit::Log,
+    last_refused: Option<Vec<u8>>,
+) -> Option<Vec<u8>> {
+    let certs = oe_certs::load_file_optional(&cfg.cert_file).ok()?;
+    let candidate = certs.into_iter().next()?;
+    let candidate_der = candidate.to_der().ok()?;
+    if authority.certificate().to_der().ok()? == candidate_der {
+        return None;
+    }
+    if last_refused.as_deref() == Some(candidate_der.as_slice()) {
+        return last_refused;
+    }
+    let chain = oe_certs::load_file_optional(&cfg.chain_file).unwrap_or_default();
+    let result = (|| -> Result<u32, String> {
+        let spki = candidate
+            .tbs_certificate()
+            .subject_public_key_info()
+            .to_der()
+            .map_err(|e| e.to_string())?;
+        let found = keys::find(&cfg.key_label, Some(&spki), |label| key_spki(cfg, label))?;
+        let generation = found
+            .matching
+            .ok_or("aucune clé du token ne correspond au nouveau certificat")?;
+        let token = open_token(cfg, &keys::generation_label(&cfg.key_label, generation))
+            .map_err(|e| e.to_string())?;
+        let signer: Arc<dyn SigningToken + Send + Sync> = Arc::new(oe_hsm::SyncToken::new(token));
+        authority.reload(signer, candidate.clone(), chain)?;
+        Ok(generation)
+    })();
+    let mut data = oe_audit::Data::new();
+    data.insert(
+        "serial".into(),
+        serde_json::json!(candidate
+            .tbs_certificate()
+            .serial_number()
+            .as_bytes()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>()),
+    );
+    match result {
+        Ok(generation) => {
+            data.insert("generation".into(), serde_json::json!(generation));
+            let _ = log.append(oe_audit::EVENT_TSU_RELOADED, Some(data));
+            tracing::info!(generation, "certificat TSU rechargé à chaud");
+            None
+        }
+        Err(reason) => {
+            data.insert("reason".into(), serde_json::json!(reason));
+            let _ = log.append(oe_audit::EVENT_TSU_RELOAD_REFUSED, Some(data));
+            tracing::warn!(%reason, "nouveau certificat TSU refusé, l'ancien reste en service");
+            Some(candidate_der)
+        }
+    }
+}
+
 async fn run_serve() {
     tracing_subscriber::fmt::init();
 
@@ -325,6 +416,8 @@ async fn run_serve() {
     }));
     let journal: Arc<dyn oe_httpapi::JournalHealth> = sealer.health();
     sealer.spawn_periodic(cfg.audit_seal_interval);
+
+    spawn_reload(authority.clone(), cfg.clone(), log.clone());
 
     let app = oe_httpapi::router(oe_httpapi::Options {
         authority,

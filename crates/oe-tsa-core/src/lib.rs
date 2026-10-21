@@ -108,14 +108,26 @@ pub struct Options {
     pub recorder: Option<Arc<dyn Recorder>>,
 }
 
-pub struct Authority {
-    opts: Options,
+/// Le matériel qui signe : clé du token, certificat, chaîne, et la date
+/// d'expiration de la clé. Remplaçable à chaud ([`Authority::reload`]) : un
+/// jeton en cours d'émission garde le matériel qu'il a pris au départ.
+struct Material {
+    signer: Arc<dyn SigningToken + Send + Sync>,
+    certificate: Certificate,
+    chain: Vec<Certificate>,
     /// Constat T-3 de l'audit du 2026-09-25 (EN 319 421 `TIS-7.7.1-09`) :
     /// mise en cache à la construction (`privateKeyUsagePeriod` du
     /// certificat, `oe_conformance::tsu_private_key_not_after`) — relue à
-    /// chaque signature dans [`Self::timestamp`], jamais recalculée depuis
+    /// chaque signature dans [`Authority::timestamp`], jamais recalculée depuis
     /// le certificat à chaque appel.
     key_not_after: time::OffsetDateTime,
+}
+
+pub struct Authority {
+    /// `signer`, `certificate` et `chain` d'`opts` ne servent qu'à la
+    /// construction : le matériel courant est dans `material`.
+    opts: Options,
+    material: std::sync::RwLock<Arc<Material>>,
 }
 
 impl Authority {
@@ -124,14 +136,29 @@ impl Authority {
     /// et le certificat doit être temporellement valide (heure système, la
     /// surveillance n'a pas encore de mesure à ce stade).
     pub fn new(opts: Options) -> Result<Authority, String> {
-        let cert_spki = opts
-            .certificate
+        let material = Self::validated_material(
+            opts.signer.clone(),
+            opts.certificate.clone(),
+            opts.chain.clone(),
+        )?;
+        Ok(Authority {
+            opts,
+            material: std::sync::RwLock::new(Arc::new(material)),
+        })
+    }
+
+    /// Les contrôles de `new`, appliqués à un matériel candidat.
+    fn validated_material(
+        signer: Arc<dyn SigningToken + Send + Sync>,
+        certificate: Certificate,
+        chain: Vec<Certificate>,
+    ) -> Result<Material, String> {
+        let cert_spki = certificate
             .tbs_certificate()
             .subject_public_key_info()
             .to_der()
             .map_err(|e| format!("tsa: clé publique du certificat illisible: {e}"))?;
-        let signer_spki = opts
-            .signer
+        let signer_spki = signer
             .public_key_der()
             .map_err(|e| format!("tsa: clé publique du token illisible: {e}"))?;
         if cert_spki != signer_spki {
@@ -139,11 +166,10 @@ impl Authority {
         }
 
         let now = time::OffsetDateTime::now_utc();
-        let not_before = x509_time_to_offset_date_time(
-            &opts.certificate.tbs_certificate().validity().not_before,
-        );
+        let not_before =
+            x509_time_to_offset_date_time(&certificate.tbs_certificate().validity().not_before);
         let not_after =
-            x509_time_to_offset_date_time(&opts.certificate.tbs_certificate().validity().not_after);
+            x509_time_to_offset_date_time(&certificate.tbs_certificate().validity().not_after);
         if now > not_after {
             return Err(format!("tsa: certificat TSU expiré depuis le {not_after}"));
         }
@@ -157,24 +183,47 @@ impl Authority {
         // cette PKI : le re-contrôler au démarrage, pas seulement lui faire
         // confiance parce qu'il a été émis un jour — reproduit
         // `CheckTSUCertificate` appelée par `cmd/tsa-server` (Go).
-        oe_conformance::check_tsu_certificate("certificat TSU", &opts.certificate)?;
+        oe_conformance::check_tsu_certificate("certificat TSU", &certificate)?;
         // Garanti lisible : `check_tsu_certificate` ci-dessus vient de
         // vérifier que l'extension existe et est bien formée.
         let key_not_after =
-            oe_conformance::tsu_private_key_not_after("certificat TSU", &opts.certificate)?;
-
-        Ok(Authority {
-            opts,
+            oe_conformance::tsu_private_key_not_after("certificat TSU", &certificate)?;
+        Ok(Material {
+            signer,
+            certificate,
+            chain,
             key_not_after,
         })
     }
 
-    pub fn certificate(&self) -> &Certificate {
-        &self.opts.certificate
+    /// Remplace à chaud la clé, le certificat et la chaîne (renouvellement de la
+    /// TSU sans redémarrage, constat H-3). Le candidat passe les mêmes contrôles
+    /// que celui du démarrage ; s'il en échoue un, l'ancien matériel reste en
+    /// service. Les jetons déjà en cours d'émission finissent avec l'ancien.
+    pub fn reload(
+        &self,
+        signer: Arc<dyn SigningToken + Send + Sync>,
+        certificate: Certificate,
+        chain: Vec<Certificate>,
+    ) -> Result<(), String> {
+        let material = Self::validated_material(signer, certificate, chain)?;
+        *self.material.write().unwrap_or_else(|e| e.into_inner()) = Arc::new(material);
+        Ok(())
     }
 
-    pub fn chain(&self) -> &[Certificate] {
-        &self.opts.chain
+    fn material(&self) -> Arc<Material> {
+        self.material
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
+    pub fn certificate(&self) -> Certificate {
+        self.material().certificate.clone()
+    }
+
+    pub fn chain(&self) -> Vec<Certificate> {
+        self.material().chain.clone()
     }
 
     pub fn policy(&self) -> ObjectIdentifier {
@@ -214,6 +263,9 @@ impl Authority {
     }
 
     fn timestamp_inner(&self, req_der: &[u8]) -> Result<Vec<u8>, TsaError> {
+        // Matériel pris une fois : un rechargement à chaud ne change pas de clé
+        // au milieu d'un jeton.
+        let material = self.material();
         let req = TimeStampReq::from_der(req_der).map_err(|e| {
             reject(
                 FailureInfo::BadDataFormat,
@@ -265,12 +317,12 @@ impl Authority {
         // celle du certificat — vérifiée à *chaque* signature, pas seulement
         // au démarrage, un processus de longue durée pouvant la dépasser en
         // cours de route.
-        if gen_time >= self.key_not_after {
+        if gen_time >= material.key_not_after {
             return Err(reject(
                 FailureInfo::SystemFailure,
                 format!(
                     "clé de signature TSU expirée depuis le {}",
-                    self.key_not_after
+                    material.key_not_after
                 ),
             ));
         }
@@ -278,13 +330,13 @@ impl Authority {
         let tst_info = self.build_tst_info(&req, gen_time)?;
         let tst_info_der = tst_info.to_der()?;
 
-        let cert_der = self.opts.certificate.to_der()?;
+        let cert_der = material.certificate.to_der()?;
         let sign_alg_oid = digest_algorithm_identifier(self.opts.signing_digest);
         let tst_info_digest = hash_with(self.opts.signing_digest, &tst_info_der);
         let signing_cert_digest = hash_with(self.opts.signing_digest, &cert_der);
 
         let mut certs_der: Vec<Vec<u8>> = vec![cert_der];
-        for c in &self.opts.chain {
+        for c in &material.chain {
             certs_der.push(c.to_der()?);
         }
 
@@ -293,9 +345,8 @@ impl Authority {
             tst_info_digest: &tst_info_digest,
             signing_cert_digest: &signing_cert_digest,
             digest_alg: sign_alg_oid,
-            issuer: self.opts.certificate.tbs_certificate().issuer().clone(),
-            serial_number: self
-                .opts
+            issuer: material.certificate.tbs_certificate().issuer().clone(),
+            serial_number: material
                 .certificate
                 .tbs_certificate()
                 .serial_number()
@@ -339,7 +390,7 @@ impl Authority {
             }),
         )?;
 
-        let signature = self.opts.signer.sign_digest_with(
+        let signature = material.signer.sign_digest_with(
             self.opts.signature_scheme,
             self.opts.signing_digest,
             &digest_to_sign,
