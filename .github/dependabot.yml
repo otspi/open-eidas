@@ -1,0 +1,20 @@
+# Tient à jour les actions GitHub (épinglées par empreinte de commit, constat
+# S-1 de l'audit du 2026-09-25) et les images de base des Dockerfile.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: "chore(ci)"
+  - package-ecosystem: docker
+    directories:
+      - /deploy/ca-server
+      - /deploy/ocsp-responder
+      - /deploy/ra-console
+      - /deploy/tsa
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: "chore(docker)"
