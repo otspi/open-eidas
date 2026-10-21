@@ -1,6 +1,6 @@
 # R-3 — Identité mTLS des demandeurs d'enrôlement (note de conception)
 
-Statut : **proposition, rien n'est codé.** Elle attend quatre décisions (§6). Elle
+Statut : **décisions prises le 2026-10-21 (§7), tranche 1 en cours.** Elle
 prolonge le constat R-3 de l'[audit du 2026-09-25](AUDIT_2026_09_25.md) :
 « un secret, ou mieux une identité (mTLS), par demandeur ».
 
@@ -81,3 +81,11 @@ b. **Ancre de confiance du port d'enrôlement** : l'autorité émettrice (simple
 c. **Amorçage** : secret à usage unique + deux opérateurs (§3), ou autre voie ?
 d. **Retrait du HMAC** : dès la tranche 4 en production, ou après une période de
    double authentification ?
+
+## 7. Décisions prises (Philippe, 2026-10-21)
+
+a. Clé du certificat client : **logicielle sur volume dédié** (comme le lien interne).
+b. Ancre de confiance : **l'autorité émettrice existante**, profil `enroll_client` dédié.
+c. Amorçage : **secret à usage unique (24 h) + approbation par deux opérateurs**.
+d. HMAC : retiré en production **après une période de double authentification**
+   (les deux contrôles coexistent le temps de la bascule).
