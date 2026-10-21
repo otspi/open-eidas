@@ -233,7 +233,7 @@ async fn main() {
                 transaction_id: tx.clone(),
                 csr_fingerprint: format!("empreinte-{tx}"),
                 csr_der: vec![0x30, 0x00],
-                profile: "tsa_signer".to_string(),
+                profile: "ocsp_responder".to_string(),
                 subject_cn: format!("tsu-{}.example.test", i + 1),
                 state: oe_castore::RequestState::Pending,
                 created_at: now,

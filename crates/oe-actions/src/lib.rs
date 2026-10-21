@@ -1017,7 +1017,9 @@ impl Service {
                 .decider
                 .approve(
                     transaction_id,
-                    &operator.name,
+                    // Tous les signataires sont imputés à l'approbation d'un
+                    // double contrôle, pas le seul dernier.
+                    &names.join(", "),
                     comment,
                     &oe_raflow::Via::WebAuthn,
                 )

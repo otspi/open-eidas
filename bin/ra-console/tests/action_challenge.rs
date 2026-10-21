@@ -305,7 +305,7 @@ impl Env {
                 transaction_id: transaction_id.to_string(),
                 csr_fingerprint: format!("empreinte-{transaction_id}"),
                 csr_der: vec![0x30, 0x00],
-                profile: "tsa_signer".to_string(),
+                profile: "ocsp_responder".to_string(),
                 subject_cn: "tsu.example.test".to_string(),
                 state: RequestState::Pending,
                 created_at: time::OffsetDateTime::now_utc(),
