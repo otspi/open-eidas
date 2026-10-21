@@ -394,10 +394,12 @@ async fn the_json_facade_reports_the_gen_time_of_the_token() {
 
 /// Un journal lent : chaque jeton occupe sa place de signature assez longtemps
 /// pour qu'une seconde requête arrive pendant ce temps.
-struct SlowRecorder;
+struct SlowRecorder(Arc<std::sync::atomic::AtomicBool>);
 impl oe_tsa_core::Recorder for SlowRecorder {
     fn append(&self, _event: &str, _data: serde_json::Value) -> Result<(), String> {
-        std::thread::sleep(std::time::Duration::from_millis(800));
+        // Signale que la place est prise, puis la garde assez longtemps.
+        self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+        std::thread::sleep(std::time::Duration::from_millis(1500));
         Ok(())
     }
 }
@@ -407,13 +409,17 @@ impl oe_tsa_core::Recorder for SlowRecorder {
 /// PKCS#11 ; `/healthz` reste disponible, et la place se libère ensuite.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_saturated_service_sheds_signing_requests_but_not_health() {
+    let entered = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let time_source = oe_timesource::Monitor::new(oe_timesource::Options {
         policy: oe_timesource::Policy::Disabled,
         ..Default::default()
     })
     .unwrap();
     let app = oe_httpapi::router(oe_httpapi::Options {
-        authority: load_authority_full(Arc::new(FixedClock), Some(Arc::new(SlowRecorder))),
+        authority: load_authority_full(
+            Arc::new(FixedClock),
+            Some(Arc::new(SlowRecorder(entered.clone()))),
+        ),
         time_source,
         max_request_bytes: 64 * 1024,
         max_concurrent: 1,
@@ -436,7 +442,14 @@ async fn a_saturated_service_sheds_signing_requests_but_not_health() {
     };
 
     let first = tokio::spawn(post(client.clone()));
-    tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+    // On attend que la première requête tienne la place, au lieu de parier sur un délai.
+    for _ in 0..100 {
+        if entered.load(std::sync::atomic::Ordering::SeqCst) {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    assert!(entered.load(std::sync::atomic::Ordering::SeqCst));
 
     let shed = post(client.clone()).await;
     assert_eq!(shed.status(), 503);
