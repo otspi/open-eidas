@@ -57,4 +57,5 @@ oe-hsm = { path = "../../crates/oe-hsm", features = ["testing"] }
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres"] }
 webauthn-authenticator-rs = { version = "0.5", features = ["softtoken"] }
 tower = { version = "0.5", features = ["util"] }
+pem = "3"
 http-body-util = "0.1"
