@@ -236,6 +236,7 @@ code applique et vérifie automatiquement (`oe_conformance`) :
 | Taille de clé — TSU / OCSP | RSA ≥ 3072 bits | `oe_raflow::parse_and_verify_csr`, appliqué à la CSR soumise à l'enrôlement |
 | Algorithmes de signature admis | SHA-256/384/512 avec RSA ; SHA-1, MD5 et ECDSA explicitement refusés (implémentation actuelle : RSA uniquement, côté génération de clé comme côté vérification) | `oe_conformance::check_signature_algorithm` |
 | Schéma de signature RSA | RSASSA-PSS (RFC 4055, SHA-256, MGF1-SHA-256, sel de 32 octets) ou PKCS#1 v1.5, selon `OPENEIDAS_RSA_SCHEME` ; l'identifiant d'algorithme est refusé s'il n'est pas canonique | `oe_hsm::signature_algorithm`, `oe_conformance::check_signature_algorithm_id` |
+| Renouvellement de la clé TSU | Une bi-clé neuve par certificat (label `<label>.<n>`), générée dans le token par `tsa-server enroll` après consignation au journal (`tsu.key_generated`) ; `serve` ouvre la clé dont la clé publique figure dans le certificat. Les anciennes clés restent dans le token jusqu'à leur destruction par l'opérateur, qui n'est pas automatique | `bin/tsa-server/src/keys.rs` |
 | Protection de l'activation de la clé | PIN du token PKCS#11 | `oe_hsm` |
 | Durée de vie — racine | ~20 ans | `OPENEIDAS_ROOT_VALIDITY` |
 | Durée de vie — CA émettrice | ~10 ans, jamais au-delà de l'expiration de la racine | `OPENEIDAS_ISSUING_VALIDITY` |

@@ -366,6 +366,181 @@ async fn the_binary_applies_what_the_matrix_declares() {
         assert!(!text.contains("Status: Granted"), "{text}");
     }
 
+    // Constat H-3 (une clé par certificat) : la clé de deuxième génération
+    // (`<label>.2`) porte son propre certificat, et `serve` ouvre la clé dont la
+    // clé publique est dans le certificat — pas celle du label de base.
+    {
+        let spki2 = {
+            let token = oe_hsm::Pkcs11Token::open(&oe_hsm::Options {
+                module_path: MODULE.to_string(),
+                token_label: TOKEN.to_string(),
+                key_label: format!("{KEY}.2"),
+                pin: PIN.to_string(),
+            })
+            .unwrap();
+            token.generate_rsa_key(3072).unwrap();
+            token.public_key_der().unwrap()
+        };
+        let gen2 = issuer
+            .issue(
+                &spki2,
+                "tsu.example.test",
+                &profile::tsa_signer(),
+                "tx-tsu-2",
+            )
+            .await
+            .unwrap();
+        std::fs::write(
+            fx.dir.join("tsu-gen2.pem"),
+            pem("CERTIFICATE", &gen2.to_der().unwrap()),
+        )
+        .unwrap();
+        let (_server, base) = fx.serve("tsu-gen2.pem", "monitor", "audit-gen2.log").await;
+        let text = fx.timestamp(&base, "-sha256", "gen2").await;
+        assert!(text.contains("Status: Granted"), "{text}");
+        // Le jeton est bien signé par la clé de la deuxième génération.
+        let signer = fx.openssl(&[
+            "ts",
+            "-reply",
+            "-in",
+            "gen2.tsr",
+            "-token_out",
+            "-out",
+            "gen2.tst",
+        ]);
+        assert!(signer.status.success(), "{signer:?}");
+    }
+
+    // Un certificat dont aucune clé du token ne porte la clé publique est refusé
+    // au démarrage, sans retomber sur la clé du label de base.
+    {
+        let stranger = SoftwareToken::generate(3072);
+        let stranger_spki = oe_hsm::SigningToken::public_key_der(&stranger).unwrap();
+        let cert = issuer
+            .issue(
+                &stranger_spki,
+                "tsu.example.test",
+                &profile::tsa_signer(),
+                "tx-stranger",
+            )
+            .await
+            .unwrap();
+        std::fs::write(
+            fx.dir.join("tsu-stranger.pem"),
+            pem("CERTIFICATE", &cert.to_der().unwrap()),
+        )
+        .unwrap();
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let refused = fx
+            .command("tsu-stranger.pem", "monitor", port, "audit-stranger.log")
+            .output()
+            .unwrap();
+        assert!(!refused.status.success(), "{refused:?}");
+        let stderr = String::from_utf8_lossy(&refused.stderr);
+        assert!(
+            stderr.contains("aucune clé du token ne correspond"),
+            "{stderr}"
+        );
+    }
+
+    // Constat H-3, côté `enroll` : un certificat à renouveler (la fenêtre de
+    // renouvellement couvre toute sa vie) fait générer une clé neuve, journalisée
+    // avant l'acte ; l'enrôlement échoue ici (CA injoignable), et un nouvel essai
+    // réutilise cette clé au lieu d'en empiler une.
+    {
+        let enroll = |audit: &str| {
+            Command::new(env!("CARGO_BIN_EXE_tsa-server"))
+                .arg("enroll")
+                .env_clear()
+                .env("PATH", std::env::var("PATH").unwrap_or_default())
+                .env("SOFTHSM2_CONF", &fx.conf)
+                .env("OPENEIDAS_PKCS11_MODULE", MODULE)
+                .env("OPENEIDAS_TOKEN_LABEL", TOKEN)
+                .env("OPENEIDAS_KEY_LABEL", format!("{KEY}-renew"))
+                .env("OPENEIDAS_PIN", PIN)
+                .env("OPENEIDAS_CERT_FILE", fx.dir.join("tsu-renew.pem"))
+                .env("OPENEIDAS_CHAIN_FILE", fx.dir.join("chain-renew.pem"))
+                .env("OPENEIDAS_AUDIT_FILE", fx.dir.join(audit))
+                .env(
+                    "OPENEIDAS_ENROLL_ENDPOINT",
+                    "http://127.0.0.1:9/api/v1/enroll",
+                )
+                .env("OPENEIDAS_ENROLL_HMAC_KEY", "secret-de-test")
+                .env("OPENEIDAS_ENROLL_TIMEOUT", "1s")
+                .env("OPENEIDAS_RENEW_BEFORE", "876000h")
+                .output()
+                .unwrap()
+        };
+        let key_exists = |label: &str| {
+            let token = oe_hsm::Pkcs11Token::open(&oe_hsm::Options {
+                module_path: MODULE.to_string(),
+                token_label: TOKEN.to_string(),
+                key_label: label.to_string(),
+                pin: PIN.to_string(),
+            })
+            .unwrap();
+            token.public_key_der().is_ok()
+        };
+        let base = format!("{KEY}-renew");
+
+        // Premier passage : ni clé ni certificat → génération 1.
+        let out = enroll("audit-renew.log");
+        assert!(!out.status.success(), "la CA est injoignable : {out:?}");
+        assert!(key_exists(&base) && !key_exists(&format!("{base}.2")));
+
+        // Le certificat en cache porte la génération 1 : le renouvellement
+        // génère la génération 2.
+        let spki1 = {
+            let token = oe_hsm::Pkcs11Token::open(&oe_hsm::Options {
+                module_path: MODULE.to_string(),
+                token_label: TOKEN.to_string(),
+                key_label: base.clone(),
+                pin: PIN.to_string(),
+            })
+            .unwrap();
+            token.public_key_der().unwrap()
+        };
+        let cert1 = issuer
+            .issue(
+                &spki1,
+                "tsu.example.test",
+                &profile::tsa_signer(),
+                "tx-renew",
+            )
+            .await
+            .unwrap();
+        std::fs::write(
+            fx.dir.join("tsu-renew.pem"),
+            pem("CERTIFICATE", &cert1.to_der().unwrap()),
+        )
+        .unwrap();
+        let out = enroll("audit-renew.log");
+        assert!(!out.status.success(), "la CA est injoignable : {out:?}");
+        assert!(key_exists(&format!("{base}.2")));
+
+        // Nouvel essai (la CA reste injoignable) : la génération 2 est
+        // réutilisée, aucune génération 3.
+        let out = enroll("audit-renew.log");
+        assert!(!out.status.success(), "la CA est injoignable : {out:?}");
+        assert!(!key_exists(&format!("{base}.3")));
+
+        let generated: Vec<_> = oe_audit::read(fx.dir.join("audit-renew.log"))
+            .unwrap()
+            .into_iter()
+            .filter(|r| r.event == "tsu.key_generated")
+            .map(|r| r.data.unwrap()["generation"].clone())
+            .collect();
+        assert_eq!(
+            generated,
+            [1, 2],
+            "journal des clés générées : {generated:?}"
+        );
+    }
+
     // EN 319 421 TIS-7.7.1-07 : politique enforce et heure non traçable → la
     // TSU cesse d'émettre (timeNotAvailable) et /healthz le dit.
     {
