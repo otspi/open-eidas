@@ -138,7 +138,7 @@ async fn an_action_goes_through_the_two_routes() {
             transaction_id: tx.clone(),
             csr_fingerprint: fingerprint.clone(),
             csr_der: vec![1, 2, 3],
-            profile: "tsa_signer".to_string(),
+            profile: "ocsp_responder".to_string(),
             subject_cn: "Unité de test".to_string(),
             state: RequestState::Pending,
             created_at: now,

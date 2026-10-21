@@ -14,6 +14,11 @@ pub const QUORUM_WINDOW: time::Duration = time::Duration::hours(24);
 /// Signatures exigées pour les actions à double contrôle.
 pub const QUORUM: u32 = 2;
 
+/// Profils dont l'approbation exige deux opérateurs distincts (constat R-3, EN 319
+/// 411-1 `REG-6.3.2-01`) : un certificat de TSU engage la valeur probante de
+/// tous les jetons qu'il signera.
+pub const TWO_PERSON_PROFILES: [&str; 1] = ["tsa_signer"];
+
 impl Service {
     /// Nombre de signatures d'opérateurs distincts que cette action exige,
     /// d'après l'état *actuel* du registre.
@@ -21,6 +26,16 @@ impl Service {
         Ok(match action {
             // Révoquer un certificat : deux `ca_operateur` (§5).
             Action::RevokeCertificate { .. } => QUORUM,
+            // Approuver un certificat de TSU : deux opérateurs RA/CA distincts.
+            Action::ApproveRequest { transaction_id, .. } => {
+                match self.store.request_by_transaction_id(transaction_id).await {
+                    Ok(r) if TWO_PERSON_PROFILES.contains(&r.profile.as_str()) => QUORUM,
+                    // Demande inconnue : `check_target` la refuse juste après,
+                    // avec le bon statut.
+                    Ok(_) | Err(oe_castore::StoreError::NotFound) => 1,
+                    Err(e) => return Err(Error::Effect(e.to_string())),
+                }
+            }
             // Créer un administrateur, ou changer le rôle de l'un d'eux : le
             // seul rôle qui modifie le registre lui-même (§10).
             Action::InviteOperator {

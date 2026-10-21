@@ -927,6 +927,15 @@ ont signé des challenges liés à la même action (le même corps figé par
 cette condition — les credentials engagés doivent appartenir à des
 opérateurs différents.
 
+**Approbation d'une demande de certificat de TSU (constat R-3).** Le
+certificat d'une unité d'horodatage engage tous les jetons qu'elle signera :
+approuver une demande du profil `tsa_signer` exige deux opérateurs distincts
+(`ra_operateur` ou `ca_operateur`), tous deux imputés à la décision. Les autres
+profils restent approuvés par un seul opérateur. La règle est celle de
+`oe_actions::quorum::TWO_PERSON_PROFILES`. La voie de secours
+`ca-server ra approve` (§20), réservée à l'incident et marquée comme telle au
+journal, ne la porte pas.
+
 **Répartition des rôles entre les deux services.** `ra-console` *collecte*
 les signatures au fil de l'eau (tables ci-dessous) : il sait qui a déjà
 signé, affiche la salle d'attente de [UI-UX.md](UI-UX.md) §3.2 et relaie

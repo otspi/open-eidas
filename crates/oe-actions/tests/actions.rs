@@ -191,7 +191,7 @@ impl Env {
 
     /// Une demande d'enrôlement en attente de décision.
     async fn pending_request(&self) -> Request {
-        self.pending_request_for("tsa_signer").await
+        self.pending_request_for("ocsp_responder").await
     }
 
     async fn pending_request_for(&self, profile: &str) -> Request {
@@ -670,13 +670,80 @@ async fn an_internal_client_certificate_is_approved_by_the_ca_not_the_ra() {
         .expect("un opérateur CA peut approuver");
 }
 
+/// Constat R-3 : le certificat d'une TSU engage tous les jetons qu'elle signera ;
+/// son approbation exige deux opérateurs distincts, tous deux imputés.
 #[tokio::test]
-async fn a_ra_operator_still_approves_a_tsa_signer_request() {
+async fn a_tsa_signer_request_needs_two_distinct_operators() {
+    let mut env = env!();
+    let alice = env.operator(Role::RaOperateur).await;
+    let bob = env.operator(Role::CaOperateur).await;
+    let r = env.pending_request_for("tsa_signer").await;
+
+    let issued = env
+        .svc
+        .issue_challenge(Env::approve(&r), alice.id)
+        .await
+        .unwrap();
+    let a = env.sign(&issued);
+    let first = env.svc.execute(issued.challenge_id, &a).await.unwrap();
+    assert!(!first.executed);
+    assert_eq!((first.signatures, first.required), (1, 2));
+    let stored = env
+        .store
+        .request_by_transaction_id(&r.transaction_id)
+        .await
+        .unwrap();
+    assert_eq!(stored.state, RequestState::Pending, "une seule signature");
+
+    // Le même opérateur ne vaut pas pour deux.
+    let again = env
+        .svc
+        .issue_challenge_for(issued.action_id, alice.id)
+        .await;
+    assert!(
+        matches!(again, Err(oe_actions::Error::Denied(_))),
+        "{:?}",
+        again.err()
+    );
+
+    let second = env
+        .svc
+        .issue_challenge_for(issued.action_id, bob.id)
+        .await
+        .unwrap();
+    let a = env.sign(&second);
+    let done = env.svc.execute(second.challenge_id, &a).await.unwrap();
+    assert!(done.executed);
+    let stored = env
+        .store
+        .request_by_transaction_id(&r.transaction_id)
+        .await
+        .unwrap();
+    assert_eq!(stored.state, RequestState::Approved);
+    assert!(
+        stored.operator.contains(&alice.name) && stored.operator.contains(&bob.name),
+        "les deux signataires sont imputés : {}",
+        stored.operator
+    );
+}
+
+/// Un profil sans double contrôle reste approuvé par un seul opérateur.
+#[tokio::test]
+async fn an_ocsp_responder_request_still_needs_one_operator() {
     let mut env = env!();
     let ra = env.operator(Role::RaOperateur).await;
     let r = env.pending_request().await;
-    env.svc
+    let issued = env
+        .svc
         .issue_challenge(Env::approve(&r), ra.id)
         .await
-        .expect("l'opérateur RA approuve une unité d'horodatage");
+        .expect("l'opérateur RA approuve le répondeur OCSP");
+    let a = env.sign(&issued);
+    assert!(
+        env.svc
+            .execute(issued.challenge_id, &a)
+            .await
+            .unwrap()
+            .executed
+    );
 }
