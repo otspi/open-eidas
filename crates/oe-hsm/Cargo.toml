@@ -31,3 +31,5 @@ rand = "0.8"
 
 [dev-dependencies]
 hex = "0.4"
+# Les tests d'intégration activent la feature `testing` de la crate elle-même.
+oe-hsm = { path = ".", features = ["testing"] }

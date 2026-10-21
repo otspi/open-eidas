@@ -117,6 +117,19 @@ fn only_a_key_born_in_the_module_is_used() {
     // Clé générée par le module : acceptée, et ses attributs le prouvent.
     let token = Pkcs11Token::open(&options("generated")).unwrap();
     token.generate_rsa_key(2048).unwrap();
+    // Constat H-2 : une session perdue (utilisateur déconnecté par le module)
+    // n'arrête pas le service, le token se reconnecte et rejoue la signature.
+    token
+        .sign_digest(DigestAlg::Sha256, &digest)
+        .expect("signature");
+    token.lose_session_for_test();
+    token
+        .sign_digest(DigestAlg::Sha256, &digest)
+        .expect("signature après perte de session : reconnexion");
+    token.lose_session_for_test();
+    token
+        .public_key_der()
+        .expect("clé publique après perte de session");
     let p = token
         .verify_key_provenance()
         .expect("une clé générée est acceptée");

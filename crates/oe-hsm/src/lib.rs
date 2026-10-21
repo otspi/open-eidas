@@ -189,10 +189,47 @@ pub fn verify_signature(
         .map_err(|_| HsmError::SignatureVerification)
 }
 
+/// Le module signale-t-il une session perdue ou un appareil réinitialisé ?
+/// (`CKR_USER_NOT_LOGGED_IN`, session fermée ou invalide, appareil retiré ou en
+/// erreur, token absent, ou clé privée devenue invisible faute de connexion.)
+#[cfg(feature = "pkcs11")]
+fn is_session_lost(err: &HsmError) -> bool {
+    use cryptoki::error::{Error, RvError};
+    // Un module dont l'utilisateur est déconnecté ne montre plus les objets
+    // privés : la clé semble absente. Une seule reconnexion lève le doute (si
+    // la clé manque vraiment, l'erreur revient telle quelle).
+    if matches!(err, HsmError::KeyNotFound) {
+        return true;
+    }
+    let source = match err {
+        HsmError::Pkcs11(e) => e,
+        HsmError::FindKey { source, .. } => source,
+        _ => return false,
+    };
+    matches!(
+        source,
+        Error::Pkcs11(
+            RvError::UserNotLoggedIn
+                | RvError::SessionClosed
+                | RvError::SessionHandleInvalid
+                | RvError::DeviceRemoved
+                | RvError::DeviceError
+                | RvError::TokenNotPresent,
+            _
+        )
+    )
+}
+
 /// Implémentation réelle : token PKCS#11 (SoftHSM2 en dev/CI, HSM FIPS en prod).
 #[cfg(feature = "pkcs11")]
 pub struct Pkcs11Token {
-    session: Session,
+    /// Session courante, remplacée par [`Pkcs11Token::reconnect`] quand le
+    /// module la perd (constat H-2 : redémarrage du HSM, session fermée,
+    /// utilisateur déconnecté).
+    session: std::sync::Mutex<Session>,
+    pkcs11: Pkcs11,
+    token_label: String,
+    pin: String,
     key_id: Vec<u8>,
     key_label: String,
     /// Constat H-1 : la provenance de la clé n'est contrôlée qu'une fois par
@@ -258,22 +295,13 @@ impl Pkcs11Token {
             source,
         })?;
 
-        let slot = pkcs11
-            .get_slots_with_token()?
-            .into_iter()
-            .find(|slot| {
-                pkcs11
-                    .get_token_info(*slot)
-                    .map(|info| info.label() == o.token_label)
-                    .unwrap_or(false)
-            })
-            .ok_or_else(|| HsmError::TokenNotFound(o.token_label.clone()))?;
-
-        let session = pkcs11.open_rw_session(slot)?;
-        session.login(UserType::User, Some(&AuthPin::from(o.pin.clone())))?;
+        let session = Self::connect(&pkcs11, &o.token_label, &o.pin)?;
 
         Ok(Self {
-            session,
+            session: std::sync::Mutex::new(session),
+            pkcs11,
+            token_label: o.token_label.clone(),
+            pin: o.pin.clone(),
             key_id: key_id(&o.key_label),
             key_label: o.key_label.clone(),
             provenance_verified: std::sync::atomic::AtomicBool::new(false),
@@ -281,11 +309,66 @@ impl Pkcs11Token {
         })
     }
 
+    /// Ouvre une session en lecture/écriture sur le token de ce label et y
+    /// authentifie l'utilisateur. Le slot est cherché à chaque appel : après
+    /// un redémarrage du module, il peut avoir changé de numéro.
+    fn connect(pkcs11: &Pkcs11, token_label: &str, pin: &str) -> Result<Session, HsmError> {
+        let slot = pkcs11
+            .get_slots_with_token()?
+            .into_iter()
+            .find(|slot| {
+                pkcs11
+                    .get_token_info(*slot)
+                    .map(|info| info.label() == token_label)
+                    .unwrap_or(false)
+            })
+            .ok_or_else(|| HsmError::TokenNotFound(token_label.to_string()))?;
+        let session = pkcs11.open_rw_session(slot)?;
+        session.login(UserType::User, Some(&AuthPin::from(pin.to_string())))?;
+        Ok(session)
+    }
+
+    /// Simule la perte de la session (le module déconnecte l'utilisateur) pour
+    /// vérifier la reconnexion. Réservé aux tests.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn lose_session_for_test(&self) {
+        let _ = self.session().logout();
+    }
+
+    fn session(&self) -> std::sync::MutexGuard<'_, Session> {
+        self.session.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Remplace la session perdue par une neuve (constat H-2 : sans cela, une
+    /// session PKCS#11 perdue met le service en panne jusqu'au redémarrage
+    /// du processus).
+    fn reconnect(&self) -> Result<(), HsmError> {
+        let fresh = Self::connect(&self.pkcs11, &self.token_label, &self.pin)?;
+        *self.session.lock().unwrap_or_else(|e| e.into_inner()) = fresh;
+        // La clé est cherchée de nouveau : ses attributs aussi sont revérifiés.
+        self.provenance_verified
+            .store(false, std::sync::atomic::Ordering::Release);
+        Ok(())
+    }
+
+    /// Joue `op` ; si le module répond que la session est perdue, se
+    /// reconnecte et rejoue **une fois**. Toute autre erreur est rendue telle
+    /// quelle, et une seconde panne de session aussi.
+    fn retrying<T>(&self, op: impl Fn() -> Result<T, HsmError>) -> Result<T, HsmError> {
+        match op() {
+            Err(e) if is_session_lost(&e) => {
+                self.reconnect()?;
+                op()
+            }
+            other => other,
+        }
+    }
+
     /// Lit les attributs de provenance de la clé privée (constat H-1), pour
     /// les journaliser au démarrage. Ne refuse rien : voir
     /// [`Pkcs11Token::verify_key_provenance`].
     pub fn key_provenance(&self) -> Result<KeyProvenance, HsmError> {
-        let handle = self.find_unique_private_key()?;
+        let handle = self.retrying(|| self.find_unique_private_key())?;
         let wanted = [
             AttributeType::Local,
             AttributeType::NeverExtractable,
@@ -304,7 +387,7 @@ impl Pkcs11Token {
             unwrap: true,
             derive: true,
         };
-        for attribute in self.session.get_attributes(handle, &wanted)? {
+        for attribute in self.session().get_attributes(handle, &wanted)? {
             match attribute {
                 Attribute::Local(v) => p.local = v,
                 Attribute::NeverExtractable(v) => p.never_extractable = v,
@@ -367,7 +450,7 @@ impl Pkcs11Token {
             Attribute::Label(self.key_label.clone().into_bytes()),
         ];
         let keys = self
-            .session
+            .session()
             .find_objects(&template)
             .map_err(|source| HsmError::FindKey {
                 key_label: self.key_label.clone(),
@@ -408,7 +491,7 @@ impl Pkcs11Token {
             Attribute::Id(self.key_id.clone()),
             Attribute::Label(self.key_label.clone().into_bytes()),
         ];
-        self.session
+        self.session()
             .generate_key_pair(&Mechanism::RsaPkcsKeyPairGen, &pub_template, &priv_template)
             .map_err(|source| HsmError::GenerateKey { bits, source })?;
         Ok(())
@@ -425,7 +508,7 @@ impl Pkcs11Token {
             Attribute::Label(self.key_label.clone().into_bytes()),
         ];
         let keys = self
-            .session
+            .session()
             .find_objects(&template)
             .map_err(|source| HsmError::FindKey {
                 key_label: self.key_label.clone(),
@@ -433,7 +516,7 @@ impl Pkcs11Token {
             })?;
         let key = keys.into_iter().next().ok_or(HsmError::KeyNotFound)?;
 
-        let attrs = self.session.get_attributes(
+        let attrs = self.session().get_attributes(
             key,
             &[
                 cryptoki::object::AttributeType::Modulus,
@@ -457,11 +540,14 @@ impl Pkcs11Token {
 }
 
 #[cfg(feature = "pkcs11")]
-impl SigningToken for Pkcs11Token {
-    fn sign_digest(&self, alg: DigestAlg, digest: &[u8]) -> Result<Vec<u8>, HsmError> {
+impl Pkcs11Token {
+    /// Une tentative de signature, sur la session courante.
+    fn sign_once(&self, alg: DigestAlg, digest: &[u8]) -> Result<Vec<u8>, HsmError> {
         let key = self.find_private_key()?;
         let digest_info = alg.wrap(digest)?;
-        let signature = self.session.sign(&Mechanism::RsaPkcs, key, &digest_info)?;
+        let signature = self
+            .session()
+            .sign(&Mechanism::RsaPkcs, key, &digest_info)?;
         // Constat H-2 : jamais de signature qui ne se vérifie pas avec la clé
         // publique du token.
         if self.public_key.get().is_none() {
@@ -480,9 +566,18 @@ impl SigningToken for Pkcs11Token {
         verify_signature(public_key, alg, digest, &signature)?;
         Ok(signature)
     }
+}
+
+#[cfg(feature = "pkcs11")]
+impl SigningToken for Pkcs11Token {
+    /// Signe, et se reconnecte une fois si le module a perdu la session
+    /// (constat H-2).
+    fn sign_digest(&self, alg: DigestAlg, digest: &[u8]) -> Result<Vec<u8>, HsmError> {
+        self.retrying(|| self.sign_once(alg, digest))
+    }
 
     fn public_key_der(&self) -> Result<Vec<u8>, HsmError> {
-        let (modulus, exponent) = self.rsa_public_components()?;
+        let (modulus, exponent) = self.retrying(|| self.rsa_public_components())?;
         let public_key = rsa::RsaPublicKey::new(
             rsa::BigUint::from_bytes_be(&modulus),
             rsa::BigUint::from_bytes_be(&exponent),
