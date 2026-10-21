@@ -543,6 +543,7 @@ mod tests {
             })
             .unwrap(),
             max_request_bytes: 64 * 1024,
+            max_concurrent: 0,
             version: "test".to_string(),
             cors_allowed_origin: None,
             journal: None,

@@ -43,6 +43,13 @@ fn load_authority() -> Arc<Authority> {
 }
 
 fn load_authority_with(clock: Arc<dyn Clock>) -> Arc<Authority> {
+    load_authority_full(clock, None)
+}
+
+fn load_authority_full(
+    clock: Arc<dyn Clock>,
+    recorder: Option<Arc<dyn oe_tsa_core::Recorder>>,
+) -> Arc<Authority> {
     let dir = fixtures_dir();
     let key_pem = std::fs::read_to_string(dir.join("tsu-key.pem")).unwrap();
     let cert_pem = std::fs::read_to_string(dir.join("tsu-cert.pem")).unwrap();
@@ -60,7 +67,7 @@ fn load_authority_with(clock: Arc<dyn Clock>) -> Arc<Authority> {
             signing_digest: oe_hsm::DigestAlg::Sha256,
             signature_scheme: oe_hsm::Scheme::Pkcs1v15,
             clock,
-            recorder: None,
+            recorder,
         })
         .unwrap(),
     )
@@ -79,6 +86,7 @@ async fn serves_a_verifiable_token_over_http() {
         authority,
         time_source,
         max_request_bytes: 64 * 1024,
+        max_concurrent: 0,
         version: "test".to_string(),
         cors_allowed_origin: None,
         journal: None,
@@ -188,6 +196,7 @@ async fn cors_header_present_only_when_configured() {
         authority: load_authority(),
         time_source: time_source(),
         max_request_bytes: 64 * 1024,
+        max_concurrent: 0,
         version: "test".to_string(),
         cors_allowed_origin: None,
         journal: None,
@@ -211,6 +220,7 @@ async fn cors_header_present_only_when_configured() {
         authority: load_authority(),
         time_source: time_source(),
         max_request_bytes: 64 * 1024,
+        max_concurrent: 0,
         version: "test".to_string(),
         cors_allowed_origin: Some("https://demo.open-eidas.eu".to_string()),
         journal: None,
@@ -270,6 +280,7 @@ async fn health_reports_the_journal_without_taking_the_service_down() {
             })
             .unwrap(),
             max_request_bytes: 64 * 1024,
+            max_concurrent: 0,
             version: "test".to_string(),
             cors_allowed_origin: None,
             journal,
@@ -339,6 +350,7 @@ async fn the_json_facade_reports_the_gen_time_of_the_token() {
         authority: load_authority_with(Arc::new(LateClock)),
         time_source,
         max_request_bytes: 64 * 1024,
+        max_concurrent: 0,
         version: "test".to_string(),
         cors_allowed_origin: None,
         journal: None,
@@ -378,4 +390,65 @@ async fn the_json_facade_reports_the_gen_time_of_the_token() {
         time::OffsetDateTime::now_utc() - reported > time::Duration::seconds(60),
         "le gen_time doit être celui du jeton (en retard de 90 s), pas l'heure de la réponse : {from_token}"
     );
+}
+
+/// Un journal lent : chaque jeton occupe sa place de signature assez longtemps
+/// pour qu'une seconde requête arrive pendant ce temps.
+struct SlowRecorder;
+impl oe_tsa_core::Recorder for SlowRecorder {
+    fn append(&self, _event: &str, _data: serde_json::Value) -> Result<(), String> {
+        std::thread::sleep(std::time::Duration::from_millis(800));
+        Ok(())
+    }
+}
+
+/// Au-delà de `max_concurrent` signatures simultanées, le service répond 503 avec
+/// `Retry-After` au lieu de mettre la requête en file derrière l'unique session
+/// PKCS#11 ; `/healthz` reste disponible, et la place se libère ensuite.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_saturated_service_sheds_signing_requests_but_not_health() {
+    let time_source = oe_timesource::Monitor::new(oe_timesource::Options {
+        policy: oe_timesource::Policy::Disabled,
+        ..Default::default()
+    })
+    .unwrap();
+    let app = oe_httpapi::router(oe_httpapi::Options {
+        authority: load_authority_full(Arc::new(FixedClock), Some(Arc::new(SlowRecorder))),
+        time_source,
+        max_request_bytes: 64 * 1024,
+        max_concurrent: 1,
+        version: "test".to_string(),
+        cors_allowed_origin: None,
+        journal: None,
+    });
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    let client = reqwest::Client::new();
+    let post = |c: reqwest::Client| async move {
+        c.post(format!("http://{addr}/api/v1/timestamp"))
+            .json(&serde_json::json!({"algorithm": "sha256", "hash": "00".repeat(32)}))
+            .send()
+            .await
+            .unwrap()
+    };
+
+    let first = tokio::spawn(post(client.clone()));
+    tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+
+    let shed = post(client.clone()).await;
+    assert_eq!(shed.status(), 503);
+    assert_eq!(shed.headers()["retry-after"], "1");
+    let health = client
+        .get(format!("http://{addr}/healthz"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(health.status(), 200, "healthz ne doit jamais être délesté");
+
+    assert_eq!(first.await.unwrap().status(), 200);
+    // La place s'est libérée.
+    assert_eq!(post(client).await.status(), 200);
 }
