@@ -363,7 +363,7 @@ impl Cause {
 }
 
 enum Usability {
-    Usable(time::OffsetDateTime),
+    Usable,
     Unusable(Cause),
 }
 
@@ -396,7 +396,7 @@ fn current_cert_usable(
     if remaining < renew_before {
         return Usability::Unusable(Cause::Expiring(remaining));
     }
-    Usability::Usable(not_after)
+    Usability::Usable
 }
 
 async fn run_enroll() {
@@ -427,10 +427,8 @@ async fn run_enroll() {
             cfg.renew_before,
             token.public_key_der().ok(),
         ) {
-            Usability::Usable(not_after) => {
-                eprintln!(
-                    "tsa-server: certificat TSU déjà en place, enrôlement ignoré (valide jusqu'au {not_after})"
-                );
+            Usability::Usable => {
+                eprintln!("tsa-server: certificat TSU déjà en place, enrôlement ignoré");
                 return;
             }
             Usability::Unusable(cause) => {
