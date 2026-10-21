@@ -226,6 +226,7 @@ Toutes les options sont pilotées par variables d'environnement.
 | `OPENEIDAS_ENROLL_TIMEOUT` | `5m` | Délai maximal d'attente d'un certificat |
 | `OPENEIDAS_RELOAD_INTERVAL` | `60s` | Période à laquelle `serve` relit `OPENEIDAS_CERT_FILE` et adopte sans redémarrer un nouveau certificat dont la clé est dans le token (`0s` désactive). Un candidat qui échoue aux contrôles du démarrage est refusé et journalisé (`tsu.reload_refused`) ; l'ancien reste en service |
 | `OPENEIDAS_RENEW_BEFORE` | `720h` | Fenêtre de renouvellement anticipé |
+| `OPENEIDAS_RENEW_CHECK_SECONDS` | `21600` | (entrypoint de l'image TSA) période à laquelle `tsa-server enroll` est relancé en arrière-plan pendant que le service tourne ; il ne fait rien hors de la fenêtre `OPENEIDAS_RENEW_BEFORE` ; `0` désactive la boucle |
 | `OPENEIDAS_SUBJECT_CN` | `Open eIDAS Time-Stamping Unit 1` | `CN` demandé dans la CSR |
 
 ## Répondeur OCSP (`ocsp-responder`)
