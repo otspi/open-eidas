@@ -340,7 +340,7 @@ async fn run_serve() {
 fn current_cert_usable(
     cert_file: &str,
     renew_before: std::time::Duration,
-    signer: &dyn SigningToken,
+    signer_spki: Option<Vec<u8>>,
 ) -> (bool, String) {
     let existing = match oe_certs::load_file_optional(cert_file) {
         Ok(certs) if !certs.is_empty() => certs,
@@ -356,9 +356,8 @@ fn current_cert_usable(
         Ok(v) => v,
         Err(_) => return (false, "certificat en cache illisible".to_string()),
     };
-    let signer_spki = match signer.public_key_der() {
-        Ok(v) => v,
-        Err(_) => return (false, "clé du HSM illisible".to_string()),
+    let Some(signer_spki) = signer_spki else {
+        return (false, "clé du HSM illisible".to_string());
     };
     if cert_spki != signer_spki {
         return (
@@ -401,7 +400,11 @@ async fn run_enroll() {
     if let Some(generation) = found.matching {
         let token = open_token(&cfg, &keys::generation_label(&cfg.key_label, generation))
             .unwrap_or_else(|e| die("ouverture du token PKCS#11", e));
-        let (usable, reason) = current_cert_usable(&cfg.cert_file, cfg.renew_before, &token);
+        let (usable, reason) = current_cert_usable(
+            &cfg.cert_file,
+            cfg.renew_before,
+            token.public_key_der().ok(),
+        );
         if usable {
             eprintln!("tsa-server: certificat TSU déjà en place, enrôlement ignoré ({reason})");
             return;
