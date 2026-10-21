@@ -556,7 +556,18 @@ impl Pkcs11Token {
             })
             .ok_or_else(|| HsmError::TokenNotFound(token_label.to_string()))?;
         let session = pkcs11.open_rw_session(slot)?;
-        session.login(UserType::User, Some(&AuthPin::from(pin.to_string())))?;
+        // L'état de connexion est celui du token, pas de la session : si une
+        // autre session du processus (un second `Pkcs11Token` sur le même
+        // token, une autre génération de clé) l'a déjà authentifié, la
+        // nouvelle session l'est de fait.
+        match session.login(UserType::User, Some(&AuthPin::from(pin.to_string()))) {
+            Ok(()) => {}
+            Err(cryptoki::error::Error::Pkcs11(
+                cryptoki::error::RvError::UserAlreadyLoggedIn,
+                _,
+            )) => {}
+            Err(e) => return Err(e.into()),
+        }
         Ok(session)
     }
 

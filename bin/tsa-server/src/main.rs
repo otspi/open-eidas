@@ -41,6 +41,7 @@ enum Command {
     Version,
 }
 
+mod keys;
 mod seal;
 
 fn die(context: &str, err: impl std::fmt::Display) -> ! {
@@ -177,19 +178,33 @@ fn to_time_duration(d: std::time::Duration, fallback: time::Duration) -> time::D
     time::Duration::try_from(d).unwrap_or(fallback)
 }
 
+fn open_token(
+    cfg: &oe_config::Config,
+    key_label: &str,
+) -> Result<oe_hsm::Pkcs11Token, oe_hsm::HsmError> {
+    oe_hsm::Pkcs11Token::open(&oe_hsm::Options {
+        module_path: cfg.pkcs11_module.clone(),
+        token_label: cfg.token_label.clone(),
+        key_label: key_label.to_string(),
+        pin: cfg.pin.clone(),
+    })
+}
+
+/// Clé publique (SubjectPublicKeyInfo DER) de la clé portant ce label, `None`
+/// si elle n'existe pas ; toute autre panne est une erreur.
+fn key_spki(cfg: &oe_config::Config, key_label: &str) -> Result<Option<Vec<u8>>, String> {
+    let token = open_token(cfg, key_label).map_err(|e| e.to_string())?;
+    match token.public_key_der() {
+        Ok(spki) => Ok(Some(spki)),
+        Err(oe_hsm::HsmError::KeyNotFound) => Ok(None),
+        Err(e) => Err(format!("clé {key_label:?} : {e}")),
+    }
+}
+
 async fn run_serve() {
     tracing_subscriber::fmt::init();
 
     let cfg = oe_config::Config::load().unwrap_or_else(|e| die("configuration invalide", e));
-
-    let token = oe_hsm::Pkcs11Token::open(&oe_hsm::Options {
-        module_path: cfg.pkcs11_module.clone(),
-        token_label: cfg.token_label.clone(),
-        key_label: cfg.key_label.clone(),
-        pin: cfg.pin.clone(),
-    })
-    .unwrap_or_else(|e| die("ouverture du token PKCS#11", e));
-    let signer: Arc<dyn SigningToken + Send + Sync> = Arc::new(oe_hsm::SyncToken::new(token));
 
     let mut certs =
         oe_certs::load_file(&cfg.cert_file).unwrap_or_else(|e| die("certificat TSU", e));
@@ -197,6 +212,28 @@ async fn run_serve() {
         die("certificat TSU", "aucun certificat trouvé");
     }
     let certificate = certs.remove(0);
+
+    // Une clé par certificat (constat H-3) : on ouvre celle dont la clé
+    // publique est dans le certificat, quelle que soit sa génération.
+    let cert_spki = certificate
+        .tbs_certificate()
+        .subject_public_key_info()
+        .to_der()
+        .unwrap_or_else(|e| die("certificat TSU", e));
+    let found = keys::find(&cfg.key_label, Some(&cert_spki), |label| {
+        key_spki(&cfg, label)
+    })
+    .unwrap_or_else(|e| die("recherche de la clé de signature", e));
+    let generation = found.matching.unwrap_or_else(|| {
+        die(
+            "clé de signature",
+            "aucune clé du token ne correspond au certificat TSU",
+        )
+    });
+    let token = open_token(&cfg, &keys::generation_label(&cfg.key_label, generation))
+        .unwrap_or_else(|e| die("ouverture du token PKCS#11", e));
+    let signer: Arc<dyn SigningToken + Send + Sync> = Arc::new(oe_hsm::SyncToken::new(token));
+
     let chain = oe_certs::load_file_optional(&cfg.chain_file)
         .unwrap_or_else(|e| die("chaîne d'émission", e));
 
@@ -300,71 +337,134 @@ async fn run_serve() {
 /// `true` si le certificat en cache correspond déjà à la clé du HSM et n'est
 /// pas trop proche de son expiration — reproduit `currentCertUsable` (Go),
 /// idempotent : ré-exécuter `enroll` sans besoin ne fait rien.
-fn current_cert_usable(cfg: &oe_config::Config, signer: &dyn SigningToken) -> (bool, String) {
-    let existing = match oe_certs::load_file_optional(&cfg.cert_file) {
-        Ok(certs) if !certs.is_empty() => certs,
-        _ => {
-            return (
-                false,
-                "aucun certificat TSU exploitable en cache".to_string(),
-            )
+/// Pourquoi le certificat en cache ne convient plus. Des constantes plutôt que
+/// des chaînes formées dans la fonction : le message imprimé ne dérive ainsi
+/// d'aucune donnée de la configuration (qui porte le PIN).
+enum Cause {
+    NoCertificate,
+    UnreadableCertificate,
+    UnreadableKey,
+    KeyMismatch,
+    Expiring(time::Duration),
+}
+
+impl Cause {
+    fn describe(&self) -> String {
+        match self {
+            Cause::NoCertificate => "aucun certificat TSU exploitable en cache".to_string(),
+            Cause::UnreadableCertificate => "certificat en cache illisible".to_string(),
+            Cause::UnreadableKey => "clé du HSM illisible".to_string(),
+            Cause::KeyMismatch => {
+                "le certificat en cache ne correspond pas à la clé du HSM".to_string()
+            }
+            Cause::Expiring(remaining) => format!("certificat expirant dans {remaining}"),
         }
+    }
+}
+
+enum Usability {
+    Usable,
+    Unusable(Cause),
+}
+
+fn current_cert_usable(
+    cert_file: &str,
+    renew_before: std::time::Duration,
+    signer_spki: Option<Vec<u8>>,
+) -> Usability {
+    let existing = match oe_certs::load_file_optional(cert_file) {
+        Ok(certs) if !certs.is_empty() => certs,
+        _ => return Usability::Unusable(Cause::NoCertificate),
     };
     let cert = &existing[0];
     let cert_spki = match cert.tbs_certificate().subject_public_key_info().to_der() {
         Ok(v) => v,
-        Err(_) => return (false, "certificat en cache illisible".to_string()),
+        Err(_) => return Usability::Unusable(Cause::UnreadableCertificate),
     };
-    let signer_spki = match signer.public_key_der() {
-        Ok(v) => v,
-        Err(_) => return (false, "clé du HSM illisible".to_string()),
+    let Some(signer_spki) = signer_spki else {
+        return Usability::Unusable(Cause::UnreadableKey);
     };
     if cert_spki != signer_spki {
-        return (
-            false,
-            "le certificat en cache ne correspond pas à la clé du HSM".to_string(),
-        );
+        return Usability::Unusable(Cause::KeyMismatch);
     }
     let not_after = cert.tbs_certificate().validity().not_after.to_date_time();
     let not_after =
         time::OffsetDateTime::from_unix_timestamp(not_after.unix_duration().as_secs() as i64)
             .unwrap_or(time::OffsetDateTime::UNIX_EPOCH);
     let remaining = not_after - time::OffsetDateTime::now_utc();
-    let renew_before = to_time_duration(cfg.renew_before, time::Duration::days(30));
+    let renew_before = to_time_duration(renew_before, time::Duration::days(30));
     if remaining < renew_before {
-        return (false, format!("certificat expirant dans {remaining}"));
+        return Usability::Unusable(Cause::Expiring(remaining));
     }
-    (true, format!("valide jusqu'au {not_after}"))
+    Usability::Usable
 }
 
 async fn run_enroll() {
     tracing_subscriber::fmt::init();
     let cfg = oe_config::Config::load().unwrap_or_else(|e| die("configuration invalide", e));
 
-    let token = oe_hsm::Pkcs11Token::open(&oe_hsm::Options {
-        module_path: cfg.pkcs11_module.clone(),
-        token_label: cfg.token_label.clone(),
-        key_label: cfg.key_label.clone(),
-        pin: cfg.pin.clone(),
+    // Une clé par certificat (constat H-3) : on cherche la génération de clé
+    // qui porte le certificat en cache, et on ne renouvelle qu'avec une clé neuve.
+    let cert_spki = oe_certs::load_file_optional(&cfg.cert_file)
+        .ok()
+        .and_then(|certs| certs.into_iter().next())
+        .and_then(|cert| {
+            cert.tbs_certificate()
+                .subject_public_key_info()
+                .to_der()
+                .ok()
+        });
+    let found = keys::find(&cfg.key_label, cert_spki.as_deref(), |label| {
+        key_spki(&cfg, label)
     })
-    .unwrap_or_else(|e| die("ouverture du token PKCS#11", e));
+    .unwrap_or_else(|e| die("recherche de la clé de signature", e));
 
-    if token.public_key_der().is_err() {
-        eprintln!(
-            "tsa-server: génération de la clé de signature dans le HSM ({} bits, label {:?})",
-            cfg.key_bits, cfg.key_label
-        );
-        token
-            .generate_rsa_key(cfg.key_bits.max(0) as u64)
-            .unwrap_or_else(|e| die("génération de la bi-clé", e));
+    if let Some(generation) = found.matching {
+        let token = open_token(&cfg, &keys::generation_label(&cfg.key_label, generation))
+            .unwrap_or_else(|e| die("ouverture du token PKCS#11", e));
+        match current_cert_usable(
+            &cfg.cert_file,
+            cfg.renew_before,
+            token.public_key_der().ok(),
+        ) {
+            Usability::Usable => {
+                eprintln!("tsa-server: certificat TSU déjà en place, enrôlement ignoré");
+                return;
+            }
+            Usability::Unusable(cause) => {
+                eprintln!("tsa-server: enrôlement nécessaire ({})", cause.describe());
+            }
+        }
+    } else {
+        eprintln!("tsa-server: enrôlement nécessaire (aucun certificat TSU exploitable en cache)");
     }
 
-    let (usable, reason) = current_cert_usable(&cfg, &token);
-    if usable {
-        eprintln!("tsa-server: certificat TSU déjà en place, enrôlement ignoré ({reason})");
-        return;
-    }
-    eprintln!("tsa-server: enrôlement nécessaire ({reason})");
+    let generation = match keys::plan(&found).unwrap_or_else(|e| die("clé de signature", e)) {
+        keys::KeyPlan::Use(generation) => generation,
+        keys::KeyPlan::Generate(generation) => {
+            let label = keys::generation_label(&cfg.key_label, generation);
+            // Le journal avant l'acte : sans trace, pas de nouvelle clé.
+            let log =
+                oe_audit::Log::open(&cfg.audit_file).unwrap_or_else(|e| die("journal d'audit", e));
+            let mut data = oe_audit::Data::new();
+            data.insert("key_label".into(), serde_json::json!(label));
+            data.insert("generation".into(), serde_json::json!(generation));
+            data.insert("key_bits".into(), serde_json::json!(cfg.key_bits));
+            log.append(oe_audit::EVENT_TSU_KEY_GENERATED, Some(data))
+                .unwrap_or_else(|e| die("journal d'audit", e));
+            eprintln!(
+                "tsa-server: génération de la clé de signature dans le HSM ({} bits, label {label:?})",
+                cfg.key_bits
+            );
+            open_token(&cfg, &label)
+                .unwrap_or_else(|e| die("ouverture du token PKCS#11", e))
+                .generate_rsa_key(cfg.key_bits.max(0) as u64)
+                .unwrap_or_else(|e| die("génération de la bi-clé", e));
+            generation
+        }
+    };
+    let token = open_token(&cfg, &keys::generation_label(&cfg.key_label, generation))
+        .unwrap_or_else(|e| die("ouverture du token PKCS#11", e));
 
     let client = oe_enroll::Client::new(oe_enroll::Options {
         endpoint: cfg.enroll_endpoint.clone(),

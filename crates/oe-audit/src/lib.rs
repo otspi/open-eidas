@@ -38,6 +38,9 @@ pub const EVENT_OPENED: &str = "log.opened";
 /// l'audit du 2026-09-25) : politique de temps autre qu'enforce, TLS non
 /// vérifié vers la CA.
 pub const EVENT_DEGRADED_START: &str = "service.degraded_start";
+/// Génération d'une nouvelle clé de TSU, avant l'enrôlement de son certificat
+/// (constat H-3, une clé par certificat).
+pub const EVENT_TSU_KEY_GENERATED: &str = "tsu.key_generated";
 pub const EVENT_SEALED: &str = "log.sealed";
 pub const EVENT_CROSS_SEALED: &str = "log.cross_sealed";
 pub const EVENT_REPLICATED: &str = "log.replicated";
