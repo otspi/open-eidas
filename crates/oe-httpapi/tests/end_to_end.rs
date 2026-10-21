@@ -28,7 +28,21 @@ impl Clock for FixedClock {
     }
 }
 
+/// Horloge en retard de 90 s, à la seconde près : l'heure de la réponse et celle
+/// du jeton ne peuvent plus se confondre.
+struct LateClock;
+impl Clock for LateClock {
+    fn now(&self) -> Result<time::OffsetDateTime, String> {
+        let t = time::OffsetDateTime::now_utc() - time::Duration::seconds(90);
+        Ok(t.replace_nanosecond(0).unwrap())
+    }
+}
+
 fn load_authority() -> Arc<Authority> {
+    load_authority_with(Arc::new(FixedClock))
+}
+
+fn load_authority_with(clock: Arc<dyn Clock>) -> Arc<Authority> {
     let dir = fixtures_dir();
     let key_pem = std::fs::read_to_string(dir.join("tsu-key.pem")).unwrap();
     let cert_pem = std::fs::read_to_string(dir.join("tsu-cert.pem")).unwrap();
@@ -45,7 +59,7 @@ fn load_authority() -> Arc<Authority> {
             accuracy: std::time::Duration::from_secs(1),
             signing_digest: oe_hsm::DigestAlg::Sha256,
             signature_scheme: oe_hsm::Scheme::Pkcs1v15,
-            clock: Arc::new(FixedClock),
+            clock,
             recorder: None,
         })
         .unwrap(),
@@ -310,4 +324,58 @@ async fn health_reports_the_journal_without_taking_the_service_down() {
         "{body}"
     );
     assert_eq!(body["journal"]["degraded"], true);
+}
+
+/// Constat S-3 : le `gen_time` de la façade JSON est le `genTime` du jeton, pas
+/// l'heure de la réponse.
+#[tokio::test]
+async fn the_json_facade_reports_the_gen_time_of_the_token() {
+    let time_source = oe_timesource::Monitor::new(oe_timesource::Options {
+        policy: oe_timesource::Policy::Disabled,
+        ..Default::default()
+    })
+    .unwrap();
+    let app = oe_httpapi::router(oe_httpapi::Options {
+        authority: load_authority_with(Arc::new(LateClock)),
+        time_source,
+        max_request_bytes: 64 * 1024,
+        version: "test".to_string(),
+        cors_allowed_origin: None,
+        journal: None,
+    });
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+
+    let resp = reqwest::Client::new()
+        .post(format!("http://{addr}/api/v1/timestamp"))
+        .json(&serde_json::json!({
+            "algorithm": "sha256",
+            "hash": "00".repeat(32),
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body: serde_json::Value = resp.json().await.unwrap();
+
+    use base64::Engine;
+    let resp_der = base64::engine::general_purpose::STANDARD
+        .decode(body["token"].as_str().unwrap())
+        .unwrap();
+    let info = oe_rfc3161_asn1::token::tst_info_of_response(&resp_der).unwrap();
+    let from_token = oe_rfc3161_asn1::gen_time::to_rfc3339(&info.gen_time).unwrap();
+    assert_eq!(body["gen_time"], from_token);
+
+    let reported = time::OffsetDateTime::parse(
+        from_token.as_str(),
+        &time::format_description::well_known::Rfc3339,
+    )
+    .unwrap();
+    assert!(
+        time::OffsetDateTime::now_utc() - reported > time::Duration::seconds(60),
+        "le gen_time doit être celui du jeton (en retard de 90 s), pas l'heure de la réponse : {from_token}"
+    );
 }

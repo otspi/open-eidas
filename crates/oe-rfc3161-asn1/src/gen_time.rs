@@ -114,9 +114,47 @@ pub fn decode(any: &Any) -> Result<Parts, Error> {
     })
 }
 
+/// `genTime` au format RFC 3339 (`2026-01-15T10:00:00.5Z`), fraction conservée
+/// telle qu'elle figure dans le jeton : c'est la date qui fait foi, pas l'heure
+/// à laquelle une façade la relit (constat S-3).
+pub fn to_rfc3339(any: &Any) -> Result<String, Error> {
+    decode(any)?; // refuse tout ce qui n'est pas un GeneralizedTime bien formé
+    let s = std::str::from_utf8(any.value()).map_err(|_| value_error())?;
+    let s = s.strip_suffix('Z').ok_or_else(value_error)?;
+    let (whole, frac) = match s.split_once('.') {
+        Some((w, f)) => (w, Some(f)),
+        None => (s, None),
+    };
+    let mut out = format!(
+        "{}-{}-{}T{}:{}:{}",
+        &whole[0..4],
+        &whole[4..6],
+        &whole[6..8],
+        &whole[8..10],
+        &whole[10..12],
+        &whole[12..14]
+    );
+    if let Some(frac) = frac {
+        out.push('.');
+        out.push_str(frac);
+    }
+    out.push('Z');
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rfc3339_keeps_the_token_fraction_and_refuses_garbage() {
+        let any = encode(&parts(500_000_000), 3).unwrap();
+        assert_eq!(to_rfc3339(&any).unwrap(), "2026-01-15T10:00:00.5Z");
+        let any = encode(&parts(0), 3).unwrap();
+        assert_eq!(to_rfc3339(&any).unwrap(), "2026-01-15T10:00:00Z");
+        let bad = Any::new(Tag::GeneralizedTime, b"pas une date".to_vec()).unwrap();
+        assert!(to_rfc3339(&bad).is_err());
+    }
 
     fn parts(nanosecond: u32) -> Parts {
         Parts {

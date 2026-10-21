@@ -27,7 +27,7 @@ base64 = "0.22"
 hex = "0.4"
 rand = "0.8"
 pem = "3"
-time = { version = "0.3", features = ["formatting"] }
+time = { version = "0.3", features = ["formatting", "parsing"] }
 
 [dev-dependencies]
 oe-hsm = { path = "../oe-hsm", features = ["testing"] }

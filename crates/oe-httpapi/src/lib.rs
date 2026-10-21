@@ -221,9 +221,20 @@ async fn handle_json(State(state): State<AppState>, body: Bytes) -> Response {
         Ok(resp_der) => {
             use base64::Engine;
             let token = base64::engine::general_purpose::STANDARD.encode(&resp_der);
-            let gen_time = time::OffsetDateTime::now_utc()
-                .format(&time::format_description::well_known::Rfc3339)
-                .unwrap_or_default();
+            // `genTime` du jeton lui-même (constat S-3), pas l'heure de la réponse.
+            let gen_time = match oe_rfc3161_asn1::token::tst_info_of_response(&resp_der)
+                .map_err(|e| e.to_string())
+                .and_then(|info| {
+                    oe_rfc3161_asn1::gen_time::to_rfc3339(&info.gen_time).map_err(|e| e.to_string())
+                }) {
+                Ok(t) => t,
+                Err(_) => {
+                    return json_error(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "défaillance interne de la TSA",
+                    )
+                }
+            };
             Json(JsonResponse {
                 granted: true,
                 token,
