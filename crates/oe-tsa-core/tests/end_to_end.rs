@@ -212,6 +212,10 @@ fn a_pss_token_is_accepted_by_openssl_and_announces_rsassa_pss() {
         .arg(&token_path)
         .arg("-CAfile")
         .arg(&cert_path)
+        // Le jeton n'embarque pas le certificat (pas de certReq) : sans lui,
+        // les OpenSSL anciens ne retrouvent pas le signataire.
+        .arg("-certfile")
+        .arg(&cert_path)
         .args(["-purpose", "any", "-out", "/dev/null"])
         .output()
         .expect("exécution d'openssl cms");
