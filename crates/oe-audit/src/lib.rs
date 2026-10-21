@@ -34,6 +34,10 @@ pub const GENESIS_HASH: &str = "000000000000000000000000000000000000000000000000
 // GENESIS_HASH doit faire 64 caractères ('0' * 64) : vérifié par un test unitaire.
 
 pub const EVENT_OPENED: &str = "log.opened";
+/// Démarrage dans un mode dégradé admis hors production (constat S-2 de
+/// l'audit du 2026-09-25) : politique de temps autre qu'enforce, TLS non
+/// vérifié vers la CA.
+pub const EVENT_DEGRADED_START: &str = "service.degraded_start";
 pub const EVENT_SEALED: &str = "log.sealed";
 pub const EVENT_CROSS_SEALED: &str = "log.cross_sealed";
 pub const EVENT_REPLICATED: &str = "log.replicated";

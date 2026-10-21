@@ -537,6 +537,18 @@ async fn the_binary_applies_what_the_matrix_declares() {
             String::from_utf8_lossy(&verify.stderr)
         );
 
+        // Constat S-2 : le démarrage en politique « monitor » est consigné.
+        let degraded: Vec<_> = oe_audit::read(fx.dir.join("audit-monitor.log"))
+            .unwrap()
+            .into_iter()
+            .filter(|r| r.event == "service.degraded_start")
+            .collect();
+        assert_eq!(degraded.len(), 1, "{degraded:?}");
+        assert!(degraded[0].data.as_ref().unwrap()["modes"][0]
+            .as_str()
+            .unwrap()
+            .contains("monitor"));
+
         let text = fx.timestamp(&base, "-sha256", "granted").await;
         assert!(text.contains("Status: Granted"), "{text}");
         let verify = fx.openssl(&[
