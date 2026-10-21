@@ -41,6 +41,9 @@ pub const EVENT_DEGRADED_START: &str = "service.degraded_start";
 /// Génération d'une nouvelle clé de TSU, avant l'enrôlement de son certificat
 /// (constat H-3, une clé par certificat).
 pub const EVENT_TSU_KEY_GENERATED: &str = "tsu.key_generated";
+/// Destruction d'une ancienne génération de la clé de TSU, à la demande d'un
+/// opérateur (constat H-3, EN 319 421 `TIS-7.6.7-08`).
+pub const EVENT_TSU_KEY_DESTROYED: &str = "tsu.key_destroyed";
 pub const EVENT_SEALED: &str = "log.sealed";
 pub const EVENT_CROSS_SEALED: &str = "log.cross_sealed";
 pub const EVENT_REPLICATED: &str = "log.replicated";

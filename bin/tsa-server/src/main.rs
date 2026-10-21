@@ -26,6 +26,16 @@ enum Command {
     Serve,
     /// Obtient ou renouvelle le certificat de la TSU auprès de la CA.
     Enroll,
+    /// Détruit une ancienne génération de la clé de la TSU (irréversible).
+    /// Sans `--confirm`, n'affiche que ce qui serait détruit.
+    RetireKey {
+        /// Génération à détruire (1 = label configuré, n ≥ 2 = `<label>.<n>`).
+        #[arg(long)]
+        generation: u32,
+        /// Label exact de la clé à détruire, pour confirmer l'intention.
+        #[arg(long)]
+        confirm: Option<String>,
+    },
     /// Vérifie l'intégrité de la chaîne du journal d'audit.
     VerifyAudit {
         /// Chemin du journal (défaut : OPENEIDAS_AUDIT_FILE ou /var/lib/open-eidas/audit.log).
@@ -499,12 +509,71 @@ async fn run_enroll() {
     );
 }
 
+/// Détruit une ancienne génération de clé (EN 319 421 `TIS-7.6.7-08`), à la
+/// demande expresse d'un opérateur : jamais automatiquement, jamais la clé du
+/// certificat en service, et la destruction est consignée au journal avant l'acte.
+fn run_retire_key(generation: u32, confirm: Option<String>) {
+    let cfg = oe_config::Config::load().unwrap_or_else(|e| die("configuration invalide", e));
+    let cert_spki = oe_certs::load_file_optional(&cfg.cert_file)
+        .ok()
+        .and_then(|certs| certs.into_iter().next())
+        .and_then(|cert| {
+            cert.tbs_certificate()
+                .subject_public_key_info()
+                .to_der()
+                .ok()
+        });
+    let found = keys::find(&cfg.key_label, cert_spki.as_deref(), |label| {
+        key_spki(&cfg, label)
+    })
+    .unwrap_or_else(|e| die("recherche de la clé de signature", e));
+    if let Err(e) = keys::check_retirable(&found, generation) {
+        die("destruction refusée", e);
+    }
+    let label = keys::generation_label(&cfg.key_label, generation);
+    let token = open_token(&cfg, &label).unwrap_or_else(|e| die("ouverture du token PKCS#11", e));
+    if token.public_key_der().is_err() {
+        die(
+            "destruction refusée",
+            format!("aucune clé ne porte le label {label:?}"),
+        );
+    }
+    if confirm.as_deref() != Some(label.as_str()) {
+        eprintln!(
+            "tsa-server: la clé {label:?} (génération {generation}) serait détruite, \
+             la génération {} portant le certificat en service. \
+             Pour la détruire, définitivement : tsa-server retire-key --generation {generation} --confirm {label}",
+            found.matching.unwrap_or_default()
+        );
+        std::process::exit(2);
+    }
+    // Le journal avant l'acte irréversible : sans trace, pas de destruction.
+    let log = oe_audit::Log::open(&cfg.audit_file).unwrap_or_else(|e| die("journal d'audit", e));
+    let mut data = oe_audit::Data::new();
+    data.insert("key_label".into(), serde_json::json!(label));
+    data.insert("generation".into(), serde_json::json!(generation));
+    data.insert(
+        "certificate_generation".into(),
+        serde_json::json!(found.matching),
+    );
+    log.append(oe_audit::EVENT_TSU_KEY_DESTROYED, Some(data))
+        .unwrap_or_else(|e| die("journal d'audit", e));
+    let destroyed = token
+        .destroy_key_pair()
+        .unwrap_or_else(|e| die("destruction de la bi-clé", e));
+    eprintln!("tsa-server: clé {label:?} détruite ({destroyed} objets)");
+}
+
 #[tokio::main]
 async fn main() {
     let cli = Cli::parse();
     match cli.command {
         Command::Serve => run_serve().await,
         Command::Enroll => run_enroll().await,
+        Command::RetireKey {
+            generation,
+            confirm,
+        } => run_retire_key(generation, confirm),
         Command::VerifyAudit { path } => {
             let path = path
                 .or_else(|| std::env::var("OPENEIDAS_AUDIT_FILE").ok())
