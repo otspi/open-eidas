@@ -15,7 +15,7 @@ RUN cargo build --locked --release --bin ocsp-responder \
  && rm -rf target
 
 
-FROM debian:bookworm-slim@sha256:7ff6ba31527b9e336162fa061746c366c4b2032f4d2cff2078bea43f78efe3f8
+FROM debian:bookworm-slim@sha256:99c0b25c46d0214d5a2091092e7908907dcaecd6a962cde0ac700acee222b6f3
 
 # Invalide volontairement le cache Docker de cette couche une fois par jour
 # (CACHEBUST passé par la CI, voir .github/workflows/ci.yml) : sans ça,
